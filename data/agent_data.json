@@ -1,0 +1,103 @@
+{
+  "active": "Ai Field",
+  "datasets": {
+    "Writing Agent": {
+      "source": "C:/Users/Jared/Desktop/Writing Agent.xlsx",
+      "records": [
+        {
+          "writing agent": "Mat",
+          "first name": "Mathew",
+          "last name": "Hartrick",
+          "npn#": "18481567"
+        },
+        {
+          "writing agent": "Jared",
+          "first name": "Jared",
+          "last name": "McCullough",
+          "npn#": "21215050"
+        },
+        {
+          "writing agent": "Quincy",
+          "first name": "Quincy",
+          "last name": "McAlpine",
+          "npn#": "981214"
+        },
+        {
+          "writing agent": "Becky",
+          "first name": "Rebecca",
+          "last name": "McCullough",
+          "npn#": "20402894"
+        }
+      ]
+    },
+    "Ai Field": {
+      "source": "C:/Users/Jared/Desktop/gov data field AI training from VRM.xlsx",
+      "records": [
+        {
+          "infusionsoft": "Profile Tab",
+          "hc.gov data field": ""
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "First name"
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "Last name"
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "Street address"
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "County/Mailing Address"
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "City"
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "State"
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "ZIP code"
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "Phone number"
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "Email address"
+        },
+        {
+          "infusionsoft": "Additional Info",
+          "hc.gov data field": "Date of birth"
+        },
+        {
+          "infusionsoft": "Client Details",
+          "hc.gov data field": "What\u2019s [CLIENT FIRST NAME] Social Security Number (SSN)?"
+        },
+        {
+          "infusionsoft": "Client Details",
+          "hc.gov data field": "Sex"
+        },
+        {
+          "infusionsoft": "Client Details",
+          "hc.gov data field": ""
+        },
+        {
+          "infusionsoft": "Client Details",
+          "hc.gov data field": "Estimated income for [CURRENT MONTH]"
+        },
+        {
+          "infusionsoft": "General",
+          "hc.gov data field": "[CLIENT NAME], type your full name below to sign electronically."
+        }
+      ]
+    }
+  }
+}
