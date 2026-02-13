@@ -1,0 +1,1011 @@
+{
+    "double click the quincy file icon on my desktop": {
+        "x": 450,
+        "y": 320
+    },
+    "double click the oe icon to open it.": {
+        "x": 154,
+        "y": 461
+    },
+    "notes": [
+        {
+            "type": "action",
+            "input": "Hello, my name is Jared",
+            "result": {
+                "type": "open_url",
+                "url": "https://www.weather.com/weather/today/l/Fraser+MI?canonicalCityId=3c7b3f8c6a7e4e4b8b4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4"
+            }
+        },
+        {
+            "type": "action",
+            "input": "Check the weather for Fraser Michigan with the zip code 48026",
+            "result": {
+                "type": "open_url",
+                "url": "https://www.weather.com/weather/today/l/Fraser+MI?canonicalCityId=3c7b3f8c6a7e4e4b8b4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4"
+            }
+        },
+        {
+            "type": "action",
+            "input": "follow the process for the word doc i jus tuploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "YouTube"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "YouTube"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "follow the process doc I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "follow the process doc I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_click_result",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
+                        "match_text": "good beginner fish for salt water tanks"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "follow the process I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to click matching result."
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to click matching result."
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process I uploaded",
+            "result": [
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to click matching result."
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_click_result",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
+                        "match_text": "good beginner fish for salt water tanks"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process I uploaded",
+            "result": [
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to click matching result."
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_click_result",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
+                        "match_text": "good beginner fish for salt water tanks"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process again",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_click_result",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
+                        "match_text": "good beginner fish for salt water tanks"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run it again",
+            "result": {
+                "type": "open_url_and_click_result",
+                "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
+                "match_text": "good beginner fish for salt water tanks"
+            }
+        },
+        {
+            "type": "action",
+            "input": "run the process again and when it is done I want you to open solitaire",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_click_result",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
+                        "match_text": "good beginner fish for salt water tanks"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_app_and_type",
+                        "app_name": "Solitaire"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process again and than open solitaire",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_click_result",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
+                        "match_text": "good beginner fish for salt water tanks"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_app_and_type",
+                        "app_name": "Solitaire"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process again and than open solitaire",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_click_result",
+                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
+                        "match_text": "good beginner fish for salt water tanks"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_app_and_type",
+                        "app_name": "Solitaire"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "follow the process I just uploaded labeled PH log in",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "I just updated the PH log in word doc. please follow the new process",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "I just uploaded a new process. please follow that process. its calls Updated PH log in",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "password_entry",
+            "label": "Quincy Priority Health",
+            "url": "https://agent.priorityhealth.com/agents/s/login/?ec=302&startURL=%2Fagents%2Fs%2F",
+            "username": "quincy@mihealthquotes.com",
+            "password": "Summer2026health!"
+        },
+        {
+            "type": "process_doc",
+            "source": "C:/Users/Jared/Desktop/Updated PH log in.docx",
+            "content": "Go to the web address that is listed under the \u201cQuincy priority Health\u201d password log\nLocated the field labeled \u201cEmail\u201d and enter quincy@mihealthquotes.com\nLocated the field labeled \u201cpassword\u201d and enter Summer2026health!"
+        },
+        {
+            "type": "action",
+            "input": "use the Updated PH log in process",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "fill_login_from_passwords",
+                        "label": "Quincy Priority Health",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?ec=302&startURL=%2Fagents%2Fs%2F",
+                        "submit": true
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Run the process I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "fill_login_from_passwords",
+                        "label": "Quincy Priority Health",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?ec=302&startURL=%2Fagents%2Fs%2F",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_app_and_type",
+                        "app_name": "Solitaire"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "run the process I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "fill_login_from_passwords",
+                        "label": "Quincy Priority Health",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?ec=302&startURL=%2Fagents%2Fs%2F",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Blocked unrelated app: solitaire"
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Run the process I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "fill_login_from_passwords",
+                        "label": "Quincy Priority Health",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?ec=302&startURL=%2Fagents%2Fs%2F",
+                        "submit": true
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Run the process I uploaded",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "fill_login_from_passwords",
+                        "label": "Quincy Priority Health",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?ec=302&startURL=%2Fagents%2Fs%2F",
+                        "submit": true
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Run the process I uploaded",
+            "result": {
+                "type": "open_url_and_fill_login",
+                "label": "Quincy Priority Health",
+                "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA..",
+                "submit": false
+            }
+        },
+        {
+            "type": "action",
+            "input": "run the process I uploaded",
+            "result": {
+                "type": "open_url_and_fill_login",
+                "label": "Quincy Priority Health",
+                "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA..",
+                "submit": true
+            }
+        },
+        {
+            "type": "action",
+            "input": "Run the process I uploaded",
+            "result": {
+                "type": "open_url_and_fill_login",
+                "label": "Quincy Priority Health",
+                "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA..",
+                "submit": true
+            }
+        },
+        {
+            "type": "action",
+            "input": "run the Process I uploaded",
+            "result": {
+                "type": "open_url_and_fill_login",
+                "label": "Quincy Priority Health",
+                "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA..",
+                "submit": true
+            }
+        },
+        {
+            "type": "password_entry",
+            "label": "Trackvia",
+            "url": "https://worx2.trackvia.com/#/signin",
+            "username": "jared@mihealthquotes.com",
+            "password": "Dragon1989!"
+        },
+        {
+            "type": "action",
+            "input": "use the password labled Trackvia and use the current browser and go to that webpage and log in",
+            "result": [
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to open page or fill login fields."
+                },
+                {
+                    "executed": true,
+                    "result": [
+                        {
+                            "executed": true,
+                            "result": {
+                                "type": "open_url_and_fill_login",
+                                "label": "Quincy Priority Health",
+                                "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA..",
+                                "submit": true
+                            },
+                            "error": null
+                        },
+                        {
+                            "executed": false,
+                            "result": null,
+                            "error": "Blocked unrelated app: solitaire"
+                        }
+                    ],
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "in the current broswer, go to the password labeled trackvia and log into it",
+            "result": [
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to open page or fill login fields."
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_fill_login",
+                        "label": "Quincy Priority Health",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA..",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Blocked unrelated app: solitaire"
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "in the current broswer, go to the password labeled trackvia and log into it",
+            "result": [
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to open page or fill login fields."
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to open page or fill login fields."
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to open page or fill login fields."
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "go to the password labeled trackvia and log into it",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_fill_login",
+                        "label": "Trackvia",
+                        "url": "https://worx2.trackvia.com/#/signin",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "fill_login_from_passwords",
+                        "label": "Trackvia",
+                        "url": "https://worx2.trackvia.com/#/signin",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "locate the \"views\" tabe in the top action bar and click it and than search for \"Active Customers (QUincy)\" and click it to open the new window",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_click_result",
+                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA..",
+                        "match_text": "Active Customers (Quincy)"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "go to the password labeled trackvia and log into it",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_fill_login",
+                        "label": "Trackvia",
+                        "url": "https://worx2.trackvia.com/#/signin",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": [
+                        {
+                            "executed": true,
+                            "result": {
+                                "type": "focus_app_and_type",
+                                "app_name": "Browser"
+                            },
+                            "error": null
+                        },
+                        {
+                            "executed": false,
+                            "result": null,
+                            "error": "Failed to click matching result."
+                        }
+                    ],
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "process_doc",
+            "source": "C:/Users/Jared/Desktop/searching an active client in Trackvia.docx",
+            "content": "searching an active client in Trackvia\nJared - "
+        },
+        {
+            "type": "action",
+            "input": "use the searching an active client in trackvia process",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_fill_login",
+                        "label": "Trackvia",
+                        "url": "https://worx2.trackvia.com/#/signin",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to click matching result."
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "follow the process searching for active clients in trackvia",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_fill_login",
+                        "label": "Trackvia",
+                        "url": "https://worx2.trackvia.com/#/signin",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to click matching result."
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "follow the process I uploaded labeled searching for an active client in trackvia",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_fill_login",
+                        "label": "Trackvia",
+                        "url": "https://worx2.trackvia.com/#/signin",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "Browser"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to click matching result."
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "use the process I uploaded to search an active client in trackvia",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_fill_login",
+                        "label": "Trackvia",
+                        "url": "https://worx2.trackvia.com/#/signin",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "focus_app_and_type",
+                        "app_name": "chrome"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to click matching result."
+                }
+            ]
+        },
+        {
+            "type": "password_entry",
+            "label": "InfusionSoft",
+            "url": "https://signin.infusionsoft.com/login?service=https%3A%2F%2Faccounts.infusionsoft.com%2Fvalidate_ticket",
+            "username": "jared@mihealthquotes.com",
+            "password": "Orange2026!"
+        },
+        {
+            "type": "password_entry",
+            "label": "Sales and Submit",
+            "url": "https://mihq-ss--jaredmccullough.replit.app/type/ai-submits",
+            "username": "jared@mihealthquotes.com",
+            "password": "Dragon1989!"
+        },
+        {
+            "type": "web_link",
+            "name": "Infusion Soft",
+            "url": "https://signin.infusionsoft.com/login?service=https%3A%2F%2Faccounts.infusionsoft.com%2Fvalidate_ticket"
+        },
+        {
+            "type": "web_link",
+            "name": "Trackvia",
+            "url": "https://go.trackvia.com/#/signin"
+        },
+        {
+            "type": "web_link",
+            "name": "hc.gov",
+            "url": "https://www.healthcare.gov/login"
+        },
+        {
+            "type": "web_link",
+            "name": "Sales and Submit",
+            "url": "https://mihq-ss--jaredmccullough.replit.app/queue"
+        },
+        {
+            "type": "action",
+            "input": "open Chrome and go to the Infusionsoft UR",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://signin.infusionsoft.com/login?service=https%3A%2F%2Faccounts.infusionsoft.com%2Fvalidate_ticket"
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "fill_login_from_passwords",
+                        "label": "InfusionSoft",
+                        "url": "https://signin.infusionsoft.com/login?service=https%3A%2F%2Faccounts.infusionsoft.com%2Fvalidate_ticket",
+                        "submit": true
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url_and_fill_login",
+                        "label": "InfusionSoft",
+                        "url": "https://signin.infusionsoft.com/login?service=https%3A%2F%2Faccounts.infusionsoft.com%2Fvalidate_ticket",
+                        "submit": true
+                    },
+                    "error": null
+                }
+            ]
+        }
+    ]
+}
