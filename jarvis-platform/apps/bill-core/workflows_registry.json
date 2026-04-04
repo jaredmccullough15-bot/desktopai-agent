@@ -1,0 +1,25 @@
+[
+  {
+    "workflow_name": "smart_sherpa_sync",
+    "description": "Process HealthSherpa client list and wait for sync completion.",
+    "required_inputs": [],
+    "login_or_session_required": true,
+    "safe_for_unattended": false,
+    "compatible_worker_types": [
+      "interactive_visible"
+    ],
+    "procedure_name": "smart_sherpa_sync"
+  },
+  {
+    "workflow_name": "marketplace_workflow",
+    "description": "Open Marketplace and capture a screenshot for readiness verification.",
+    "required_inputs": [],
+    "login_or_session_required": false,
+    "safe_for_unattended": true,
+    "compatible_worker_types": [
+      "interactive_visible",
+      "headless_background"
+    ],
+    "procedure_name": "marketplace_workflow"
+  }
+]
