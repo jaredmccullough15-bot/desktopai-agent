@@ -119,6 +119,11 @@ class WorkflowRecord(BaseModel):
 class BrainCommandRequest(BaseModel):
     command: str
     target_machine_uuid: str | None = None
+    confirm_execution: bool = False
+    interaction_id: str | None = None
+    guided_answers: dict[str, Any] = Field(default_factory=dict)
+    runtime_adjustments: dict[str, Any] = Field(default_factory=dict)
+    run_with_proposal_id: str | None = None
 
 
 class BrainCommandResponse(BaseModel):
@@ -131,7 +136,175 @@ class BrainCommandResponse(BaseModel):
     selected_worker_name: str | None = None
     suggested_next_action: str | None = None
     retry_recommended: bool = False
+    requires_confirmation: bool = False
+    pending_interaction_id: str | None = None
+    pending_questions: list[str] = Field(default_factory=list)
+    live_reasoning: list[str] = Field(default_factory=list)
     task: TaskCreateResponse | None = None
+
+
+class InteractivePromptRecord(BaseModel):
+    interaction_id: str
+    created_at: str
+    interaction_type: str
+    command: str
+    workflow_name: str | None = None
+    task_id: str | None = None
+    status: str = "pending"
+    recommendation: str
+    questions: list[str] = Field(default_factory=list)
+    pending_adjustments: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class InteractivePromptDecisionRequest(BaseModel):
+    approved: bool
+    adjustments: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+
+
+class GuidedExecutionStartRequest(BaseModel):
+    workflow_name: str
+    target_machine_uuid: str | None = None
+    initial_answers: dict[str, Any] = Field(default_factory=dict)
+
+
+class GuidedExecutionAnswerRequest(BaseModel):
+    answers: dict[str, Any] = Field(default_factory=dict)
+    continue_execution: bool = True
+
+
+class RunWithImprovementRequest(BaseModel):
+    target_machine_uuid: str | None = None
+    confirm_execution: bool = False
+    runtime_adjustments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConversationPreferenceRecord(BaseModel):
+    key: str
+    value: Any
+    updated_at: str
+
+
+class ConversationPreferenceUpdateRequest(BaseModel):
+    key: str
+    value: Any
+
+
+class OperationalMemoryRecord(BaseModel):
+    id: str
+    timestamp: str
+    kind: str
+    summary: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+
+
+class TaskReflectionRecord(BaseModel):
+    id: str
+    timestamp: str
+    task_id: str
+    workflow_name: str | None = None
+    worker_name: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    status: str = "unknown"
+    failure_stage: str | None = None
+    failure_classification: str | None = None
+    likely_root_cause: str = "unknown"
+    supporting_evidence: str = ""
+    recommended_next_action: str = ""
+    retry_strategy: str | None = None
+    alternative_worker: str | None = None
+    potential_fix: str | None = None
+    recommendation_feedback: list[str] = Field(default_factory=list)
+    confidence: float = 0.5
+
+
+class ImprovementProposalRecord(BaseModel):
+    proposal_id: str
+    created_at: str
+    workflow_name: str
+    worker_name: str | None = None
+    proposal_type: str
+    title: str
+    description: str
+    supporting_evidence: list[str] = Field(default_factory=list)
+    confidence: float = 0.5
+    recommended_change: str
+    status: str = "open"
+    feedback: list[str] = Field(default_factory=list)
+
+
+class ProposalStatusUpdateRequest(BaseModel):
+    status: str
+
+
+class ProposalFeedbackRequest(BaseModel):
+    feedback: str
+
+
+class WorkflowSOPSummaryRecord(BaseModel):
+    workflow_name: str
+    purpose: str
+    prerequisites: list[str] = Field(default_factory=list)
+    normal_flow: list[str] = Field(default_factory=list)
+    common_failures: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    best_worker_patterns: list[str] = Field(default_factory=list)
+    updated_at: str
+
+
+class WorkflowSOPUpdateRequest(BaseModel):
+    purpose: str | None = None
+    prerequisites: list[str] | None = None
+    normal_flow: list[str] | None = None
+    common_failures: list[str] | None = None
+    recommended_fixes: list[str] | None = None
+    best_worker_patterns: list[str] | None = None
+
+
+class WorkflowLearningCreateRequest(BaseModel):
+    learning_path: str
+    source_text: str
+    workflow_name: str | None = None
+    goal: str | None = None
+
+
+class WorkflowLearningDraftRecord(BaseModel):
+    draft_id: str
+    created_at: str
+    updated_at: str
+    learning_path: str
+    workflow_name: str
+    goal: str
+    description: str
+    required_inputs: list[str] = Field(default_factory=list)
+    required_session_state: list[str] = Field(default_factory=list)
+    safe_for_unattended: bool = False
+    steps: list[dict[str, Any]] = Field(default_factory=list)
+    validation_rules: list[str] = Field(default_factory=list)
+    fallback_strategies: list[str] = Field(default_factory=list)
+    common_failures: list[str] = Field(default_factory=list)
+    review_status: str = "draft"
+    reviewer_notes: str | None = None
+    published_workflow_name: str | None = None
+
+
+class WorkflowDraftStatusUpdateRequest(BaseModel):
+    review_status: str
+    reviewer_notes: str | None = None
+
+
+class WorkflowDraftTestRequest(BaseModel):
+    target_machine_uuid: str | None = None
+    guided_mode: bool = True
+    runtime_adjustments: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowDraftPublishRequest(BaseModel):
+    approved_by: str | None = None
+    publish_notes: str | None = None
 
 
 class TaskCompleteRequest(BaseModel):

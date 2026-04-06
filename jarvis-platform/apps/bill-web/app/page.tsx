@@ -52,6 +52,7 @@ type EndpointErrors = {
   tasks?: string;
   workflows?: string;
   audit?: string;
+  drafts?: string;
   config?: string;
 };
 
@@ -70,12 +71,37 @@ type BrainCommandResponse = {
   selected_worker_name?: string | null;
   suggested_next_action?: string | null;
   retry_recommended?: boolean;
+  requires_confirmation?: boolean;
+  pending_interaction_id?: string | null;
+  pending_questions?: string[];
+  live_reasoning?: string[];
   task?: BrainTaskRef | null;
+};
+
+type WorkflowLearningDraft = {
+  draft_id: string;
+  created_at: string;
+  updated_at: string;
+  learning_path: string;
+  workflow_name: string;
+  goal: string;
+  description: string;
+  required_inputs: string[];
+  required_session_state: string[];
+  safe_for_unattended: boolean;
+  steps: Array<Record<string, unknown>>;
+  validation_rules: string[];
+  fallback_strategies: string[];
+  common_failures: string[];
+  review_status: string;
+  reviewer_notes?: string | null;
+  published_workflow_name?: string | null;
 };
 
 type ChatEntry = {
   role: "user" | "assistant";
   message: string;
+  suggestedNextAction?: string;
 };
 
 type WorkflowRecord = {
@@ -154,6 +180,69 @@ const getApiBase = (): string => {
   return deriveApiBaseFromHost();
 };
 
+const taskStatusLabel = (status?: string): string => {
+  const normalized = (status ?? "").toLowerCase();
+  if (normalized === "running") return "In progress";
+  if (normalized === "assigned") return "Assigned";
+  if (normalized === "queued") return "Queued";
+  if (normalized === "completed") return "Completed";
+  if (normalized === "failed") return "Failed";
+  if (normalized === "canceled" || normalized === "cancelled") return "Canceled";
+  return status ?? "Unknown";
+};
+
+const taskStatusClasses = (status?: string): string => {
+  const normalized = (status ?? "").toLowerCase();
+  if (normalized === "completed") return "bg-emerald-500/15 text-emerald-200 border border-emerald-400/30";
+  if (normalized === "failed") return "bg-rose-500/15 text-rose-200 border border-rose-400/30";
+  if (normalized === "running") return "bg-sky-500/15 text-sky-200 border border-sky-400/30";
+  if (normalized === "queued" || normalized === "assigned") return "bg-amber-500/15 text-amber-200 border border-amber-400/30";
+  return "bg-slate-700/60 text-slate-200 border border-slate-500/60";
+};
+
+const workerStatusClasses = (machine: Machine): string => {
+  if (!machine.online) return "bg-slate-700/60 text-slate-300 border border-slate-600/80";
+
+  const status = (machine.status ?? "").toLowerCase();
+  if (status === "busy" || status === "running") {
+    return "bg-amber-500/15 text-amber-200 border border-amber-400/30";
+  }
+  if (status === "idle") {
+    return "bg-emerald-500/15 text-emerald-200 border border-emerald-400/30";
+  }
+  return "bg-sky-500/15 text-sky-200 border border-sky-400/30";
+};
+
+const workerStatusText = (machine: Machine): string => {
+  if (!machine.online) return "Offline";
+
+  const status = (machine.status ?? "unknown").toLowerCase();
+  if (status === "idle") return "Online · Idle";
+  if (status === "busy" || status === "running") return "Online · Busy";
+  return `Online · ${machine.status ?? "Unknown"}`;
+};
+
+const shortTaskId = (id?: string): string => {
+  if (!id) return "No ID";
+  return id.length > 10 ? `${id.slice(0, 8)}...` : id;
+};
+
+const toDisplayTime = (value?: string): string => {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+};
+
+const BUTTON_PRIMARY =
+  "rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50";
+const BUTTON_SECONDARY =
+  "rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 transition hover:border-cyan-400/70 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50";
+const BUTTON_DANGER =
+  "rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40";
+const BUTTON_ACCENT_GHOST =
+  "rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-1.5 text-xs text-cyan-200 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40";
+
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<TaskCreateResponse | null>(null);
@@ -180,6 +269,13 @@ export default function Home() {
   const [helperFreeText, setHelperFreeText] = useState("");
   const [helperBusy, setHelperBusy] = useState(false);
   const [helperFeedback, setHelperFeedback] = useState<ActionFeedback | null>(null);
+  const [learningPath, setLearningPath] = useState("plain_english");
+  const [learningWorkflowName, setLearningWorkflowName] = useState("");
+  const [learningGoal, setLearningGoal] = useState("");
+  const [learningSourceText, setLearningSourceText] = useState("");
+  const [workflowDrafts, setWorkflowDrafts] = useState<WorkflowLearningDraft[]>([]);
+  const [learningBusyKey, setLearningBusyKey] = useState<string | null>(null);
+  const [learningFeedback, setLearningFeedback] = useState<ActionFeedback | null>(null);
   const [chatHistory, setChatHistory] = useState<ChatEntry[]>([
     {
       role: "assistant",
@@ -191,6 +287,10 @@ export default function Home() {
   const selectedMachine = machines.find((machine) => machine.machine_uuid === targetMachineUuid) ?? null;
 
   const activeTaskStatuses = new Set(["queued", "assigned", "running"]);
+  const activeTasks = tasks.filter((task) => activeTaskStatuses.has((task.status ?? "").toLowerCase()));
+  const failedTasks = tasks.filter((task) => (task.status ?? "").toLowerCase() === "failed");
+  const successfulTasks = tasks.filter((task) => (task.status ?? "").toLowerCase() === "completed");
+  const onlineWorkers = machines.filter((machine) => machine.online);
 
   const setFeedback = (
     setter: (feedback: ActionFeedback | null) => void,
@@ -302,9 +402,11 @@ export default function Home() {
 
     const workflowsUrl = `${apiBase}/api/workflows`;
     const auditUrl = `${apiBase}/api/brain/audit?limit=20`;
-    const [workflowsResult, auditResult] = await Promise.allSettled([
+    const draftsUrl = `${apiBase}/api/brain/workflow-learning/drafts?limit=100`;
+    const [workflowsResult, auditResult, draftsResult] = await Promise.allSettled([
       fetchJson<WorkflowRecord[]>(workflowsUrl),
       fetchJson<BrainAuditEntry[]>(auditUrl),
+      fetchJson<WorkflowLearningDraft[]>(draftsUrl),
     ]);
 
     setErrors((current) => {
@@ -328,6 +430,13 @@ export default function Home() {
         next.audit = `Audit fetch failed: ${String(auditResult.reason)}`;
       }
 
+      if (draftsResult.status === "fulfilled") {
+        setWorkflowDrafts(Array.isArray(draftsResult.value) ? draftsResult.value : []);
+        delete next.drafts;
+      } else {
+        next.drafts = `Workflow drafts fetch failed: ${String(draftsResult.reason)}`;
+      }
+
       return next;
     });
   };
@@ -348,7 +457,7 @@ export default function Home() {
     }, 7000);
 
     return () => clearInterval(interval);
-  }, [helperWorkflow]);
+  }, []);
 
   const submitTask = async (body: Record<string, unknown>) => {
     setLoading(true);
@@ -514,6 +623,7 @@ export default function Home() {
         {
           role: "assistant",
           message: lines.join("\n"),
+          suggestedNextAction: body.suggested_next_action ?? undefined,
         },
       ]);
 
@@ -704,477 +814,867 @@ export default function Home() {
     }
   };
 
+  const createWorkflowDraft = async () => {
+    if (!learningSourceText.trim() || learningBusyKey) {
+      return;
+    }
+    setLearningBusyKey("create-draft");
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const url = `${apiBase}/api/brain/workflow-learning/drafts`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          learning_path: learningPath,
+          source_text: learningSourceText,
+          workflow_name: learningWorkflowName || undefined,
+          goal: learningGoal || undefined,
+        }),
+      });
+      const body = (await response.json()) as WorkflowLearningDraft | { detail?: string };
+      if (!response.ok) {
+        throw new Error((body as { detail?: string }).detail ?? `Draft creation failed (${response.status})`);
+      }
+
+      setFeedback(
+        setLearningFeedback,
+        "success",
+        `Created draft ${(body as WorkflowLearningDraft).draft_id} for ${(body as WorkflowLearningDraft).workflow_name}`,
+      );
+      setLearningSourceText("");
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Create draft failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
+  const updateDraftStatus = async (draftId: string, status: string) => {
+    if (!draftId || learningBusyKey) {
+      return;
+    }
+    setLearningBusyKey(`status-${draftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${draftId}/status`;
+      const response = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ review_status: status }),
+      });
+      const body = (await response.json()) as WorkflowLearningDraft | { detail?: string };
+      if (!response.ok) {
+        throw new Error((body as { detail?: string }).detail ?? `Status update failed (${response.status})`);
+      }
+
+      setFeedback(setLearningFeedback, "success", `Draft ${draftId} set to ${status}.`);
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Update draft status failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
+  const testDraftGuided = async (draftId: string) => {
+    if (!draftId || learningBusyKey) {
+      return;
+    }
+    setLearningBusyKey(`test-${draftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const targetWorker = helperWorkerUuid || targetMachineUuid || undefined;
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${draftId}/test`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_machine_uuid: targetWorker,
+          guided_mode: true,
+        }),
+      });
+      const body = (await response.json()) as TaskCreateResponse | { detail?: string };
+      if (!response.ok) {
+        throw new Error((body as { detail?: string }).detail ?? `Draft test failed (${response.status})`);
+      }
+
+      setFeedback(
+        setLearningFeedback,
+        "success",
+        `Draft test queued as task ${(body as TaskCreateResponse).id ?? "unknown"}.`,
+      );
+      await loadDashboardData();
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Draft test failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
+  const publishDraft = async (draftId: string) => {
+    if (!draftId || learningBusyKey) {
+      return;
+    }
+    setLearningBusyKey(`publish-${draftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${draftId}/publish`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved_by: "bill-web-operator" }),
+      });
+      const body = (await response.json()) as WorkflowLearningDraft | { detail?: string };
+      if (!response.ok) {
+        throw new Error((body as { detail?: string }).detail ?? `Publish failed (${response.status})`);
+      }
+
+      setFeedback(setLearningFeedback, "success", `Draft ${draftId} published.`);
+      await loadDashboardData();
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Publish failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
   return (
-    <main className="min-h-screen bg-white text-slate-900 p-8">
-      <h1 className="text-3xl font-semibold mb-6">Bill Platform Dashboard</h1>
-      <div className="mb-4 flex flex-col gap-2">
-        <label htmlFor="target-machine" className="font-medium">Target Machine</label>
-        <select
-          id="target-machine"
-          value={targetMachineUuid}
-          onChange={(event) => setTargetMachineUuid(event.target.value)}
-          className="max-w-3xl border rounded px-3 py-2 bg-white"
-        >
-          <option value="">Auto assign (first available worker)</option>
-          {machines
-            .map((machine) => {
-              const machineUuid = machine.machine_uuid ?? "";
-              const machineName = machine.machine_name ?? "unknown";
-              if (!machineUuid) {
-                return null;
-              }
-
-              return (
-                <option key={machineUuid} value={machineUuid}>
-                  {machineName} ({machineUuid}){typeof machine.online === "boolean" ? ` | online=${machine.online}` : ""}
-                </option>
-              );
-            })}
-        </select>
-        <p className="text-sm text-slate-600">
-          {selectedMachine
-            ? `Selected: ${selectedMachine.machine_name ?? "unknown"} (${selectedMachine.machine_uuid ?? "-"})`
-            : "Selected: Auto assign"}
-        </p>
-      </div>
-      <div className="flex gap-3">
-        <button
-          type="button"
-          onClick={createTestTask}
-          disabled={loading}
-          className="px-4 py-2 rounded bg-slate-900 text-white disabled:opacity-50"
-        >
-          {loading ? "Creating..." : "Create Test Task"}
-        </button>
-        <button
-          type="button"
-          onClick={createScreenshotTask}
-          disabled={loading}
-          className="px-4 py-2 rounded bg-slate-700 text-white disabled:opacity-50"
-        >
-          {loading ? "Creating..." : "Create Screenshot Task"}
-        </button>
-        <button
-          type="button"
-          onClick={createVisibleWorkflowTask}
-          disabled={loading}
-          className="px-4 py-2 rounded bg-indigo-700 text-white disabled:opacity-50"
-        >
-          {loading ? "Creating..." : "Create Visible Workflow Task"}
-        </button>
-        <button
-          type="button"
-          onClick={runSmartSherpaSync}
-          disabled={loading}
-          className="px-4 py-2 rounded bg-emerald-700 text-white disabled:opacity-50"
-        >
-          {loading ? "Creating..." : "Run Smart Sherpa Sync"}
-        </button>
-      </div>
-
-      {actionError && <p className="mt-4 text-red-600">{actionError}</p>}
-
-      {response && (
-        <pre className="mt-4 p-4 rounded bg-slate-100 overflow-auto text-sm">
-          {JSON.stringify(response, null, 2)}
-        </pre>
-      )}
-
-      {errors.config && <p className="mt-4 text-red-600">{errors.config}</p>}
-
-      <section className="mt-8">
-        <h2 className="text-xl font-semibold mb-3">System Health</h2>
-        {errors.health ? (
-          <p className="text-red-600">{errors.health}</p>
-        ) : health ? (
-          <p>Status: {health.status ?? "unknown"}</p>
-        ) : (
-          <p>No health data.</p>
-        )}
-      </section>
-
-      <section className="mt-8">
-        <h2 className="text-xl font-semibold mb-3">Machines</h2>
-        {errors.machines ? (
-          <p className="text-red-600">{errors.machines}</p>
-        ) : machines.length > 0 ? (
-          <ul className="list-disc pl-5 space-y-1">
-            {machines.map((machine, index) => (
-              <li key={machine.machine_uuid ?? `machine-${index}`}>
-                {(machine.machine_name ?? "unknown")} | UUID: {(machine.machine_uuid ?? "-")} | Status: {(machine.status ?? "-")}
-                {typeof machine.online === "boolean" ? ` | Online: ${machine.online}` : ""}
-                {machine.worker_version ? ` | Version: ${machine.worker_version}` : ""}
-                {machine.execution_mode ? ` | Mode: ${machine.execution_mode}` : ""}
-                {machine.current_task_id ? ` | Current Task: ${machine.current_task_id}` : ""}
-                {machine.current_step ? ` | Current Step: ${machine.current_step}` : ""}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p>No machines found.</p>
-        )}
-
-        <div className="mt-4 rounded border border-amber-300 bg-amber-50 p-3 text-xs">
-          <p className="font-semibold text-amber-900">Temporary machine debug</p>
-          <pre className="mt-2 overflow-auto text-amber-950">
-            {JSON.stringify(
-              machines.map((machine) => ({
-                machine_uuid: machine.machine_uuid ?? null,
-                worker_name: machine.worker_name ?? machine.machine_name ?? null,
-                status: machine.status ?? null,
-              })),
-              null,
-              2
-            )}
-          </pre>
-        </div>
-      </section>
-
-      <section className="mt-8">
-        <h2 className="text-xl font-semibold mb-3">Recent Tasks</h2>
-        {taskActionFeedback && (
-          <p
-            className={
-              taskActionFeedback.kind === "success"
-                ? "mb-3 rounded border border-emerald-300 bg-emerald-50 p-2 text-emerald-800"
-                : "mb-3 rounded border border-red-300 bg-red-50 p-2 text-red-700"
-            }
-          >
-            {taskActionFeedback.message} ({taskActionFeedback.timestamp})
-          </p>
-        )}
-        {errors.tasks ? (
-          <p className="text-red-600">{errors.tasks}</p>
-        ) : tasks.length > 0 ? (
-          <ul className="space-y-2">
-            {tasks.map((task, index) => (
-              <li key={task.id ?? `task-${index}`}>
-                <div className="border rounded p-2">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedTask(task)}
-                    className="w-full text-left hover:bg-slate-50"
-                  >
-                    {(task.id ?? "unknown-id")} | Status: {(task.status ?? "-")} | Type: {(task.payload?.task_type ?? "-")}
-                    {task.assigned_machine_uuid ? ` | Machine: ${task.assigned_machine_uuid}` : ""}
-                    {task.error ? ` | Error: ${task.error}` : ""}
-                  </button>
-
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      disabled={!task.id || !activeTaskStatuses.has((task.status ?? "").toLowerCase()) || taskActionBusyKey !== null}
-                      onClick={() => void cancelTask(task.id)}
-                      className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900 disabled:opacity-50"
-                    >
-                      {taskActionBusyKey === `cancel-${task.id}` ? "Canceling..." : "Cancel active task"}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!task.id || (task.status ?? "").toLowerCase() !== "failed" || taskActionBusyKey !== null}
-                      onClick={() => void retryFailedTask(task)}
-                      className="rounded border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-900 disabled:opacity-50"
-                    >
-                      {taskActionBusyKey === `retry-${task.id}` ? "Retrying..." : "Retry failed task"}
-                    </button>
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p>No tasks found.</p>
-        )}
-      </section>
-
-      <section className="mt-8">
-        <h2 className="text-xl font-semibold mb-3">Task Result Panel</h2>
-        {selectedTask ? (
-          <div className="border rounded p-3 bg-slate-50">
-            <p><strong>Task ID:</strong> {selectedTask.id ?? "-"}</p>
-            <p><strong>Status:</strong> {selectedTask.status ?? "-"}</p>
-            <p><strong>Type:</strong> {selectedTask.payload?.task_type ?? "-"}</p>
-
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={!selectedTask.id || !activeTaskStatuses.has((selectedTask.status ?? "").toLowerCase()) || taskActionBusyKey !== null}
-                onClick={() => void cancelTask(selectedTask.id)}
-                className="rounded border border-amber-300 bg-amber-50 px-3 py-1 text-sm text-amber-900 disabled:opacity-50"
-              >
-                {taskActionBusyKey === `cancel-${selectedTask.id}` ? "Canceling..." : "Cancel active task"}
-              </button>
-              <button
-                type="button"
-                disabled={!selectedTask.id || (selectedTask.status ?? "").toLowerCase() !== "failed" || taskActionBusyKey !== null}
-                onClick={() => void retryFailedTask(selectedTask)}
-                className="rounded border border-blue-300 bg-blue-50 px-3 py-1 text-sm text-blue-900 disabled:opacity-50"
-              >
-                {taskActionBusyKey === `retry-${selectedTask.id}` ? "Retrying..." : "Retry failed task"}
-              </button>
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#13324a_0%,_#090d14_45%,_#070a11_100%)] text-slate-100">
+      <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-10">
+        <header className="mb-6 rounded-2xl border border-slate-800/90 bg-slate-900/75 px-5 py-5 shadow-[0_22px_45px_-30px_rgba(8,145,178,0.7)] backdrop-blur">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Bill Operations Control</p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight">AI Workflow Command Center</h1>
+              <p className="mt-2 text-sm text-slate-400">
+                Calm, real-time control of workers, orchestration, and task execution.
+              </p>
             </div>
 
-            <div className="mt-3">
-              <p className="font-semibold">Downloaded Files</p>
-              {(selectedTask.result_json?.downloads ?? []).length > 0 ? (
-                <ul className="list-disc pl-5 space-y-1 mt-1">
-                  {(selectedTask.result_json?.downloads ?? []).map((download, index) => (
-                    <li key={`${selectedTask.id ?? "task"}-download-${index}`}>
-                      Filename: {download.filename ?? "-"} | Path: {download.local_path ?? "-"}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-1">No downloads recorded for this task.</p>
-              )}
-            </div>
-
-            <div className="mt-3">
-              <p className="font-semibold">Result JSON</p>
-              <pre className="mt-1 p-2 rounded bg-white overflow-auto text-sm border">
-                {JSON.stringify(selectedTask.result_json ?? {}, null, 2)}
-              </pre>
+            <div className="grid w-full gap-3 sm:grid-cols-2 lg:w-[540px]">
+              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-4 py-3 shadow-[0_10px_24px_-18px_rgba(2,132,199,0.6)]">
+                <p className="text-xs text-slate-400">Workers Online</p>
+                <p className="mt-1 text-2xl font-semibold text-cyan-300">{onlineWorkers.length}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-4 py-3 shadow-[0_10px_24px_-18px_rgba(2,132,199,0.6)]">
+                <p className="text-xs text-slate-400">Active Tasks</p>
+                <p className="mt-1 text-2xl font-semibold text-cyan-300">{activeTasks.length}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-4 py-3 shadow-[0_10px_24px_-18px_rgba(244,63,94,0.45)]">
+                <p className="text-xs text-slate-400">Failed Tasks</p>
+                <p className="mt-1 text-2xl font-semibold text-rose-300">{failedTasks.length}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-4 py-3 shadow-[0_10px_24px_-18px_rgba(16,185,129,0.45)]">
+                <p className="text-xs text-slate-400">Recent Successful Runs</p>
+                <p className="mt-1 text-2xl font-semibold text-emerald-300">{successfulTasks.length}</p>
+              </div>
             </div>
           </div>
-        ) : (
-          <p>No task selected.</p>
+        </header>
+
+        {errors.config && (
+          <div className="mb-6 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            {errors.config}
+          </div>
         )}
-      </section>
 
-      <section className="mt-8 border rounded p-4 bg-slate-50">
-        <h2 className="text-xl font-semibold mb-3">Command Helper</h2>
-        <p className="text-sm text-slate-600 mb-3">
-          Guided workflow command builder with parameter inputs and optional free-text fallback.
-        </p>
+        <section className="grid gap-6 lg:grid-cols-12">
+          <div className="space-y-6 lg:col-span-4">
+            <section className="rounded-2xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-900/70 p-5 shadow-[0_24px_45px_-30px_rgba(8,145,178,0.8)]">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Brain Command Center</h2>
+                  <p className="text-xs text-slate-400">Natural language control for Bill orchestration.</p>
+                </div>
+                <span className="rounded-full border border-cyan-400/40 bg-cyan-400/10 px-2.5 py-1 text-xs text-cyan-200">
+                  Live
+                </span>
+              </div>
 
-        {errors.workflows && <p className="mb-2 text-red-600">{errors.workflows}</p>}
+              <div className="rounded-xl border border-cyan-500/20 bg-slate-950/80 p-3 shadow-inner shadow-cyan-950/40">
+                <textarea
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void submitBrainCommand();
+                    }
+                  }}
+                  rows={4}
+                  placeholder="Tell Bill what to do. Example: Run marketplace workflow on the best idle worker with max clients 25"
+                  className="w-full resize-none rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-sm leading-relaxed text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                />
+                <div className="mt-3 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void submitBrainCommand()}
+                    disabled={chatLoading || !chatInput.trim()}
+                    className={BUTTON_PRIMARY}
+                  >
+                    {chatLoading ? "Thinking..." : "Send Command"}
+                  </button>
+                </div>
+              </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <label className="text-sm">
-            <span className="mb-1 block font-medium">Workflow</span>
-            <select
-              value={helperWorkflow}
-              onChange={(event) => setHelperWorkflow(event.target.value)}
-              className="w-full border rounded px-3 py-2 bg-white"
-            >
-              {workflows.map((workflow) => (
-                <option key={workflow.workflow_name} value={workflow.workflow_name}>
-                  {workflow.workflow_name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="text-sm">
-            <span className="mb-1 block font-medium">Worker Override (optional)</span>
-            <select
-              value={helperWorkerUuid}
-              onChange={(event) => setHelperWorkerUuid(event.target.value)}
-              className="w-full border rounded px-3 py-2 bg-white"
-            >
-              <option value="">Use current target / auto</option>
-              {machines
-                .filter((machine) => machine.machine_uuid)
-                .map((machine) => (
-                  <option key={machine.machine_uuid} value={machine.machine_uuid}>
-                    {machine.machine_name ?? "unknown"} ({machine.machine_uuid})
-                  </option>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {[
+                  "Which worker is free?",
+                  "What is running now?",
+                  "Show online workers",
+                  "Retry last failed task",
+                ].map((example) => (
+                  <button
+                    key={example}
+                    type="button"
+                    onClick={() => setChatInput(example)}
+                    className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400/60 hover:bg-cyan-500/10 hover:text-cyan-200"
+                  >
+                    {example}
+                  </button>
                 ))}
-            </select>
-          </label>
+              </div>
 
-          <label className="text-sm">
-            <span className="mb-1 block font-medium">Client Name</span>
-            <input
-              type="text"
-              value={helperClientName}
-              onChange={(event) => setHelperClientName(event.target.value)}
-              className="w-full border rounded px-3 py-2 bg-white"
-            />
-          </label>
+              <div className="mt-4 max-h-[520px] space-y-3 overflow-auto pr-1">
+                {chatHistory.map((entry, index) => (
+                  <div
+                    key={`chat-${index}`}
+                    className={
+                      entry.role === "user"
+                        ? "ml-8 rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3"
+                        : "mr-8 rounded-xl border border-slate-700 bg-slate-900/90 p-3"
+                    }
+                  >
+                    <p className="mb-2 text-[11px] uppercase tracking-wider text-slate-400">
+                      {entry.role === "user" ? "You" : "Bill"}
+                    </p>
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">{entry.message}</p>
+                    {entry.suggestedNextAction && (
+                      <div className="mt-3 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+                        Suggested next action: {entry.suggestedNextAction}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
 
-          <label className="text-sm">
-            <span className="mb-1 block font-medium">Household Name</span>
-            <input
-              type="text"
-              value={helperHouseholdName}
-              onChange={(event) => setHelperHouseholdName(event.target.value)}
-              className="w-full border rounded px-3 py-2 bg-white"
-            />
-          </label>
+          <div className="space-y-6 lg:col-span-5">
+            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Task Operations</h2>
+                  <p className="text-xs text-slate-400">Run workflows, monitor progress, and recover quickly.</p>
+                </div>
 
-          <label className="text-sm">
-            <span className="mb-1 block font-medium">Max Clients</span>
-            <input
-              type="number"
-              min={1}
-              value={helperMaxClients}
-              onChange={(event) => setHelperMaxClients(event.target.value)}
-              className="w-full border rounded px-3 py-2 bg-white"
-            />
-          </label>
+                <div className="min-w-[240px]">
+                  <label htmlFor="target-machine" className="mb-1 block text-xs text-slate-400">Target Worker</label>
+                  <select
+                    id="target-machine"
+                    value={targetMachineUuid}
+                    onChange={(event) => setTargetMachineUuid(event.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                  >
+                    <option value="">Auto assign best available</option>
+                    {machines.map((machine) => {
+                      if (!machine.machine_uuid) return null;
+                      return (
+                        <option key={machine.machine_uuid} value={machine.machine_uuid}>
+                          {machine.machine_name ?? "unknown"} · {workerStatusText(machine)}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              </div>
 
-          <label className="text-sm">
-            <span className="mb-1 block font-medium">Max Pages</span>
-            <input
-              type="number"
-              min={1}
-              value={helperMaxPages}
-              onChange={(event) => setHelperMaxPages(event.target.value)}
-              className="w-full border rounded px-3 py-2 bg-white"
-            />
-          </label>
-        </div>
+              <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                <button
+                  type="button"
+                  onClick={createTestTask}
+                  disabled={loading}
+                  className={BUTTON_SECONDARY}
+                >
+                  {loading ? "Creating..." : "Create Test Task"}
+                </button>
+                <button
+                  type="button"
+                  onClick={createScreenshotTask}
+                  disabled={loading}
+                  className={BUTTON_SECONDARY}
+                >
+                  Screenshot Task
+                </button>
+                <button
+                  type="button"
+                  onClick={createVisibleWorkflowTask}
+                  disabled={loading}
+                  className={BUTTON_SECONDARY}
+                >
+                  Visible Workflow
+                </button>
+                <button
+                  type="button"
+                  onClick={runSmartSherpaSync}
+                  disabled={loading}
+                  className={BUTTON_PRIMARY}
+                >
+                  Run Smart Sherpa Sync
+                </button>
+              </div>
 
-        <label className="mt-3 flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={helperRetryFailedOnly}
-            onChange={(event) => setHelperRetryFailedOnly(event.target.checked)}
-          />
-          Retry failed only
-        </label>
+              {taskActionFeedback && (
+                <div
+                  className={
+                    taskActionFeedback.kind === "success"
+                      ? "mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200"
+                      : "mb-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
+                  }
+                >
+                  {taskActionFeedback.message} · {taskActionFeedback.timestamp}
+                </div>
+              )}
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => void runGuidedCommand()}
-            disabled={helperBusy || !helperWorkflow}
-            className="rounded bg-slate-900 px-4 py-2 text-white disabled:opacity-50"
-          >
-            {helperBusy ? "Submitting..." : "Run Guided Command"}
-          </button>
-        </div>
+              {actionError && (
+                <div className="mb-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+                  {actionError}
+                </div>
+              )}
 
-        <div className="mt-4 border-t pt-3">
-          <label className="text-sm">
-            <span className="mb-1 block font-medium">Free-text fallback (optional)</span>
-            <textarea
-              value={helperFreeText}
-              onChange={(event) => setHelperFreeText(event.target.value)}
-              rows={3}
-              placeholder="Example: run marketplace workflow on worker A max clients 25"
-              className="w-full border rounded px-3 py-2 bg-white"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() => void runFreeTextCommand()}
-            disabled={helperBusy || !helperFreeText.trim()}
-            className="mt-2 rounded border border-slate-300 bg-white px-4 py-2 text-slate-900 disabled:opacity-50"
-          >
-            Submit Free-Text Command
-          </button>
-        </div>
+              {errors.tasks ? (
+                <p className="text-sm text-rose-300">{errors.tasks}</p>
+              ) : tasks.length === 0 ? (
+                <p className="text-sm text-slate-400">No tasks yet. Start by running a command or workflow.</p>
+              ) : (
+                <div className="space-y-3">
+                  {tasks.map((task, index) => {
+                    const status = (task.status ?? "").toLowerCase();
+                    const canCancel = !!task.id && activeTaskStatuses.has(status);
+                    const canRetry = !!task.id && status === "failed";
+                    const isSelected = selectedTask?.id === task.id;
 
-        {helperFeedback && (
-          <p
-            className={
-              helperFeedback.kind === "success"
-                ? "mt-3 rounded border border-emerald-300 bg-emerald-50 p-2 text-emerald-800"
-                : "mt-3 rounded border border-red-300 bg-red-50 p-2 text-red-700"
-            }
-          >
-            {helperFeedback.message} ({helperFeedback.timestamp})
-          </p>
-        )}
-      </section>
+                    return (
+                      <div
+                        key={task.id ?? `task-${index}`}
+                        className={
+                          isSelected
+                            ? "rounded-xl border border-cyan-400/50 bg-slate-900/90 p-4"
+                            : "rounded-xl border border-slate-800 bg-slate-900/60 p-4"
+                        }
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTask(task)}
+                          className="w-full text-left"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-semibold">{task.payload?.task_type ?? "General Task"}</p>
+                              <p className="mt-1 text-xs text-slate-400">
+                                Task {shortTaskId(task.id)} · {toDisplayTime(task.created_at)}
+                              </p>
+                            </div>
+                            <span className={`rounded-full px-2.5 py-1 text-xs ${taskStatusClasses(task.status)}`}>
+                              {taskStatusLabel(task.status)}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm text-slate-300">
+                            {task.error
+                              ? `This run failed: ${task.error}`
+                              : status === "completed"
+                                ? "Completed successfully."
+                                : status === "running"
+                                  ? "Currently executing on a worker."
+                                  : status === "queued"
+                                    ? "Waiting for an available worker."
+                                    : status === "assigned"
+                                      ? "Assigned and waiting to begin."
+                                      : "Awaiting status update."}
+                          </p>
+                          {task.assigned_machine_uuid && (
+                            <p className="mt-1 text-xs text-slate-500">Worker: {task.assigned_machine_uuid}</p>
+                          )}
+                        </button>
 
-      <section className="mt-8 border rounded p-4 bg-slate-50">
-        <h2 className="text-xl font-semibold mb-3">Orchestration Brain</h2>
-        <p className="text-sm text-slate-600 mb-3">
-          Natural language command interface for workflow selection, worker selection, and status reasoning.
-        </p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            disabled={!canCancel || taskActionBusyKey !== null}
+                            onClick={() => void cancelTask(task.id)}
+                            className={BUTTON_DANGER}
+                          >
+                            {taskActionBusyKey === `cancel-${task.id}` ? "Canceling..." : "Cancel Task"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!canRetry || taskActionBusyKey !== null}
+                            onClick={() => void retryFailedTask(task)}
+                            className={BUTTON_ACCENT_GHOST}
+                          >
+                            {taskActionBusyKey === `retry-${task.id}` ? "Retrying..." : "Retry Task"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
-        <div className="flex gap-2 mb-3">
-          <input
-            type="text"
-            value={chatInput}
-            onChange={(event) => setChatInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                void submitBrainCommand();
-              }
-            }}
-            placeholder="Type a command, e.g. 'Which worker is free?'"
-            className="flex-1 border rounded px-3 py-2 bg-white"
-          />
-          <button
-            type="button"
-            onClick={() => void submitBrainCommand()}
-            disabled={chatLoading}
-            className="px-4 py-2 rounded bg-slate-900 text-white disabled:opacity-50"
-          >
-            {chatLoading ? "Thinking..." : "Send"}
-          </button>
-        </div>
+              {selectedTask && (
+                <details className="mt-4 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+                  <summary className="cursor-pointer text-sm font-medium text-slate-200">
+                    Selected task details (expand technical details)
+                  </summary>
+                  <div className="mt-3 space-y-3 text-xs text-slate-300">
+                    <p>Task ID: {selectedTask.id ?? "-"}</p>
+                    <p>Status: {taskStatusLabel(selectedTask.status)}</p>
+                    <p>Type: {selectedTask.payload?.task_type ?? "-"}</p>
 
-        <div className="flex flex-wrap gap-2 mb-3 text-xs">
-          {[
-            "Which worker is free?",
-            "What failed last?",
-            "What is running now?",
-            "List workflows",
-            "Refresh HealthSherpa syncs",
-            "Run Marketplace workflow on Worker A",
-            "Retry last failed task",
-          ].map((example) => (
-            <button
-              key={example}
-              type="button"
-              onClick={() => setChatInput(example)}
-              className="px-2 py-1 rounded border bg-white hover:bg-slate-100"
-            >
-              {example}
-            </button>
-          ))}
-        </div>
+                    <div>
+                      <p className="mb-1 font-semibold text-slate-200">Downloaded files</p>
+                      {(selectedTask.result_json?.downloads ?? []).length > 0 ? (
+                        <ul className="list-disc pl-5">
+                          {(selectedTask.result_json?.downloads ?? []).map((download, index) => (
+                            <li key={`${selectedTask.id ?? "task"}-download-${index}`}>
+                              {download.filename ?? "-"} · {download.local_path ?? "-"}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-slate-400">No downloaded files recorded.</p>
+                      )}
+                    </div>
 
-        <div className="max-h-72 overflow-auto border rounded bg-white p-3 space-y-2">
-          {chatHistory.map((entry, index) => (
-            <div key={`chat-${index}`} className={entry.role === "user" ? "text-right" : "text-left"}>
-              <p className="text-xs font-semibold text-slate-500 mb-1">{entry.role === "user" ? "You" : "Bill"}</p>
-              <pre className="whitespace-pre-wrap text-sm bg-slate-100 rounded p-2 inline-block text-left">
-                {entry.message}
-              </pre>
-            </div>
-          ))}
-        </div>
-      </section>
+                    <pre className="overflow-auto rounded-lg border border-slate-800 bg-slate-900 p-3 text-[11px] text-slate-300">
+                      {JSON.stringify(selectedTask.result_json ?? {}, null, 2)}
+                    </pre>
+                  </div>
+                </details>
+              )}
 
-      <section className="mt-8 border rounded p-4 bg-slate-50">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-xl font-semibold">Brain Audit</h2>
-          <button
-            type="button"
-            onClick={() => void loadBrainPanels()}
-            className="rounded border bg-white px-3 py-1 text-sm"
-          >
-            Refresh
-          </button>
-        </div>
+              {response && (
+                <details className="mt-4 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+                  <summary className="cursor-pointer text-sm font-medium text-slate-200">
+                    Last API response
+                  </summary>
+                  <pre className="mt-3 overflow-auto rounded-lg border border-slate-800 bg-slate-900 p-3 text-[11px] text-slate-300">
+                    {JSON.stringify(response, null, 2)}
+                  </pre>
+                </details>
+              )}
+            </section>
 
-        {errors.audit ? (
-          <p className="text-red-600">{errors.audit}</p>
-        ) : auditEntries.length === 0 ? (
-          <p>No audit entries yet.</p>
-        ) : (
-          <ul className="space-y-2">
-            {auditEntries.map((entry, index) => (
-              <li key={`audit-${index}`} className="rounded border bg-white p-3 text-sm">
-                <p><strong>Time:</strong> {entry.timestamp ?? "-"}</p>
-                <p><strong>Original:</strong> {entry.original_user_text ?? "-"}</p>
-                <p><strong>Intent:</strong> {entry.interpreted_intent ?? "-"}</p>
-                <p><strong>Workflow:</strong> {entry.selected_workflow ?? "-"}</p>
-                <p><strong>Worker:</strong> {entry.selected_worker ?? "-"}</p>
-                <p><strong>Task ID:</strong> {entry.queued_task_id ?? "-"}</p>
-                <p><strong>Outcome:</strong> {entry.after_execution ?? "-"}</p>
-                <p><strong>Explanation:</strong> {entry.before_execution ?? "-"}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
+              <div className="mb-3">
+                <h2 className="text-lg font-semibold">Workflow Command Builder</h2>
+                <p className="text-xs text-slate-400">Structured inputs with free-text fallback.</p>
+              </div>
+
+              {errors.workflows && <p className="mb-3 text-sm text-rose-300">{errors.workflows}</p>}
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs text-slate-400">
+                  Workflow
+                  <select
+                    value={helperWorkflow}
+                    onChange={(event) => setHelperWorkflow(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                  >
+                    {workflows.map((workflow) => (
+                      <option key={workflow.workflow_name} value={workflow.workflow_name}>
+                        {workflow.workflow_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="text-xs text-slate-400">
+                  Worker override
+                  <select
+                    value={helperWorkerUuid}
+                    onChange={(event) => setHelperWorkerUuid(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                  >
+                    <option value="">Use selected / auto</option>
+                    {machines
+                      .filter((machine) => machine.machine_uuid)
+                      .map((machine) => (
+                        <option key={machine.machine_uuid} value={machine.machine_uuid}>
+                          {machine.machine_name ?? "unknown"} · {workerStatusText(machine)}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+
+                <label className="text-xs text-slate-400">
+                  Client name
+                  <input
+                    type="text"
+                    value={helperClientName}
+                    onChange={(event) => setHelperClientName(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                  />
+                </label>
+
+                <label className="text-xs text-slate-400">
+                  Household name
+                  <input
+                    type="text"
+                    value={helperHouseholdName}
+                    onChange={(event) => setHelperHouseholdName(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                  />
+                </label>
+
+                <label className="text-xs text-slate-400">
+                  Max clients
+                  <input
+                    type="number"
+                    min={1}
+                    value={helperMaxClients}
+                    onChange={(event) => setHelperMaxClients(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                  />
+                </label>
+
+                <label className="text-xs text-slate-400">
+                  Max pages
+                  <input
+                    type="number"
+                    min={1}
+                    value={helperMaxPages}
+                    onChange={(event) => setHelperMaxPages(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                  />
+                </label>
+              </div>
+
+              <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={helperRetryFailedOnly}
+                  onChange={(event) => setHelperRetryFailedOnly(event.target.checked)}
+                  className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                />
+                Retry failed items only
+              </label>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void runGuidedCommand()}
+                  disabled={helperBusy || !helperWorkflow}
+                  className={BUTTON_PRIMARY}
+                >
+                  {helperBusy ? "Submitting..." : "Run Guided Command"}
+                </button>
+              </div>
+
+              <div className="mt-4 border-t border-slate-800 pt-4">
+                <label className="text-xs text-slate-400">
+                  Free-text fallback
+                  <textarea
+                    value={helperFreeText}
+                    onChange={(event) => setHelperFreeText(event.target.value)}
+                    rows={3}
+                    placeholder="Example: run marketplace workflow on worker A max clients 25"
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void runFreeTextCommand()}
+                  disabled={helperBusy || !helperFreeText.trim()}
+                  className={BUTTON_SECONDARY}
+                >
+                  Submit Free-text Command
+                </button>
+              </div>
+
+              {helperFeedback && (
+                <div
+                  className={
+                    helperFeedback.kind === "success"
+                      ? "mt-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200"
+                      : "mt-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
+                  }
+                >
+                  {helperFeedback.message} · {helperFeedback.timestamp}
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-2xl border border-amber-500/30 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
+              <div className="mb-3">
+                <h2 className="text-lg font-semibold">Learn New Workflow</h2>
+                <p className="text-xs text-slate-400">
+                  Trainer mode: create drafts from plain English, demonstrations, or SOP text. Publish only after review.
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs text-slate-400">
+                  Learning path
+                  <select
+                    value={learningPath}
+                    onChange={(event) => setLearningPath(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
+                  >
+                    <option value="plain_english">Describe workflow</option>
+                    <option value="demonstration">Demonstration / observed run</option>
+                    <option value="sop_checklist">Import SOP / checklist</option>
+                  </select>
+                </label>
+
+                <label className="text-xs text-slate-400">
+                  Workflow name (optional)
+                  <input
+                    type="text"
+                    value={learningWorkflowName}
+                    onChange={(event) => setLearningWorkflowName(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
+                  />
+                </label>
+              </div>
+
+              <label className="mt-3 block text-xs text-slate-400">
+                Goal (optional)
+                <input
+                  type="text"
+                  value={learningGoal}
+                  onChange={(event) => setLearningGoal(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
+                />
+              </label>
+
+              <label className="mt-3 block text-xs text-slate-400">
+                Source text
+                <textarea
+                  rows={6}
+                  value={learningSourceText}
+                  onChange={(event) => setLearningSourceText(event.target.value)}
+                  placeholder="Describe steps line-by-line, paste checklist, or summarize observed run."
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
+                />
+              </label>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void createWorkflowDraft()}
+                  disabled={!learningSourceText.trim() || learningBusyKey !== null}
+                  className={BUTTON_PRIMARY}
+                >
+                  {learningBusyKey === "create-draft" ? "Creating..." : "Create Draft"}
+                </button>
+              </div>
+
+              {errors.drafts && <p className="mt-3 text-sm text-rose-300">{errors.drafts}</p>}
+
+              {learningFeedback && (
+                <div
+                  className={
+                    learningFeedback.kind === "success"
+                      ? "mt-3 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200"
+                      : "mt-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
+                  }
+                >
+                  {learningFeedback.message} · {learningFeedback.timestamp}
+                </div>
+              )}
+
+              <div className="mt-4 max-h-[360px] space-y-3 overflow-auto pr-1">
+                {workflowDrafts.length === 0 ? (
+                  <p className="text-sm text-slate-400">No workflow drafts yet.</p>
+                ) : (
+                  workflowDrafts.map((draft) => (
+                    <article key={draft.draft_id} className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                      <p className="text-sm font-semibold text-slate-100">{draft.workflow_name}</p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        Path: {draft.learning_path} · Status: {draft.review_status} · Updated: {toDisplayTime(draft.updated_at)}
+                      </p>
+                      <p className="mt-2 text-xs text-slate-300">{draft.goal}</p>
+                      <p className="mt-2 text-xs text-slate-500">Steps: {draft.steps.length}</p>
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void updateDraftStatus(draft.draft_id, "in_review")}
+                          disabled={learningBusyKey !== null}
+                          className={BUTTON_SECONDARY}
+                        >
+                          In Review
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void updateDraftStatus(draft.draft_id, "approved")}
+                          disabled={learningBusyKey !== null}
+                          className={BUTTON_SECONDARY}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void testDraftGuided(draft.draft_id)}
+                          disabled={learningBusyKey !== null}
+                          className={BUTTON_ACCENT_GHOST}
+                        >
+                          {learningBusyKey === `test-${draft.draft_id}` ? "Testing..." : "Guided Test"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void publishDraft(draft.draft_id)}
+                          disabled={learningBusyKey !== null || draft.review_status !== "approved"}
+                          className={BUTTON_PRIMARY}
+                        >
+                          {learningBusyKey === `publish-${draft.draft_id}` ? "Publishing..." : "Publish"}
+                        </button>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+
+          <div className="space-y-6 lg:col-span-3">
+            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
+              <h2 className="text-lg font-semibold">Workers</h2>
+              <p className="mb-3 text-xs text-slate-400">Availability and assignment at a glance.</p>
+
+              {errors.machines ? (
+                <p className="text-sm text-rose-300">{errors.machines}</p>
+              ) : machines.length === 0 ? (
+                <p className="text-sm text-slate-400">No workers detected.</p>
+              ) : (
+                <div className="space-y-3">
+                  {machines.map((machine, index) => {
+                    const isSelected = !!machine.machine_uuid && machine.machine_uuid === targetMachineUuid;
+                    return (
+                      <div
+                        key={machine.machine_uuid ?? `machine-${index}`}
+                        className={
+                          isSelected
+                            ? "rounded-xl border border-cyan-400/50 bg-slate-900 p-3"
+                            : "rounded-xl border border-slate-800 bg-slate-900/60 p-3"
+                        }
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-medium">{machine.machine_name ?? machine.worker_name ?? "Unknown worker"}</p>
+                            <p className="mt-1 text-[11px] text-slate-500">{shortTaskId(machine.machine_uuid)}</p>
+                          </div>
+                          <span className={`rounded-full px-2.5 py-1 text-[11px] ${workerStatusClasses(machine)}`}>
+                            {workerStatusText(machine)}
+                          </span>
+                        </div>
+
+                        {machine.current_task_id ? (
+                          <p className="mt-2 text-xs text-slate-400">Current task: {shortTaskId(machine.current_task_id)}</p>
+                        ) : (
+                          <p className="mt-2 text-xs text-slate-500">No active task assigned.</p>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => setTargetMachineUuid(machine.machine_uuid ?? "")}
+                          disabled={!machine.machine_uuid}
+                          className="mt-3 w-full rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-cyan-400/70 hover:bg-cyan-500/10 hover:text-cyan-200 disabled:opacity-40"
+                        >
+                          {isSelected ? "Selected for assignment" : "Select worker"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-400">
+                Health: {errors.health ? "Unavailable" : health?.status ?? "Unknown"}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Audit Trail</h2>
+                  <p className="text-xs text-slate-400">Recent command history and outcomes.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadBrainPanels()}
+                  className={BUTTON_SECONDARY}
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {errors.audit ? (
+                <p className="text-sm text-rose-300">{errors.audit}</p>
+              ) : auditEntries.length === 0 ? (
+                <p className="text-sm text-slate-400">No command history yet.</p>
+              ) : (
+                <div className="max-h-[520px] space-y-2 overflow-auto pr-1">
+                  {auditEntries.map((entry, index) => (
+                    <article key={`audit-${index}`} className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                      <p className="text-xs text-slate-500">{toDisplayTime(entry.timestamp)}</p>
+                      <p className="mt-1 text-sm text-slate-200">{entry.original_user_text ?? "-"}</p>
+                      <p className="mt-2 text-xs text-slate-400">
+                        Intent: <span className="text-slate-300">{entry.interpreted_intent ?? "-"}</span>
+                        {" · "}
+                        Workflow: <span className="text-slate-300">{entry.selected_workflow ?? "-"}</span>
+                      </p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        Worker: <span className="text-slate-300">{entry.selected_worker ?? "-"}</span>
+                        {" · "}
+                        Task: <span className="text-slate-300">{entry.queued_task_id ?? "-"}</span>
+                      </p>
+                      <p className="mt-2 text-sm text-slate-300">{entry.after_execution ?? "No outcome recorded."}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        </section>
+      </div>
     </main>
   );
 }
