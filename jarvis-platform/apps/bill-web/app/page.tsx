@@ -52,6 +52,7 @@ type EndpointErrors = {
   tasks?: string;
   workflows?: string;
   audit?: string;
+  drafts?: string;
   config?: string;
 };
 
@@ -70,7 +71,31 @@ type BrainCommandResponse = {
   selected_worker_name?: string | null;
   suggested_next_action?: string | null;
   retry_recommended?: boolean;
+  requires_confirmation?: boolean;
+  pending_interaction_id?: string | null;
+  pending_questions?: string[];
+  live_reasoning?: string[];
   task?: BrainTaskRef | null;
+};
+
+type WorkflowLearningDraft = {
+  draft_id: string;
+  created_at: string;
+  updated_at: string;
+  learning_path: string;
+  workflow_name: string;
+  goal: string;
+  description: string;
+  required_inputs: string[];
+  required_session_state: string[];
+  safe_for_unattended: boolean;
+  steps: Array<Record<string, unknown>>;
+  validation_rules: string[];
+  fallback_strategies: string[];
+  common_failures: string[];
+  review_status: string;
+  reviewer_notes?: string | null;
+  published_workflow_name?: string | null;
 };
 
 type ChatEntry = {
@@ -244,6 +269,13 @@ export default function Home() {
   const [helperFreeText, setHelperFreeText] = useState("");
   const [helperBusy, setHelperBusy] = useState(false);
   const [helperFeedback, setHelperFeedback] = useState<ActionFeedback | null>(null);
+  const [learningPath, setLearningPath] = useState("plain_english");
+  const [learningWorkflowName, setLearningWorkflowName] = useState("");
+  const [learningGoal, setLearningGoal] = useState("");
+  const [learningSourceText, setLearningSourceText] = useState("");
+  const [workflowDrafts, setWorkflowDrafts] = useState<WorkflowLearningDraft[]>([]);
+  const [learningBusyKey, setLearningBusyKey] = useState<string | null>(null);
+  const [learningFeedback, setLearningFeedback] = useState<ActionFeedback | null>(null);
   const [chatHistory, setChatHistory] = useState<ChatEntry[]>([
     {
       role: "assistant",
@@ -370,9 +402,11 @@ export default function Home() {
 
     const workflowsUrl = `${apiBase}/api/workflows`;
     const auditUrl = `${apiBase}/api/brain/audit?limit=20`;
-    const [workflowsResult, auditResult] = await Promise.allSettled([
+    const draftsUrl = `${apiBase}/api/brain/workflow-learning/drafts?limit=100`;
+    const [workflowsResult, auditResult, draftsResult] = await Promise.allSettled([
       fetchJson<WorkflowRecord[]>(workflowsUrl),
       fetchJson<BrainAuditEntry[]>(auditUrl),
+      fetchJson<WorkflowLearningDraft[]>(draftsUrl),
     ]);
 
     setErrors((current) => {
@@ -394,6 +428,13 @@ export default function Home() {
         delete next.audit;
       } else {
         next.audit = `Audit fetch failed: ${String(auditResult.reason)}`;
+      }
+
+      if (draftsResult.status === "fulfilled") {
+        setWorkflowDrafts(Array.isArray(draftsResult.value) ? draftsResult.value : []);
+        delete next.drafts;
+      } else {
+        next.drafts = `Workflow drafts fetch failed: ${String(draftsResult.reason)}`;
       }
 
       return next;
@@ -770,6 +811,166 @@ export default function Home() {
       );
     } finally {
       setHelperBusy(false);
+    }
+  };
+
+  const createWorkflowDraft = async () => {
+    if (!learningSourceText.trim() || learningBusyKey) {
+      return;
+    }
+    setLearningBusyKey("create-draft");
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const url = `${apiBase}/api/brain/workflow-learning/drafts`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          learning_path: learningPath,
+          source_text: learningSourceText,
+          workflow_name: learningWorkflowName || undefined,
+          goal: learningGoal || undefined,
+        }),
+      });
+      const body = (await response.json()) as WorkflowLearningDraft | { detail?: string };
+      if (!response.ok) {
+        throw new Error((body as { detail?: string }).detail ?? `Draft creation failed (${response.status})`);
+      }
+
+      setFeedback(
+        setLearningFeedback,
+        "success",
+        `Created draft ${(body as WorkflowLearningDraft).draft_id} for ${(body as WorkflowLearningDraft).workflow_name}`,
+      );
+      setLearningSourceText("");
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Create draft failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
+  const updateDraftStatus = async (draftId: string, status: string) => {
+    if (!draftId || learningBusyKey) {
+      return;
+    }
+    setLearningBusyKey(`status-${draftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${draftId}/status`;
+      const response = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ review_status: status }),
+      });
+      const body = (await response.json()) as WorkflowLearningDraft | { detail?: string };
+      if (!response.ok) {
+        throw new Error((body as { detail?: string }).detail ?? `Status update failed (${response.status})`);
+      }
+
+      setFeedback(setLearningFeedback, "success", `Draft ${draftId} set to ${status}.`);
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Update draft status failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
+  const testDraftGuided = async (draftId: string) => {
+    if (!draftId || learningBusyKey) {
+      return;
+    }
+    setLearningBusyKey(`test-${draftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const targetWorker = helperWorkerUuid || targetMachineUuid || undefined;
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${draftId}/test`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_machine_uuid: targetWorker,
+          guided_mode: true,
+        }),
+      });
+      const body = (await response.json()) as TaskCreateResponse | { detail?: string };
+      if (!response.ok) {
+        throw new Error((body as { detail?: string }).detail ?? `Draft test failed (${response.status})`);
+      }
+
+      setFeedback(
+        setLearningFeedback,
+        "success",
+        `Draft test queued as task ${(body as TaskCreateResponse).id ?? "unknown"}.`,
+      );
+      await loadDashboardData();
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Draft test failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
+  const publishDraft = async (draftId: string) => {
+    if (!draftId || learningBusyKey) {
+      return;
+    }
+    setLearningBusyKey(`publish-${draftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${draftId}/publish`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved_by: "bill-web-operator" }),
+      });
+      const body = (await response.json()) as WorkflowLearningDraft | { detail?: string };
+      if (!response.ok) {
+        throw new Error((body as { detail?: string }).detail ?? `Publish failed (${response.status})`);
+      }
+
+      setFeedback(setLearningFeedback, "success", `Draft ${draftId} published.`);
+      await loadDashboardData();
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Publish failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
     }
   };
 
@@ -1238,6 +1439,138 @@ export default function Home() {
                   {helperFeedback.message} · {helperFeedback.timestamp}
                 </div>
               )}
+            </section>
+
+            <section className="rounded-2xl border border-amber-500/30 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
+              <div className="mb-3">
+                <h2 className="text-lg font-semibold">Learn New Workflow</h2>
+                <p className="text-xs text-slate-400">
+                  Trainer mode: create drafts from plain English, demonstrations, or SOP text. Publish only after review.
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs text-slate-400">
+                  Learning path
+                  <select
+                    value={learningPath}
+                    onChange={(event) => setLearningPath(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
+                  >
+                    <option value="plain_english">Describe workflow</option>
+                    <option value="demonstration">Demonstration / observed run</option>
+                    <option value="sop_checklist">Import SOP / checklist</option>
+                  </select>
+                </label>
+
+                <label className="text-xs text-slate-400">
+                  Workflow name (optional)
+                  <input
+                    type="text"
+                    value={learningWorkflowName}
+                    onChange={(event) => setLearningWorkflowName(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
+                  />
+                </label>
+              </div>
+
+              <label className="mt-3 block text-xs text-slate-400">
+                Goal (optional)
+                <input
+                  type="text"
+                  value={learningGoal}
+                  onChange={(event) => setLearningGoal(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
+                />
+              </label>
+
+              <label className="mt-3 block text-xs text-slate-400">
+                Source text
+                <textarea
+                  rows={6}
+                  value={learningSourceText}
+                  onChange={(event) => setLearningSourceText(event.target.value)}
+                  placeholder="Describe steps line-by-line, paste checklist, or summarize observed run."
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
+                />
+              </label>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void createWorkflowDraft()}
+                  disabled={!learningSourceText.trim() || learningBusyKey !== null}
+                  className={BUTTON_PRIMARY}
+                >
+                  {learningBusyKey === "create-draft" ? "Creating..." : "Create Draft"}
+                </button>
+              </div>
+
+              {errors.drafts && <p className="mt-3 text-sm text-rose-300">{errors.drafts}</p>}
+
+              {learningFeedback && (
+                <div
+                  className={
+                    learningFeedback.kind === "success"
+                      ? "mt-3 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200"
+                      : "mt-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
+                  }
+                >
+                  {learningFeedback.message} · {learningFeedback.timestamp}
+                </div>
+              )}
+
+              <div className="mt-4 max-h-[360px] space-y-3 overflow-auto pr-1">
+                {workflowDrafts.length === 0 ? (
+                  <p className="text-sm text-slate-400">No workflow drafts yet.</p>
+                ) : (
+                  workflowDrafts.map((draft) => (
+                    <article key={draft.draft_id} className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                      <p className="text-sm font-semibold text-slate-100">{draft.workflow_name}</p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        Path: {draft.learning_path} · Status: {draft.review_status} · Updated: {toDisplayTime(draft.updated_at)}
+                      </p>
+                      <p className="mt-2 text-xs text-slate-300">{draft.goal}</p>
+                      <p className="mt-2 text-xs text-slate-500">Steps: {draft.steps.length}</p>
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void updateDraftStatus(draft.draft_id, "in_review")}
+                          disabled={learningBusyKey !== null}
+                          className={BUTTON_SECONDARY}
+                        >
+                          In Review
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void updateDraftStatus(draft.draft_id, "approved")}
+                          disabled={learningBusyKey !== null}
+                          className={BUTTON_SECONDARY}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void testDraftGuided(draft.draft_id)}
+                          disabled={learningBusyKey !== null}
+                          className={BUTTON_ACCENT_GHOST}
+                        >
+                          {learningBusyKey === `test-${draft.draft_id}` ? "Testing..." : "Guided Test"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void publishDraft(draft.draft_id)}
+                          disabled={learningBusyKey !== null || draft.review_status !== "approved"}
+                          className={BUTTON_PRIMARY}
+                        >
+                          {learningBusyKey === `publish-${draft.draft_id}` ? "Publishing..." : "Publish"}
+                        </button>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
             </section>
           </div>
 
