@@ -200,6 +200,15 @@ class OperationalMemoryRecord(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class HumanExplanation(BaseModel):
+    what_happened: str = ""
+    likely_cause: str = ""
+    meaning: str = ""
+    recommended_next_action: str = ""
+    category: str = "unknown"
+    memory_hint: str | None = None
+
+
 class TaskReflectionRecord(BaseModel):
     id: str
     timestamp: str
@@ -219,6 +228,9 @@ class TaskReflectionRecord(BaseModel):
     potential_fix: str | None = None
     recommendation_feedback: list[str] = Field(default_factory=list)
     confidence: float = 0.5
+    # Human-readable explanation layer
+    human_summary: str | None = None
+    human_explanation: HumanExplanation | None = None
 
 
 class ImprovementProposalRecord(BaseModel):
@@ -266,7 +278,7 @@ class WorkflowSOPUpdateRequest(BaseModel):
 
 class WorkflowLearningCreateRequest(BaseModel):
     learning_path: str
-    source_text: str
+    source_text: str | None = None
     workflow_name: str | None = None
     goal: str | None = None
 
@@ -305,6 +317,14 @@ class WorkflowDraftTestRequest(BaseModel):
 class WorkflowDraftPublishRequest(BaseModel):
     approved_by: str | None = None
     publish_notes: str | None = None
+
+
+class WorkflowDraftStructureUpdateRequest(BaseModel):
+    steps: list[dict[str, Any]] | None = None
+    required_inputs: list[str] | None = None
+    validation_rules: list[str] | None = None
+    fallback_strategies: list[str] | None = None
+    common_failures: list[str] | None = None
 
 
 class TaskCompleteRequest(BaseModel):

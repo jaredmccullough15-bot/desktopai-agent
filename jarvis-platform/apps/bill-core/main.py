@@ -13,6 +13,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from app.error_explainer import (
+    classify_error,
+    generate_explanation,
+    build_human_summary,
+    find_similar_failure,
+    score_confidence,
+)
 from app.schemas import (
     BrainCommandRequest,
     BrainCommandResponse,
@@ -49,6 +56,7 @@ from app.schemas import (
     WorkflowDraftStatusUpdateRequest,
     WorkflowDraftTestRequest,
     WorkflowDraftPublishRequest,
+    WorkflowDraftStructureUpdateRequest,
 )
 
 app = FastAPI(title="bill-core", version="0.1.0")
@@ -877,48 +885,254 @@ def _extract_required_inputs_from_text(text: str) -> list[str]:
     return required
 
 
+def _normalize_variable_input(item: Any, fallback_name: str = "input_value") -> dict[str, Any]:
+    if not isinstance(item, dict):
+        item = {}
+    field_key = str(item.get("field_key") or fallback_name).strip() or fallback_name
+    return {
+        "field_key": field_key,
+        "sample_value": str(item.get("sample_value") or "").strip(),
+        "is_variable": bool(item.get("is_variable", True)),
+        "required_input": bool(item.get("required_input", True)),
+        "input_source": str(item.get("input_source") or "ask_user").strip() or "ask_user",
+        "source_detail": str(item.get("source_detail") or "").strip(),
+        "prompt_question": str(item.get("prompt_question") or f"How should {field_key} be populated?").strip(),
+    }
+
+
+def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        step = {}
+
+    action = str(step.get("action") or "manual_step").strip() or "manual_step"
+    selector = str(step.get("selector") or "").strip()
+    url = str(step.get("url") or "").strip()
+    instruction = str(step.get("instruction") or "").strip()
+    step_name = str(step.get("step_name") or step.get("name") or f"Step {default_order}").strip() or f"Step {default_order}"
+    purpose = str(step.get("purpose") or "").strip()
+
+    if not purpose:
+        if action == "open_url":
+            purpose = "Navigate to the required page."
+        elif action == "click_selector":
+            purpose = "Advance the workflow by clicking the required control."
+        elif action == "type_text":
+            purpose = "Provide required form data."
+        elif action == "select_option":
+            purpose = "Choose the correct option from a dropdown."
+        elif action == "page_transition":
+            purpose = "Confirm the flow moved to the next page/state."
+        else:
+            purpose = "Complete this workflow step."
+
+    value = str(step.get("value") or "").strip()
+    variable_inputs_raw = step.get("variable_inputs") or []
+    variable_inputs = [_normalize_variable_input(item, fallback_name=f"step_{default_order}_value") for item in variable_inputs_raw if isinstance(item, dict)]
+    if action == "type_text" and value and not variable_inputs:
+        variable_inputs = [
+            {
+                "field_key": selector or f"step_{default_order}_value",
+                "sample_value": value,
+                "is_variable": True,
+                "required_input": True,
+                "input_source": "ask_user",
+                "source_detail": "",
+                "prompt_question": f"Should {selector or 'this field value'} be fixed or variable?",
+            }
+        ]
+
+    field_mappings = []
+    raw_mappings = step.get("field_mappings") or []
+    if isinstance(raw_mappings, list):
+        for item in raw_mappings:
+            if isinstance(item, dict):
+                field_mappings.append(
+                    {
+                        "field": str(item.get("field") or selector or "").strip(),
+                        "source": str(item.get("source") or "ask_user").strip() or "ask_user",
+                        "source_detail": str(item.get("source_detail") or "").strip(),
+                    }
+                )
+
+    if action == "type_text" and selector and not field_mappings:
+        field_mappings.append({"field": selector, "source": "ask_user", "source_detail": ""})
+
+    return {
+        "step_order": int(step.get("step_order") or default_order),
+        "name": str(step.get("name") or f"step_{default_order}"),
+        "step_name": step_name,
+        "purpose": purpose,
+        "instruction": instruction,
+        "action": action,
+        "selector": selector,
+        "url": url,
+        "value": value,
+        "option": str(step.get("option") or "").strip(),
+        "manual_review_required": bool(step.get("manual_review_required", action == "manual_step")),
+        "variable_inputs": variable_inputs,
+        "field_mappings": field_mappings,
+        "validation_rules": [str(x) for x in (step.get("validation_rules") or [])],
+        "success_condition": str(step.get("success_condition") or "Field/page state reflects expected change.").strip(),
+        "failure_behavior": str(step.get("failure_behavior") or "Retry once, then prompt human review.").strip(),
+    }
+
+
 def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
     stripped = line.strip().strip("-*")
     lowered = stripped.lower()
     step: dict[str, Any] = {
         "step_order": order,
         "name": f"step_{order}",
+        "step_name": f"Step {order}",
+        "purpose": "",
         "instruction": stripped,
         "manual_review_required": False,
+        "variable_inputs": [],
+        "field_mappings": [],
+        "validation_rules": [],
     }
 
     url_match = re.search(r"https?://\S+", stripped)
     selector_match = re.search(r"selector\s*[:=]?\s*([#\.\[\]a-zA-Z0-9_\-:'\(\)\s]+)", stripped)
     quoted_match = re.search(r"['\"]([^'\"]{2,120})['\"]", stripped)
+    transition_match = re.search(r"\b(next page|continue|submit|go to|navigat(e|ion) to)\b", lowered)
 
     if "open" in lowered and url_match:
-        step.update({"action": "open_url", "url": url_match.group(0)})
+        step.update(
+            {
+                "action": "open_url",
+                "url": url_match.group(0),
+                "step_name": "Open Page",
+                "purpose": "Navigate to the target page.",
+                "success_condition": "Target page loads.",
+                "failure_behavior": "Retry URL load, then stop and alert user.",
+            }
+        )
     elif "wait" in lowered:
         selector = selector_match.group(1).strip() if selector_match else "body"
-        step.update({"action": "wait_for_element", "selector": selector, "timeout_ms": 20000})
+        step.update(
+            {
+                "action": "wait_for_element",
+                "selector": selector,
+                "timeout_ms": 20000,
+                "step_name": "Wait For Page Element",
+                "purpose": "Ensure required UI is available before continuing.",
+                "success_condition": f"{selector} becomes visible.",
+                "failure_behavior": "Refresh or retry wait once, then require human intervention.",
+            }
+        )
     elif "click" in lowered:
         selector = selector_match.group(1).strip() if selector_match else (quoted_match.group(1) if quoted_match else "")
-        step.update({"action": "click_selector", "selector": selector})
+        step.update(
+            {
+                "action": "click_selector",
+                "selector": selector,
+                "step_name": "Click Control",
+                "purpose": "Trigger the next action in the workflow.",
+                "success_condition": "Expected UI state changes after click.",
+                "failure_behavior": "Retry click with alternate selector, then pause for review.",
+            }
+        )
         if not selector:
+            step["manual_review_required"] = True
+    elif any(term in lowered for term in ["select", "dropdown", "choose option"]):
+        selector = selector_match.group(1).strip() if selector_match else "select"
+        option_value = quoted_match.group(1) if quoted_match else ""
+        step.update(
+            {
+                "action": "select_option",
+                "selector": selector,
+                "option": option_value,
+                "step_name": "Select Dropdown Option",
+                "purpose": "Set dropdown value required for quoting/eligibility.",
+                "success_condition": "Dropdown reflects the intended option.",
+                "failure_behavior": "Retry selection or choose fallback option, then request review.",
+            }
+        )
+        if not option_value:
             step["manual_review_required"] = True
     elif any(term in lowered for term in ["type", "enter", "fill"]):
         selector = selector_match.group(1).strip() if selector_match else "input"
         value = quoted_match.group(1) if quoted_match else ""
-        step.update({"action": "type_text", "selector": selector, "value": value})
+        step.update(
+            {
+                "action": "type_text",
+                "selector": selector,
+                "value": value,
+                "step_name": "Enter Field Value",
+                "purpose": "Populate required input data.",
+                "field_mappings": [{"field": selector, "source": "ask_user", "source_detail": ""}],
+                "success_condition": "Field accepts and retains the entered value.",
+                "failure_behavior": "Retry input once; if validation error persists, request correction.",
+            }
+        )
+        if value:
+            step["variable_inputs"] = [
+                {
+                    "field_key": selector,
+                    "sample_value": value,
+                    "is_variable": True,
+                    "required_input": True,
+                    "input_source": "ask_user",
+                    "source_detail": "",
+                    "prompt_question": f"Is value for {selector} fixed or variable each run?",
+                }
+            ]
         if not value:
             step["manual_review_required"] = True
+    elif transition_match:
+        step.update(
+            {
+                "action": "page_transition",
+                "step_name": "Move To Next Page",
+                "purpose": "Advance to the next workflow stage/page.",
+                "success_condition": "URL or page title changes to expected stage.",
+                "failure_behavior": "Retry transition once and verify required blockers are resolved.",
+            }
+        )
     elif "screenshot" in lowered or "capture" in lowered:
-        step.update({"action": "take_screenshot", "name": f"draft_step_{order}"})
+        step.update(
+            {
+                "action": "take_screenshot",
+                "name": f"draft_step_{order}",
+                "step_name": "Capture Evidence",
+                "purpose": "Store visual proof of this workflow stage.",
+                "success_condition": "Screenshot file is created.",
+                "failure_behavior": "Retry capture once, then continue with warning.",
+            }
+        )
     else:
-        step.update({"action": "manual_step", "manual_review_required": True})
+        step.update(
+            {
+                "action": "manual_step",
+                "manual_review_required": True,
+                "step_name": "Manual Review Step",
+                "purpose": "Human interpretation needed to define the action.",
+                "success_condition": "Reviewer confirms expected state is reached.",
+                "failure_behavior": "Pause and collect clarification before continuing.",
+            }
+        )
 
-    return step
+    return _normalize_step(step, order)
 
 
 def _draft_steps_from_source_text(source_text: str) -> list[dict[str, Any]]:
     lines = [line.strip() for line in source_text.splitlines() if line.strip()]
     if not lines:
-        return [{"step_order": 1, "name": "step_1", "instruction": "No source steps provided", "action": "manual_step", "manual_review_required": True}]
+        return [
+            _normalize_step(
+                {
+                    "step_order": 1,
+                    "name": "step_1",
+                    "instruction": "No source steps provided",
+                    "action": "manual_step",
+                    "manual_review_required": True,
+                    "step_name": "Manual Review Step",
+                    "purpose": "Define this step from observed behavior.",
+                },
+                1,
+            )
+        ]
     return [_step_from_text_line(line, index) for index, line in enumerate(lines, start=1)]
 
 
@@ -928,14 +1142,22 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         raise HTTPException(status_code=400, detail="learning_path must be one of: plain_english, demonstration, sop_checklist")
 
     source_text = str(payload.source_text or "").strip()
-    if not source_text:
+    if not source_text and path != "demonstration":
         raise HTTPException(status_code=400, detail="source_text is required")
 
     workflow_name = _normalize_workflow_name(payload.workflow_name or "")
     goal = str(payload.goal or "").strip() or f"Execute learned workflow {workflow_name}"
-    steps = _draft_steps_from_source_text(source_text)
-    required_inputs = _extract_required_inputs_from_text(source_text)
-    requires_session = any(term in source_text.lower() for term in ["login", "session", "authenticate", "mfa"])
+    if source_text:
+        steps = _draft_steps_from_source_text(source_text)
+        required_inputs = _extract_required_inputs_from_text(source_text)
+        requires_session = any(term in source_text.lower() for term in ["login", "session", "authenticate", "mfa"])
+        description = source_text[:400]
+    else:
+        # Demonstration mode can begin before notes are entered.
+        steps = []
+        required_inputs = []
+        requires_session = True
+        description = "Awaiting observed demonstration capture."
 
     return {
         "draft_id": str(uuid4()),
@@ -944,7 +1166,7 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         "learning_path": path,
         "workflow_name": workflow_name,
         "goal": goal,
-        "description": source_text[:400],
+        "description": description,
         "required_inputs": required_inputs,
         "required_session_state": ["authenticated_session"] if requires_session else [],
         "safe_for_unattended": not requires_session,
@@ -972,6 +1194,9 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
 def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
     now_iso = datetime.utcnow().isoformat()
     workflow_name = _normalize_workflow_name(str(item.get("workflow_name") or ""))
+    raw_steps = [dict(x) for x in (item.get("steps") or []) if isinstance(x, dict)]
+    normalized_steps = [_normalize_step(step, idx) for idx, step in enumerate(raw_steps, start=1)]
+
     return {
         "draft_id": str(item.get("draft_id") or item.get("id") or uuid4()),
         "created_at": str(item.get("created_at") or item.get("timestamp") or now_iso),
@@ -983,7 +1208,7 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
         "required_inputs": [str(x) for x in (item.get("required_inputs") or [])],
         "required_session_state": [str(x) for x in (item.get("required_session_state") or [])],
         "safe_for_unattended": bool(item.get("safe_for_unattended", False)),
-        "steps": [dict(x) for x in (item.get("steps") or []) if isinstance(x, dict)],
+        "steps": normalized_steps,
         "validation_rules": [str(x) for x in (item.get("validation_rules") or [])],
         "fallback_strategies": [str(x) for x in (item.get("fallback_strategies") or [])],
         "common_failures": [str(x) for x in (item.get("common_failures") or [])],
@@ -1964,7 +2189,7 @@ def _build_task_reflection(task: dict, outcome: str, machine_uuid: str | None = 
     task_type = payload.get("task_type")
     workflow_name = payload.get("workflow_name") or task_type
     status = "completed" if outcome == "success" else "failed"
-    failure_classification = _extract_failure_category(error_text) if status == "failed" else None
+    failure_classification = classify_error(error_text) if status == "failed" else None
     failure_stage = _extract_failure_stage(error_text, logs=task.get("logs") or []) if status == "failed" else None
     worker_name = _worker_name_from_uuid(machine_uuid or task.get("assigned_machine_uuid"))
     evidence = "Task completed with result payload." if status == "completed" else f"Task failed with error: {error_text or 'unknown'}"
@@ -1978,15 +2203,37 @@ def _build_task_reflection(task: dict, outcome: str, machine_uuid: str | None = 
         root_cause = f"Most likely failure category: {failure_category}."
         if failure_category == "timeout":
             next_action = "Increase timeout or reduce page workload, then retry on an idle worker."
-        elif failure_category == "selector":
+        elif failure_category == "selector_issue":
             next_action = "Validate selectors against current UI structure before retrying."
-        elif failure_category == "session/login":
+        elif failure_category == "session_login":
             next_action = "Confirm worker session/login state, then retry the workflow."
         elif failure_category == "network":
             next_action = "Check network connectivity for the worker and destination endpoint."
+        elif failure_category == "pagination_issue":
+            next_action = "Close any open dialogs on the worker screen and retry."
         else:
             next_action = "Inspect worker logs for stack trace details and retry with tighter scope."
-        confidence = 0.65
+        confidence = score_confidence(failure_category, error_text)
+
+    # Build human-readable explanation with memory hint
+    similar = (
+        find_similar_failure(
+            task_reflections,
+            category=failure_classification or "unknown",
+            workflow_name=workflow_name,
+            current_task_id=task.get("id"),
+        )
+        if status == "failed"
+        else None
+    )
+    human_explanation = (
+        generate_explanation(failure_classification or "unknown", error_text=error_text, similar_failure=similar)
+        if status == "failed"
+        else None
+    )
+    human_summary = build_human_summary(
+        failure_classification or "unknown", workflow_name, worker_name, status
+    )
 
     reflection = {
         "id": str(uuid4()),
@@ -2006,6 +2253,8 @@ def _build_task_reflection(task: dict, outcome: str, machine_uuid: str | None = 
         "alternative_worker": _alternative_worker_for_workflow(workflow_name, worker_name) if status == "failed" else None,
         "potential_fix": _classification_default_fix(failure_classification or "unknown") if status == "failed" else None,
         "confidence": confidence,
+        "human_summary": human_summary,
+        "human_explanation": human_explanation,
     }
     return reflection
 
@@ -2190,6 +2439,99 @@ def add_reflection_recommendation_feedback(reflection_id: str, payload: Proposal
         )
         return TaskReflectionRecord(**normalized)
     raise HTTPException(status_code=404, detail="Reflection not found")
+
+
+@app.get("/api/brain/reflections/{reflection_id}/explain")
+def explain_reflection(reflection_id: str) -> dict:
+    """Return a human-readable explanation for a specific reflection record."""
+    for item in task_reflections:
+        normalized = _normalize_reflection_record(item)
+        if str(normalized.get("id") or "") != reflection_id:
+            continue
+        # Return stored explanation if present
+        stored = normalized.get("human_explanation")
+        if stored:
+            return {
+                "reflection_id": reflection_id,
+                "human_summary": normalized.get("human_summary"),
+                "explanation": stored,
+                "technical": {
+                    "failure_classification": normalized.get("failure_classification"),
+                    "failure_stage": normalized.get("failure_stage"),
+                    "likely_root_cause": normalized.get("likely_root_cause"),
+                    "supporting_evidence": normalized.get("supporting_evidence"),
+                    "retry_strategy": normalized.get("retry_strategy"),
+                    "potential_fix": normalized.get("potential_fix"),
+                    "confidence": normalized.get("confidence"),
+                },
+            }
+        # Generate on-the-fly for older records without stored explanation
+        category = classify_error(normalized.get("supporting_evidence"))
+        similar = find_similar_failure(
+            task_reflections,
+            category=category,
+            workflow_name=normalized.get("workflow_name"),
+            current_task_id=normalized.get("task_id"),
+        )
+        explanation = generate_explanation(category, error_text=normalized.get("supporting_evidence"), similar_failure=similar)
+        human_summary = build_human_summary(
+            category,
+            normalized.get("workflow_name"),
+            normalized.get("worker_name"),
+            str(normalized.get("status") or "unknown"),
+        )
+        return {
+            "reflection_id": reflection_id,
+            "human_summary": human_summary,
+            "explanation": explanation,
+            "technical": {
+                "failure_classification": normalized.get("failure_classification"),
+                "failure_stage": normalized.get("failure_stage"),
+                "likely_root_cause": normalized.get("likely_root_cause"),
+                "supporting_evidence": normalized.get("supporting_evidence"),
+                "retry_strategy": normalized.get("retry_strategy"),
+                "potential_fix": normalized.get("potential_fix"),
+                "confidence": normalized.get("confidence"),
+            },
+        }
+    raise HTTPException(status_code=404, detail="Reflection not found")
+
+
+@app.get("/api/tasks/{task_id}/explain")
+def explain_task(task_id: str) -> dict:
+    """Return a human-readable explanation for the most recent reflection tied to a task."""
+    task_obj = next((t for t in tasks if str(t.get("id") or "") == task_id), None)
+    if task_obj is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    reflection = _find_reflection_by_task_id(task_id)
+    error_text = task_obj.get("error") or (reflection.get("supporting_evidence") if reflection else None)
+    category = classify_error(error_text)
+    workflow_name = (task_obj.get("payload") or {}).get("workflow_name")
+    worker_name = _worker_name_from_uuid(task_obj.get("assigned_machine_uuid"))
+    status = str(task_obj.get("status") or "unknown")
+
+    similar = find_similar_failure(
+        task_reflections,
+        category=category,
+        workflow_name=workflow_name,
+        current_task_id=task_id,
+    ) if status == "failed" else None
+
+    explanation = generate_explanation(category, error_text=error_text, similar_failure=similar) if status == "failed" else None
+    human_summary = build_human_summary(category, workflow_name, worker_name, status)
+
+    return {
+        "task_id": task_id,
+        "human_summary": human_summary,
+        "explanation": explanation,
+        "technical": {
+            "error": error_text,
+            "status": status,
+            "failure_classification": category if status == "failed" else None,
+            "reflection_id": reflection.get("id") if reflection else None,
+        },
+    }
 
 
 @app.get("/api/brain/proposals", response_model=list[ImprovementProposalRecord])
@@ -2484,6 +2826,70 @@ def update_workflow_learning_draft_status(draft_id: str, payload: WorkflowDraftS
     updated["updated_at"] = datetime.utcnow().isoformat()
     workflow_learning_drafts[idx] = updated
     _save_workflow_learning_drafts()
+    return WorkflowLearningDraftRecord(**updated)
+
+
+@app.delete("/api/brain/workflow-learning/drafts/{draft_id}")
+def delete_workflow_learning_draft(draft_id: str) -> dict[str, str]:
+    idx, draft = _find_workflow_draft(draft_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
+
+    removed = workflow_learning_drafts.pop(idx)
+    _save_workflow_learning_drafts()
+    _record_operational_memory(
+        "workflow_learning_draft_deleted",
+        f"Deleted workflow learning draft {draft_id}",
+        details={"draft_id": draft_id, "workflow_name": removed.get("workflow_name")},
+        tags=["workflow_learning", "draft", "delete"],
+    )
+    return {"deleted_draft_id": draft_id}
+
+
+@app.put("/api/brain/workflow-learning/drafts/{draft_id}/structure", response_model=WorkflowLearningDraftRecord)
+def update_workflow_learning_draft_structure(
+    draft_id: str,
+    payload: WorkflowDraftStructureUpdateRequest,
+) -> WorkflowLearningDraftRecord:
+    idx, draft = _find_workflow_draft(draft_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
+
+    updated = dict(draft)
+    if payload.steps is not None:
+        normalized_steps = [_normalize_step(step, order) for order, step in enumerate(payload.steps, start=1)]
+        updated["steps"] = normalized_steps
+
+    if payload.required_inputs is not None:
+        updated["required_inputs"] = [str(x).strip() for x in payload.required_inputs if str(x).strip()]
+    elif payload.steps is not None:
+        derived_inputs: list[str] = []
+        for step in updated.get("steps") or []:
+            for variable in step.get("variable_inputs") or []:
+                if bool(variable.get("required_input")):
+                    key = str(variable.get("field_key") or "").strip()
+                    if key and key not in derived_inputs:
+                        derived_inputs.append(key)
+        updated["required_inputs"] = derived_inputs
+
+    if payload.validation_rules is not None:
+        updated["validation_rules"] = [str(x).strip() for x in payload.validation_rules if str(x).strip()]
+
+    if payload.fallback_strategies is not None:
+        updated["fallback_strategies"] = [str(x).strip() for x in payload.fallback_strategies if str(x).strip()]
+
+    if payload.common_failures is not None:
+        updated["common_failures"] = [str(x).strip() for x in payload.common_failures if str(x).strip()]
+
+    updated["updated_at"] = datetime.utcnow().isoformat()
+    workflow_learning_drafts[idx] = updated
+    _save_workflow_learning_drafts()
+    _record_operational_memory(
+        "workflow_learning_draft_structure_updated",
+        f"Updated structured learning details for draft {draft_id}",
+        details={"draft_id": draft_id, "workflow_name": updated.get("workflow_name")},
+        tags=["workflow_learning", "draft", "structure"],
+    )
     return WorkflowLearningDraftRecord(**updated)
 
 
