@@ -792,6 +792,37 @@ export default function Home() {
     });
   };
 
+  const runSelectedWorkflow = async (workflowName: string) => {
+    if (!workflowName) return;
+    setLoading(true);
+    setActionError(null);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      const slug = workflowName.toLowerCase().replace(/\s+/g, "_");
+      const url = `${apiBase}/api/procedures/${slug}/run`;
+      const requestBody: Record<string, unknown> = { mode: "interactive_visible", payload: {} };
+      if (targetMachineUuid) requestBody.target_machine_uuid = targetMachineUuid;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+      const data = (await res.json()) as TaskCreateResponse;
+      setResponse(data);
+      if (!res.ok) {
+        setActionError(`Run '${workflowName}' failed: ${res.status} ${JSON.stringify(data)}`);
+      } else {
+        setTaskActionFeedback({ kind: "success", message: `Started '${workflowName}'`, timestamp: new Date().toLocaleTimeString() });
+        await loadDashboardData();
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const runSmartSherpaSync = async () => {
     setLoading(true);
     setActionError(null);
@@ -1641,6 +1672,31 @@ export default function Home() {
                   </select>
                 </div>
               </div>
+
+              {/* Dynamic workflow selector — lists every published workflow from /api/workflows */}
+              {workflows.length > 0 && (
+                <div className="mb-4 flex flex-wrap items-center gap-2">
+                  <select
+                    value={helperWorkflow}
+                    onChange={(e) => setHelperWorkflow(e.target.value)}
+                    className="flex-1 min-w-[200px] rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
+                  >
+                    {workflows.map((wf) => (
+                      <option key={wf.workflow_name} value={wf.workflow_name}>
+                        {wf.workflow_name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void runSelectedWorkflow(helperWorkflow)}
+                    disabled={loading || !helperWorkflow}
+                    className={BUTTON_PRIMARY}
+                  >
+                    {loading ? "Starting..." : "Run Workflow"}
+                  </button>
+                </div>
+              )}
 
               <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                 <button
