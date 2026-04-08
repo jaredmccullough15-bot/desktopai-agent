@@ -688,8 +688,8 @@ export default function Home() {
       if (workflowsResult.status === "fulfilled") {
         const nextWorkflows = Array.isArray(workflowsResult.value) ? workflowsResult.value : [];
         setWorkflows(nextWorkflows);
-        if (!helperWorkflow && nextWorkflows.length > 0) {
-          setHelperWorkflow(nextWorkflows[0].workflow_name);
+        if (nextWorkflows.length > 0) {
+          setHelperWorkflow((prev) => prev || nextWorkflows[0].workflow_name);
         }
         delete next.workflows;
       } else {
