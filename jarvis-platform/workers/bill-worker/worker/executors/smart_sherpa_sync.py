@@ -284,7 +284,40 @@ def _wait_for_sync(page: Page, sync_complete_texts: list[str], timeout_ms: int) 
     return False
 
 
+# Selectors for the MUI modal close (X) button that can appear and block client row clicks.
+_MUI_OVERLAY_CLOSE_SELECTORS = [
+    "button:has([data-testid='XCloseIconIcon'])",
+    "[data-testid='XCloseIconIcon']",
+    "button[aria-label='Close']",
+    "[role='dialog'] button:has(svg)",
+]
+
+
+def _dismiss_mui_overlay_if_present(page: Page, timeout_ms: int = 2000) -> bool:
+    """Attempt to dismiss a MUI modal/overlay that may be blocking the page.
+
+    Returns True if an overlay was found and dismissed, False otherwise.
+    """
+    for selector in _MUI_OVERLAY_CLOSE_SELECTORS:
+        try:
+            element = page.locator(selector).first
+            if element.is_visible(timeout=timeout_ms):
+                element.click(timeout=timeout_ms)
+                print(f"[worker] dismissed MUI overlay via selector: {selector}")
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=1000)
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _open_client_page(list_page: Page, context: BrowserContext, selector: str, index: int, timeout_ms: int) -> tuple[Page, bool]:
+    # Dismiss any MUI overlay that could block the row click.
+    _dismiss_mui_overlay_if_present(list_page)
+
     candidate = list_page.locator(selector).nth(index)
     if candidate.count() == 0:
         raise TimeoutError("No matching client row selector at requested index")
@@ -1268,6 +1301,11 @@ def run(
                         verbose_trace_logging,
                         f"client processing exception at page={current_logical_page} row={row_index}: {error}",
                     )
+                    # Attempt to clear any MUI overlay that caused or survived the error.
+                    try:
+                        _dismiss_mui_overlay_if_present(list_page)
+                    except Exception:
+                        pass
                     if opened_new_tab and client_page is not list_page:
                         try:
                             client_page.close()
