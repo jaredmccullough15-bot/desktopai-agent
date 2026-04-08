@@ -276,6 +276,25 @@ class WorkflowSOPUpdateRequest(BaseModel):
     best_worker_patterns: list[str] | None = None
 
 
+class WorkflowVariableDefinition(BaseModel):
+    """Top-level variable registry entry for a workflow draft."""
+    field_key: str
+    label: str = ""
+    is_variable: bool = True
+    # source: user_input | derived | constant
+    source: str = "user_input"
+    default_value: str = ""
+    prompt_question: str = ""
+    example_value: str = ""
+
+
+class WorkflowStepValidation(BaseModel):
+    """Validation contract for a single workflow step."""
+    success_condition: str = ""
+    failure_condition: str = ""
+    recovery_strategy: str = ""
+
+
 class WorkflowLearningCreateRequest(BaseModel):
     learning_path: str
     source_text: str | None = None
@@ -295,12 +314,17 @@ class WorkflowLearningDraftRecord(BaseModel):
     required_session_state: list[str] = Field(default_factory=list)
     safe_for_unattended: bool = False
     steps: list[dict[str, Any]] = Field(default_factory=list)
+    # Top-level variable registry (promoted from per-step variable_inputs)
+    variables: list[dict[str, Any]] = Field(default_factory=list)
     validation_rules: list[str] = Field(default_factory=list)
     fallback_strategies: list[str] = Field(default_factory=list)
     common_failures: list[str] = Field(default_factory=list)
     review_status: str = "draft"
     reviewer_notes: str | None = None
     published_workflow_name: str | None = None
+    # Teaching loop state
+    teaching_complete: bool = False
+    teaching_pending_step: int | None = None
 
 
 class WorkflowDraftStatusUpdateRequest(BaseModel):
@@ -325,6 +349,37 @@ class WorkflowDraftStructureUpdateRequest(BaseModel):
     validation_rules: list[str] | None = None
     fallback_strategies: list[str] | None = None
     common_failures: list[str] | None = None
+    variables: list[dict[str, Any]] | None = None
+
+
+class TeachingStepQuestion(BaseModel):
+    """A single question asked during the interactive teaching loop."""
+    step_order: int
+    field: str
+    question: str
+    current_value: str | None = None
+    options: list[str] = Field(default_factory=list)
+
+
+class TeachingSessionQuestion(BaseModel):
+    """Teaching loop response: next step that needs clarification."""
+    draft_id: str
+    step_order: int
+    step_name: str
+    questions: list[TeachingStepQuestion] = Field(default_factory=list)
+    teaching_complete: bool = False
+    steps_remaining: int = 0
+
+
+class TeachingStepAnswerItem(BaseModel):
+    field: str
+    value: str
+
+
+class TeachingSessionAnswerRequest(BaseModel):
+    """Submit answers for one step's teaching questions."""
+    step_order: int
+    answers: list[TeachingStepAnswerItem] = Field(default_factory=list)
 
 
 class TaskCompleteRequest(BaseModel):

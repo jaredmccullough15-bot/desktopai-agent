@@ -57,6 +57,9 @@ from app.schemas import (
     WorkflowDraftTestRequest,
     WorkflowDraftPublishRequest,
     WorkflowDraftStructureUpdateRequest,
+    TeachingSessionQuestion,
+    TeachingStepQuestion,
+    TeachingSessionAnswerRequest,
 )
 
 app = FastAPI(title="bill-core", version="0.1.0")
@@ -889,14 +892,34 @@ def _normalize_variable_input(item: Any, fallback_name: str = "input_value") -> 
     if not isinstance(item, dict):
         item = {}
     field_key = str(item.get("field_key") or fallback_name).strip() or fallback_name
+
+    # Normalize source: accept legacy values (ask_user, environment, database) and map to
+    # new canonical values: user_input | derived | constant
+    raw_source = str(item.get("source") or item.get("input_source") or "user_input").strip().lower()
+    source_map = {
+        "ask_user": "user_input",
+        "user_input": "user_input",
+        "environment": "derived",
+        "database": "derived",
+        "derived": "derived",
+        "constant": "constant",
+        "fixed": "constant",
+    }
+    source = source_map.get(raw_source, "user_input")
+
     return {
         "field_key": field_key,
-        "sample_value": str(item.get("sample_value") or "").strip(),
-        "is_variable": bool(item.get("is_variable", True)),
+        "label": str(item.get("label") or field_key.replace("_", " ").title()).strip(),
+        "sample_value": str(item.get("sample_value") or item.get("default_value") or "").strip(),
+        "is_variable": bool(item.get("is_variable", source != "constant")),
         "required_input": bool(item.get("required_input", True)),
-        "input_source": str(item.get("input_source") or "ask_user").strip() or "ask_user",
+        # New canonical source field
+        "source": source,
+        # Keep legacy key for backwards compat with existing worker code
+        "input_source": source,
         "source_detail": str(item.get("source_detail") or "").strip(),
-        "prompt_question": str(item.get("prompt_question") or f"How should {field_key} be populated?").strip(),
+        "prompt_question": str(item.get("prompt_question") or f"How should '{field_key}' be populated?").strip(),
+        "example_value": str(item.get("example_value") or "").strip(),
     }
 
 
@@ -909,21 +932,36 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
     url = str(step.get("url") or "").strip()
     instruction = str(step.get("instruction") or "").strip()
     step_name = str(step.get("step_name") or step.get("name") or f"Step {default_order}").strip() or f"Step {default_order}"
-    purpose = str(step.get("purpose") or "").strip()
 
-    if not purpose:
+    # intent: one-sentence business-level statement of why this step exists
+    intent = str(step.get("intent") or "").strip()
+    if not intent:
         if action == "open_url":
-            purpose = "Navigate to the required page."
+            intent = "Navigate to the required starting page."
         elif action == "click_selector":
-            purpose = "Advance the workflow by clicking the required control."
+            intent = "Trigger the next workflow action."
         elif action == "type_text":
-            purpose = "Provide required form data."
+            intent = "Supply required form data."
         elif action == "select_option":
-            purpose = "Choose the correct option from a dropdown."
+            intent = "Choose the correct option."
+        elif action == "wait_for_element":
+            intent = "Wait until the UI is ready to proceed."
         elif action == "page_transition":
-            purpose = "Confirm the flow moved to the next page/state."
+            intent = "Confirm the workflow advanced to the next screen."
+        elif action == "take_screenshot":
+            intent = "Capture proof of current state."
         else:
-            purpose = "Complete this workflow step."
+            intent = "Complete this step as part of the workflow."
+
+    # description: narrative of what technically happens
+    description = str(step.get("description") or "").strip()
+    if not description:
+        description = instruction or intent
+
+    # purpose (legacy field kept for compatibility)
+    purpose = str(step.get("purpose") or "").strip()
+    if not purpose:
+        purpose = intent
 
     value = str(step.get("value") or "").strip()
     variable_inputs_raw = step.get("variable_inputs") or []
@@ -932,12 +970,15 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
         variable_inputs = [
             {
                 "field_key": selector or f"step_{default_order}_value",
+                "label": (selector or f"Step {default_order} value").replace("_", " ").title(),
                 "sample_value": value,
                 "is_variable": True,
                 "required_input": True,
-                "input_source": "ask_user",
+                "source": "user_input",
+                "input_source": "user_input",
                 "source_detail": "",
-                "prompt_question": f"Should {selector or 'this field value'} be fixed or variable?",
+                "prompt_question": f"Is '{value}' a fixed constant, or should it be variable?",
+                "example_value": value,
             }
         ]
 
@@ -949,18 +990,43 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
                 field_mappings.append(
                     {
                         "field": str(item.get("field") or selector or "").strip(),
-                        "source": str(item.get("source") or "ask_user").strip() or "ask_user",
+                        "source": str(item.get("source") or "user_input").strip() or "user_input",
                         "source_detail": str(item.get("source_detail") or "").strip(),
                     }
                 )
 
     if action == "type_text" and selector and not field_mappings:
-        field_mappings.append({"field": selector, "source": "ask_user", "source_detail": ""})
+        field_mappings.append({"field": selector, "source": "user_input", "source_detail": ""})
+
+    # Validation-first: success_condition, failure_condition, recovery_strategy
+    success_condition = str(step.get("success_condition") or "").strip()
+    if not success_condition:
+        success_condition = "The expected page or element state is reached after this step."
+
+    failure_condition = str(step.get("failure_condition") or "").strip()
+    if not failure_condition:
+        if action == "click_selector":
+            failure_condition = "The element is not found, not visible, or clicking it produces no change."
+        elif action == "type_text":
+            failure_condition = "The field does not accept input or the value is not retained."
+        elif action == "wait_for_element":
+            failure_condition = "The element is still absent after the timeout period."
+        elif action == "open_url":
+            failure_condition = "The page fails to load or loads an unexpected URL."
+        else:
+            failure_condition = "The expected outcome of this step is not observed."
+
+    recovery_strategy = str(step.get("recovery_strategy") or step.get("failure_behavior") or "").strip()
+    if not recovery_strategy:
+        recovery_strategy = "Retry once; if still failing, pause and require human review."
 
     return {
         "step_order": int(step.get("step_order") or default_order),
         "name": str(step.get("name") or f"step_{default_order}"),
         "step_name": step_name,
+        # Semantic meaning layer
+        "intent": intent,
+        "description": description,
         "purpose": purpose,
         "instruction": instruction,
         "action": action,
@@ -972,8 +1038,12 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
         "variable_inputs": variable_inputs,
         "field_mappings": field_mappings,
         "validation_rules": [str(x) for x in (step.get("validation_rules") or [])],
-        "success_condition": str(step.get("success_condition") or "Field/page state reflects expected change.").strip(),
-        "failure_behavior": str(step.get("failure_behavior") or "Retry once, then prompt human review.").strip(),
+        # Validation-first contract
+        "success_condition": success_condition,
+        "failure_condition": failure_condition,
+        "recovery_strategy": recovery_strategy,
+        # Keep legacy field for backwards compat
+        "failure_behavior": recovery_strategy,
     }
 
 
@@ -984,6 +1054,8 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
         "step_order": order,
         "name": f"step_{order}",
         "step_name": f"Step {order}",
+        "intent": "",
+        "description": stripped,
         "purpose": "",
         "instruction": stripped,
         "manual_review_required": False,
@@ -1003,8 +1075,12 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
                 "action": "open_url",
                 "url": url_match.group(0),
                 "step_name": "Open Page",
+                "intent": "Navigate to the required starting page.",
+                "description": f"Opens the browser to {url_match.group(0)}.",
                 "purpose": "Navigate to the target page.",
-                "success_condition": "Target page loads.",
+                "success_condition": "Target page loads and URL matches expected.",
+                "failure_condition": "Page fails to load or redirects to an unexpected URL.",
+                "recovery_strategy": "Retry URL load once; if still failing, stop and alert.",
                 "failure_behavior": "Retry URL load, then stop and alert user.",
             }
         )
@@ -1016,8 +1092,12 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
                 "selector": selector,
                 "timeout_ms": 20000,
                 "step_name": "Wait For Page Element",
+                "intent": "Ensure the UI is ready before the next action.",
+                "description": f"Waits for '{selector}' to become visible before continuing.",
                 "purpose": "Ensure required UI is available before continuing.",
-                "success_condition": f"{selector} becomes visible.",
+                "success_condition": f"'{selector}' becomes visible within the timeout.",
+                "failure_condition": f"'{selector}' is still absent after timeout.",
+                "recovery_strategy": "Refresh page or retry wait once; then require human intervention.",
                 "failure_behavior": "Refresh or retry wait once, then require human intervention.",
             }
         )
@@ -1028,8 +1108,12 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
                 "action": "click_selector",
                 "selector": selector,
                 "step_name": "Click Control",
+                "intent": "Trigger the next action in the workflow by clicking a control.",
+                "description": f"Clicks the element matching '{selector}'.",
                 "purpose": "Trigger the next action in the workflow.",
                 "success_condition": "Expected UI state changes after click.",
+                "failure_condition": "Element is not found, not clickable, or click produces no visible change.",
+                "recovery_strategy": "Retry with alternate selector; if still failing, pause for review.",
                 "failure_behavior": "Retry click with alternate selector, then pause for review.",
             }
         )
@@ -1044,8 +1128,12 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
                 "selector": selector,
                 "option": option_value,
                 "step_name": "Select Dropdown Option",
+                "intent": "Choose the correct option from a dropdown to set workflow context.",
+                "description": f"Selects '{option_value}' from dropdown '{selector}'.",
                 "purpose": "Set dropdown value required for quoting/eligibility.",
                 "success_condition": "Dropdown reflects the intended option.",
+                "failure_condition": "Target option is not found in the dropdown or selection is rejected.",
+                "recovery_strategy": "Retry selection; if option absent, flag for human review.",
                 "failure_behavior": "Retry selection or choose fallback option, then request review.",
             }
         )
@@ -1060,9 +1148,13 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
                 "selector": selector,
                 "value": value,
                 "step_name": "Enter Field Value",
+                "intent": "Supply required data into the form field.",
+                "description": f"Types '{value}' into field '{selector}'.",
                 "purpose": "Populate required input data.",
-                "field_mappings": [{"field": selector, "source": "ask_user", "source_detail": ""}],
+                "field_mappings": [{"field": selector, "source": "user_input", "source_detail": ""}],
                 "success_condition": "Field accepts and retains the entered value.",
+                "failure_condition": "Field does not accept input or value is cleared or rejected.",
+                "recovery_strategy": "Retry input once; if validation error persists, request correction.",
                 "failure_behavior": "Retry input once; if validation error persists, request correction.",
             }
         )
@@ -1070,12 +1162,15 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
             step["variable_inputs"] = [
                 {
                     "field_key": selector,
+                    "label": (selector or "field").replace("_", " ").title(),
                     "sample_value": value,
                     "is_variable": True,
                     "required_input": True,
-                    "input_source": "ask_user",
+                    "source": "user_input",
+                    "input_source": "user_input",
                     "source_detail": "",
-                    "prompt_question": f"Is value for {selector} fixed or variable each run?",
+                    "prompt_question": f"Is '{value}' fixed every run, or should it be variable?",
+                    "example_value": value,
                 }
             ]
         if not value:
@@ -1085,8 +1180,12 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
             {
                 "action": "page_transition",
                 "step_name": "Move To Next Page",
+                "intent": "Advance the workflow to the next screen or stage.",
+                "description": "Triggers a page transition and waits for the new state to load.",
                 "purpose": "Advance to the next workflow stage/page.",
-                "success_condition": "URL or page title changes to expected stage.",
+                "success_condition": "URL or page title changes to the expected next stage.",
+                "failure_condition": "URL does not change or an error page is shown.",
+                "recovery_strategy": "Retry transition once and verify no blocking dialogs remain.",
                 "failure_behavior": "Retry transition once and verify required blockers are resolved.",
             }
         )
@@ -1096,8 +1195,12 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
                 "action": "take_screenshot",
                 "name": f"draft_step_{order}",
                 "step_name": "Capture Evidence",
+                "intent": "Store visual proof of the current workflow state.",
+                "description": "Takes a full-page screenshot for audit or debugging.",
                 "purpose": "Store visual proof of this workflow stage.",
-                "success_condition": "Screenshot file is created.",
+                "success_condition": "Screenshot file is saved.",
+                "failure_condition": "Screenshot capture fails or file is not written.",
+                "recovery_strategy": "Retry capture once; if still failing, log warning and continue.",
                 "failure_behavior": "Retry capture once, then continue with warning.",
             }
         )
@@ -1107,8 +1210,12 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
                 "action": "manual_step",
                 "manual_review_required": True,
                 "step_name": "Manual Review Step",
+                "intent": "A human must review and define the action for this step.",
+                "description": stripped or "No automatic classification possible; requires manual review.",
                 "purpose": "Human interpretation needed to define the action.",
                 "success_condition": "Reviewer confirms expected state is reached.",
+                "failure_condition": "Reviewer is unable to determine the correct action.",
+                "recovery_strategy": "Pause, collect clarification, then reclassify before continuing.",
                 "failure_behavior": "Pause and collect clarification before continuing.",
             }
         )
@@ -1159,6 +1266,16 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         requires_session = True
         description = "Awaiting observed demonstration capture."
 
+    # Collect top-level variable registry from all steps (deduplicated by field_key)
+    variables: list[dict[str, Any]] = []
+    seen_var_keys: set[str] = set()
+    for step in steps:
+        for var in step.get("variable_inputs") or []:
+            key = str(var.get("field_key") or "")
+            if key and key not in seen_var_keys:
+                seen_var_keys.add(key)
+                variables.append(dict(var))
+
     return {
         "draft_id": str(uuid4()),
         "created_at": datetime.utcnow().isoformat(),
@@ -1171,6 +1288,9 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         "required_session_state": ["authenticated_session"] if requires_session else [],
         "safe_for_unattended": not requires_session,
         "steps": steps,
+        "variables": variables,
+        "teaching_complete": False,
+        "teaching_pending_step": 1 if steps else None,
         "validation_rules": [
             "Confirm each step has executable action",
             "Validate selectors and required values before publish",
@@ -1197,6 +1317,19 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
     raw_steps = [dict(x) for x in (item.get("steps") or []) if isinstance(x, dict)]
     normalized_steps = [_normalize_step(step, idx) for idx, step in enumerate(raw_steps, start=1)]
 
+    # Re-derive top-level variables from steps (preserving any already present)
+    existing_vars: dict[str, dict] = {
+        str(v.get("field_key") or ""): v
+        for v in (item.get("variables") or [])
+        if isinstance(v, dict) and v.get("field_key")
+    }
+    for step in normalized_steps:
+        for var in step.get("variable_inputs") or []:
+            key = str(var.get("field_key") or "")
+            if key and key not in existing_vars:
+                existing_vars[key] = dict(var)
+    variables = list(existing_vars.values())
+
     return {
         "draft_id": str(item.get("draft_id") or item.get("id") or uuid4()),
         "created_at": str(item.get("created_at") or item.get("timestamp") or now_iso),
@@ -1209,6 +1342,9 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
         "required_session_state": [str(x) for x in (item.get("required_session_state") or [])],
         "safe_for_unattended": bool(item.get("safe_for_unattended", False)),
         "steps": normalized_steps,
+        "variables": variables,
+        "teaching_complete": bool(item.get("teaching_complete", False)),
+        "teaching_pending_step": item.get("teaching_pending_step"),
         "validation_rules": [str(x) for x in (item.get("validation_rules") or [])],
         "fallback_strategies": [str(x) for x in (item.get("fallback_strategies") or [])],
         "common_failures": [str(x) for x in (item.get("common_failures") or [])],
@@ -1216,6 +1352,137 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
         "reviewer_notes": item.get("reviewer_notes"),
         "published_workflow_name": item.get("published_workflow_name"),
     }
+
+
+def _generate_step_teaching_questions(step: dict[str, Any], draft_id: str) -> TeachingSessionQuestion:
+    """Generate teaching questions for a single step that still needs enrichment."""
+    step_order = int(step.get("step_order") or 0)
+    step_name = str(step.get("step_name") or f"Step {step_order}")
+    questions: list[TeachingStepQuestion] = []
+
+    # Q1: Confirm / correct the step intent
+    questions.append(
+        TeachingStepQuestion(
+            step_order=step_order,
+            field="intent",
+            question="What does this step accomplish in the business process?",
+            current_value=str(step.get("intent") or ""),
+            options=[],
+        )
+    )
+
+    # Q2: For each variable input, ask which source category it belongs to
+    for var in step.get("variable_inputs") or []:
+        key = str(var.get("field_key") or "")
+        current_source = str(var.get("source") or var.get("input_source") or "user_input")
+        sample = str(var.get("sample_value") or var.get("example_value") or "")
+        label = str(var.get("label") or key)
+        questions.append(
+            TeachingStepQuestion(
+                step_order=step_order,
+                field=f"variable_source:{key}",
+                question=(
+                    f"Is the value for '{label}'{(' (e.g. ' + sample + ')') if sample else ''} "
+                    "fixed every run, provided by the user at runtime, or derived from an earlier step?"
+                ),
+                current_value=current_source,
+                options=["constant", "user_input", "derived"],
+            )
+        )
+
+    # Q3: Success condition
+    questions.append(
+        TeachingStepQuestion(
+            step_order=step_order,
+            field="success_condition",
+            question="What does success look like immediately after this step?",
+            current_value=str(step.get("success_condition") or ""),
+            options=[],
+        )
+    )
+
+    # Q4: Failure condition
+    questions.append(
+        TeachingStepQuestion(
+            step_order=step_order,
+            field="failure_condition",
+            question="What observable state would indicate this step failed?",
+            current_value=str(step.get("failure_condition") or ""),
+            options=[],
+        )
+    )
+
+    return TeachingSessionQuestion(
+        draft_id=draft_id,
+        step_order=step_order,
+        step_name=step_name,
+        questions=questions,
+        teaching_complete=False,
+        steps_remaining=0,  # caller sets this
+    )
+
+
+def _apply_step_teaching_answers(
+    draft: dict[str, Any],
+    step_order: int,
+    answers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply teaching answers to a step in the draft, then advance teaching_pending_step."""
+    updated = dict(draft)
+    steps = [dict(s) for s in (updated.get("steps") or [])]
+
+    target_idx: int | None = None
+    for i, s in enumerate(steps):
+        if int(s.get("step_order") or 0) == step_order:
+            target_idx = i
+            break
+
+    if target_idx is not None:
+        step = dict(steps[target_idx])
+        variable_inputs = [dict(v) for v in (step.get("variable_inputs") or [])]
+
+        for answer in answers:
+            field = str(answer.get("field") or "")
+            value = str(answer.get("value") or "")
+
+            if field.startswith("variable_source:"):
+                var_key = field[len("variable_source:"):]
+                for var in variable_inputs:
+                    if str(var.get("field_key") or "") == var_key:
+                        var["source"] = value
+                        var["input_source"] = value  # legacy compat
+                        break
+            elif field in ("intent", "success_condition", "failure_condition", "recovery_strategy", "description"):
+                step[field] = value
+
+        step["variable_inputs"] = variable_inputs
+        steps[target_idx] = step
+        updated["steps"] = steps
+
+    # Rebuild top-level variables from updated steps
+    existing_vars: dict[str, dict] = {
+        str(v.get("field_key") or ""): v
+        for v in (updated.get("variables") or [])
+        if isinstance(v, dict) and v.get("field_key")
+    }
+    for s in steps:
+        for var in s.get("variable_inputs") or []:
+            key = str(var.get("field_key") or "")
+            if key:
+                existing_vars[key] = dict(var)
+    updated["variables"] = list(existing_vars.values())
+
+    # Advance teaching_pending_step to next unanswered step
+    all_orders = sorted(int(s.get("step_order") or 0) for s in steps)
+    next_step: int | None = None
+    for order in all_orders:
+        if order > step_order:
+            next_step = order
+            break
+    updated["teaching_pending_step"] = next_step
+    updated["teaching_complete"] = next_step is None
+    updated["updated_at"] = datetime.utcnow().isoformat()
+    return updated
 
 
 def _normalize_all_workflow_drafts() -> None:
@@ -2511,14 +2778,16 @@ def explain_task(task_id: str) -> dict:
     worker_name = _worker_name_from_uuid(task_obj.get("assigned_machine_uuid"))
     status = str(task_obj.get("status") or "unknown")
 
+    is_failed = status in ("failed", "error")
+
     similar = find_similar_failure(
         task_reflections,
         category=category,
         workflow_name=workflow_name,
         current_task_id=task_id,
-    ) if status == "failed" else None
+    ) if is_failed else None
 
-    explanation = generate_explanation(category, error_text=error_text, similar_failure=similar) if status == "failed" else None
+    explanation = generate_explanation(category, error_text=error_text, similar_failure=similar) if is_failed else None
     human_summary = build_human_summary(category, workflow_name, worker_name, status)
 
     return {
@@ -2528,7 +2797,7 @@ def explain_task(task_id: str) -> dict:
         "technical": {
             "error": error_text,
             "status": status,
-            "failure_classification": category if status == "failed" else None,
+            "failure_classification": category if is_failed else None,
             "reflection_id": reflection.get("id") if reflection else None,
         },
     }
@@ -2860,6 +3129,22 @@ def update_workflow_learning_draft_structure(
         normalized_steps = [_normalize_step(step, order) for order, step in enumerate(payload.steps, start=1)]
         updated["steps"] = normalized_steps
 
+    if payload.variables is not None:
+        # Caller supplies explicit variable definitions; merge with any derived from steps
+        caller_vars: dict[str, dict] = {}
+        for raw_var in payload.variables:
+            v = dict(raw_var) if isinstance(raw_var, dict) else raw_var.dict()
+            key = str(v.get("field_key") or "")
+            if key:
+                caller_vars[key] = v
+        # Fill in any step-captured variables not already in caller's list
+        for step in updated.get("steps") or []:
+            for var in step.get("variable_inputs") or []:
+                k = str(var.get("field_key") or "")
+                if k and k not in caller_vars:
+                    caller_vars[k] = dict(var)
+        updated["variables"] = list(caller_vars.values())
+
     if payload.required_inputs is not None:
         updated["required_inputs"] = [str(x).strip() for x in payload.required_inputs if str(x).strip()]
     elif payload.steps is not None:
@@ -2891,6 +3176,104 @@ def update_workflow_learning_draft_structure(
         tags=["workflow_learning", "draft", "structure"],
     )
     return WorkflowLearningDraftRecord(**updated)
+
+
+@app.get("/api/brain/workflow-learning/drafts/{draft_id}/teach", response_model=TeachingSessionQuestion)
+def get_workflow_teaching_question(draft_id: str) -> TeachingSessionQuestion:
+    """Return questions for the next step that still needs teaching enrichment."""
+    idx, draft = _find_workflow_draft(draft_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
+
+    if bool(draft.get("teaching_complete")):
+        return TeachingSessionQuestion(
+            draft_id=draft_id,
+            step_order=0,
+            step_name="",
+            questions=[],
+            teaching_complete=True,
+            steps_remaining=0,
+        )
+
+    pending_step_order = draft.get("teaching_pending_step")
+    steps = [s for s in (draft.get("steps") or []) if isinstance(s, dict)]
+    if not steps or pending_step_order is None:
+        return TeachingSessionQuestion(
+            draft_id=draft_id,
+            step_order=0,
+            step_name="",
+            questions=[],
+            teaching_complete=True,
+            steps_remaining=0,
+        )
+
+    target_step: dict[str, Any] | None = None
+    for s in steps:
+        if int(s.get("step_order") or 0) == int(pending_step_order):
+            target_step = s
+            break
+    if target_step is None:
+        target_step = steps[0]
+
+    all_orders = sorted(int(s.get("step_order") or 0) for s in steps)
+    current_order = int(target_step.get("step_order") or 0)
+    steps_remaining = sum(1 for o in all_orders if o > current_order)
+
+    question = _generate_step_teaching_questions(target_step, draft_id)
+    question.steps_remaining = steps_remaining
+    return question
+
+
+@app.post("/api/brain/workflow-learning/drafts/{draft_id}/teach", response_model=TeachingSessionQuestion)
+def submit_workflow_teaching_answers(
+    draft_id: str,
+    payload: TeachingSessionAnswerRequest,
+) -> TeachingSessionQuestion:
+    """Accept teaching answers for a step, enrich the draft, and return the next question."""
+    idx, draft = _find_workflow_draft(draft_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
+
+    answer_dicts = [a.dict() if hasattr(a, "dict") else dict(a) for a in (payload.answers or [])]
+    updated = _apply_step_teaching_answers(draft, int(payload.step_order), answer_dicts)
+    workflow_learning_drafts[idx] = updated
+    _save_workflow_learning_drafts()
+    _record_operational_memory(
+        "workflow_teaching_step_answered",
+        f"Teaching answers applied to step {payload.step_order} of draft {draft_id}",
+        details={"draft_id": draft_id, "step_order": payload.step_order},
+        tags=["workflow_learning", "teaching"],
+    )
+
+    if bool(updated.get("teaching_complete")):
+        return TeachingSessionQuestion(
+            draft_id=draft_id,
+            step_order=0,
+            step_name="",
+            questions=[],
+            teaching_complete=True,
+            steps_remaining=0,
+        )
+
+    # Return the next step's questions
+    next_order = updated.get("teaching_pending_step")
+    steps = [s for s in (updated.get("steps") or []) if isinstance(s, dict)]
+    target_step: dict[str, Any] | None = None
+    for s in steps:
+        if int(s.get("step_order") or 0) == int(next_order or 0):
+            target_step = s
+            break
+    if target_step is None:
+        return TeachingSessionQuestion(
+            draft_id=draft_id, step_order=0, step_name="", questions=[], teaching_complete=True, steps_remaining=0
+        )
+
+    all_orders = sorted(int(s.get("step_order") or 0) for s in steps)
+    current_order = int(target_step.get("step_order") or 0)
+    steps_remaining = sum(1 for o in all_orders if o > current_order)
+    question = _generate_step_teaching_questions(target_step, draft_id)
+    question.steps_remaining = steps_remaining
+    return question
 
 
 @app.post("/api/brain/workflow-learning/drafts/{draft_id}/test", response_model=TaskCreateResponse)
