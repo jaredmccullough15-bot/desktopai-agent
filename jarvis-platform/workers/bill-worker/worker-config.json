@@ -1,0 +1,10 @@
+{
+  "core_url": "https://api.bill-core.com",
+  "machine_display_name": "",
+  "default_execution_mode": "interactive_visible",
+  "screenshots_dir": "screenshots",
+  "downloads_dir": "downloads",
+  "heartbeat_interval_seconds": 10,
+  "polling_interval_seconds": 5,
+  "show_local_ui": true
+}
