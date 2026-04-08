@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type TaskCreateResponse = {
   id?: string;
@@ -342,6 +342,10 @@ export default function Home() {
   const [teachingStatus, setTeachingStatus] = useState<"watching" | "step_captured" | "waiting_clarification" | "paused">("watching");
   const [teachingCurrentQuestion, setTeachingCurrentQuestion] = useState<TeachingSessionQuestion | null>(null);
   const [teachingAnswers, setTeachingAnswers] = useState<Record<string, string>>({});
+  const [teachingStartUrl, setTeachingStartUrl] = useState<string>("");
+  const [teachingLaunchStatus, setTeachingLaunchStatus] = useState<null | "launching" | "running" | "error">(null);
+  const [teachingLaunchPid, setTeachingLaunchPid] = useState<number | null>(null);
+  const prevTeachingStepCountRef = useRef<number>(0);
   const [chatHistory, setChatHistory] = useState<ChatEntry[]>([
     {
       role: "assistant",
@@ -1405,6 +1409,57 @@ export default function Home() {
     await loadBrainPanels();
   };
 
+  const launchTeachBrowser = async () => {
+    if (!teachingSessionDraftId) return;
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setTeachingLaunchStatus("launching");
+    try {
+      const res = await fetch(
+        `${apiBase}/api/brain/workflow-learning/drafts/${teachingSessionDraftId}/teach-session/start`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ start_url: teachingStartUrl.trim(), api_base: apiBase }),
+        },
+      );
+      const data = (await res.json()) as { pid?: number; status?: string; detail?: string };
+      if (!res.ok) throw new Error(data.detail ?? `Launch failed (${res.status})`);
+      setTeachingLaunchPid(data.pid ?? null);
+      setTeachingLaunchStatus("running");
+    } catch (err) {
+      setTeachingLaunchStatus("error");
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Browser launch failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+      );
+    }
+  };
+
+  // Faster poll (2 s) while a teach session is active
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!teachingSessionDraftId) return;
+    const id = setInterval(() => { void loadBrainPanels(); }, 2000);
+    return () => clearInterval(id);
+  }, [teachingSessionDraftId]);
+
+  // Flash "step_captured" when the Playwright script appends a new step
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!teachingSessionDraftId) return;
+    const count =
+      workflowDrafts.find((d) => d.draft_id === teachingSessionDraftId)?.steps?.length ?? 0;
+    if (count > prevTeachingStepCountRef.current && prevTeachingStepCountRef.current > 0) {
+      setTeachingStatus("step_captured");
+      setTimeout(() => {
+        setTeachingStatus((prev) => (prev === "step_captured" ? "watching" : prev));
+      }, 1500);
+    }
+    prevTeachingStepCountRef.current = count;
+  }, [workflowDrafts, teachingSessionDraftId]);
+
   const teachingActiveDraft = teachingSessionDraftId
     ? (workflowDrafts.find((d) => d.draft_id === teachingSessionDraftId) ?? null)
     : null;
@@ -2459,6 +2514,59 @@ export default function Home() {
                     Steps: <span className="text-slate-200">{teachingActiveDraft?.steps?.length ?? 0}</span>
                   </span>
                 </div>
+              </div>
+
+              {/* Last captured strip */}
+              {(teachingActiveDraft?.steps?.length ?? 0) > 0 && (() => {
+                const lastStep = teachingActiveDraft!.steps![teachingActiveDraft!.steps!.length - 1];
+                return (
+                  <div className="border-b border-slate-800/60 bg-slate-900/40 px-4 py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-slate-500">Last Captured</p>
+                    <p className="mt-0.5 truncate text-xs text-slate-200">{lastStep.step_name}</p>
+                    <p className="truncate text-[10px] text-slate-500">
+                      {lastStep.action}
+                      {" · "}
+                      {lastStep.selector || lastStep.url || "—"}
+                    </p>
+                  </div>
+                );
+              })()}
+
+              {/* Observation Browser launcher */}
+              <div className="border-b border-slate-800/60 px-4 py-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    Observation Browser
+                  </p>
+                  {teachingLaunchStatus === "running" && (
+                    <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300">
+                      Running · PID {teachingLaunchPid}
+                    </span>
+                  )}
+                  {teachingLaunchStatus === "error" && (
+                    <span className="rounded-full border border-rose-400/30 bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-300">
+                      Launch failed
+                    </span>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={teachingStartUrl}
+                  onChange={(e) => setTeachingStartUrl(e.target.value)}
+                  placeholder="https://start-url.com (optional)"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-2.5 py-1.5 text-xs text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-1 focus:ring-cyan-500/30"
+                />
+                <button
+                  type="button"
+                  onClick={() => void launchTeachBrowser()}
+                  disabled={teachingLaunchStatus === "launching"}
+                  className="mt-2 w-full rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {teachingLaunchStatus === "launching" ? "Launching\u2026" : "Launch Observation Browser"}
+                </button>
+                <p className="mt-1.5 text-[10px] text-slate-500">
+                  Opens a Playwright browser that records clicks, text, and navigation as draft steps.
+                </p>
               </div>
 
               {/* Q&A body */}

@@ -382,6 +382,28 @@ class TeachingSessionAnswerRequest(BaseModel):
     answers: list[TeachingStepAnswerItem] = Field(default_factory=list)
 
 
+class AppendStepRequest(BaseModel):
+    """A single observed browser action to append to a workflow draft."""
+    action: str
+    selector: str = ""
+    url: str = ""
+    value: str = ""
+    option: str = ""
+    step_name: str = ""
+    intent: str = ""
+    description: str = ""
+    element_label: str = ""
+    element_tag: str = ""
+    element_type: str = ""
+    captured_at: str = ""
+
+
+class TeachSessionStartRequest(BaseModel):
+    """Request body to launch a Playwright teach session from the dashboard."""
+    start_url: str = ""
+    api_base: str = ""
+
+
 class TaskCompleteRequest(BaseModel):
     machine_uuid: str
     result_json: dict[str, Any] | None = None

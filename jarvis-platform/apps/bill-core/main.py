@@ -2,6 +2,8 @@ import logging
 import os
 import json
 import re
+import subprocess
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -60,6 +62,8 @@ from app.schemas import (
     TeachingSessionQuestion,
     TeachingStepQuestion,
     TeachingSessionAnswerRequest,
+    AppendStepRequest,
+    TeachSessionStartRequest,
 )
 
 app = FastAPI(title="bill-core", version="0.1.0")
@@ -3274,6 +3278,145 @@ def submit_workflow_teaching_answers(
     question = _generate_step_teaching_questions(target_step, draft_id)
     question.steps_remaining = steps_remaining
     return question
+
+
+@app.post("/api/brain/workflow-learning/drafts/{draft_id}/steps/append", response_model=WorkflowLearningDraftRecord)
+def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowLearningDraftRecord:
+    """Append a single browser-observed action as a new step on an existing draft."""
+    idx, draft = _find_workflow_draft(draft_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
+
+    steps = [dict(s) for s in (draft.get("steps") or [])]
+    next_order = max((int(s.get("step_order") or 0) for s in steps), default=0) + 1
+
+    raw_step: dict[str, Any] = {
+        "step_order":   next_order,
+        "action":       str(payload.action or "manual_step").strip() or "manual_step",
+        "selector":     payload.selector,
+        "url":          payload.url,
+        "value":        payload.value,
+        "option":       payload.option,
+        "step_name":    payload.step_name or f"Step {next_order}",
+        "intent":       payload.intent,
+        "description":  payload.description or payload.step_name or "",
+        "instruction":  payload.description or payload.step_name or "",
+        "element_label": payload.element_label,
+    }
+
+    # Auto-populate variable_inputs for text fields so the teaching loop can
+    # ask whether the value is fixed or should be provided at runtime.
+    if payload.action == "type_text" and payload.value.strip():
+        field_key = payload.selector or f"field_{next_order}"
+        label = payload.element_label or payload.selector or f"field_{next_order}"
+        raw_step["variable_inputs"] = [
+            {
+                "field_key":       field_key,
+                "label":           label,
+                "sample_value":    payload.value,
+                "is_variable":     True,
+                "required_input":  True,
+                "source":          "user_input",
+                "input_source":    "user_input",
+                "source_detail":   "",
+                "prompt_question": (
+                    f"Is '{payload.value}' the same every run, "
+                    f"or should it be provided at runtime?"
+                ),
+                "example_value":   payload.value,
+            }
+        ]
+
+    # For select_option, auto-note the chosen option as a variable if no id/aria-label
+    if payload.action == "select_option" and payload.value.strip():
+        field_key = payload.selector or f"select_{next_order}"
+        label = payload.element_label or payload.selector or f"select_{next_order}"
+        raw_step.setdefault("variable_inputs", [])
+        raw_step["variable_inputs"].append(
+            {
+                "field_key":       field_key,
+                "label":           label,
+                "sample_value":    payload.option or payload.value,
+                "is_variable":     True,
+                "required_input":  False,
+                "source":          "user_input",
+                "input_source":    "user_input",
+                "source_detail":   "",
+                "prompt_question": (
+                    f"Should '{payload.option or payload.value}' always be selected, "
+                    f"or should it vary by run?"
+                ),
+                "example_value":   payload.option or payload.value,
+            }
+        )
+
+    normalized = _normalize_step(raw_step, next_order)
+    steps.append(normalized)
+
+    updated = dict(draft)
+    updated["steps"] = steps
+
+    # Rebuild top-level variables registry
+    existing_vars: dict[str, dict] = {
+        str(v.get("field_key") or ""): v
+        for v in (updated.get("variables") or [])
+        if isinstance(v, dict) and v.get("field_key")
+    }
+    for s in steps:
+        for var in s.get("variable_inputs") or []:
+            k = str(var.get("field_key") or "")
+            if k:
+                existing_vars[k] = dict(var)
+    updated["variables"] = list(existing_vars.values())
+
+    # Ensure teaching loop points at the first unanswered step
+    if updated.get("teaching_pending_step") is None:
+        updated["teaching_pending_step"] = 1
+    updated["updated_at"] = datetime.utcnow().isoformat()
+
+    workflow_learning_drafts[idx] = updated
+    _save_workflow_learning_drafts()
+    return WorkflowLearningDraftRecord(**updated)
+
+
+@app.post("/api/brain/workflow-learning/drafts/{draft_id}/teach-session/start")
+def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dict[str, Any]:
+    """Launch a Playwright observation browser attached to this draft."""
+    idx, draft = _find_workflow_draft(draft_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
+
+    script_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "teach_session.py"
+    )
+    if not os.path.isfile(script_path):
+        raise HTTPException(status_code=500, detail="teach_session.py not found on server")
+
+    api_base = str(payload.api_base or "http://127.0.0.1:8010").strip().rstrip("/")
+
+    cmd = [sys.executable, script_path, "--draft-id", draft_id, "--api-base", api_base]
+
+    if payload.start_url.strip():
+        start_url = payload.start_url.strip()
+        if not start_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="start_url must begin with http:// or https://")
+        cmd.extend(["--start-url", start_url])
+
+    try:
+        kwargs: dict[str, Any] = {}
+        if sys.platform == "win32":
+            # Open a new console window so the user sees capture output
+            kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE  # type: ignore[attr-defined]
+        proc = subprocess.Popen(cmd, **kwargs)
+        _record_operational_memory(
+            "teach_session_started",
+            f"Playwright teach session started for draft {draft_id} (PID {proc.pid})",
+            details={"draft_id": draft_id, "pid": proc.pid},
+            tags=["workflow_learning", "teach_session"],
+        )
+        return {"status": "started", "pid": proc.pid, "draft_id": draft_id}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to launch teach session: {exc}") from exc
 
 
 @app.post("/api/brain/workflow-learning/drafts/{draft_id}/test", response_model=TaskCreateResponse)
