@@ -66,20 +66,12 @@ _LISTENER_JS = r"""
     if (window.__billListenersAttached) { return; }
     window.__billListenersAttached = true;
 
-    // Send events to Python via console.log with a prefix — works on all sites,
-    // no expose_function limitations, no CSP issues.
-    //
-    // IMPORTANT: capture the ORIGINAL console.log right now, before the page's
-    // own scripts run.  Many sites (including healthcare.gov) replace
-    // console.log with a no-op after page load — if we call window.console.log
-    // inside click handlers, we'd call the override and emit nothing.
-    // Binding the reference here makes every emit() use the real V8 function.
-    var PREFIX = '__BILL_EVENT__';
-    var _log = (window.console && typeof window.console.log === 'function')
-        ? window.console.log.bind(window.console)
-        : function() {};
+    // Push events into a per-frame JS queue.  Python drains it via
+    // frame.evaluate() on a 200 ms polling loop — no console.log used,
+    // immune to console overrides, CSP, and cross-origin restrictions.
+    if (!Array.isArray(window.__billEvents)) { window.__billEvents = []; }
     function emit(payload) {
-        try { _log(PREFIX + JSON.stringify(payload)); }
+        try { window.__billEvents.push(payload); }
         catch (err) { /* ignore */ }
     }
 
@@ -198,7 +190,7 @@ _LISTENER_JS = r"""
         });
     }, true);
 
-    console.log(PREFIX + JSON.stringify({event_type:'_attached', url: window.location.href}));
+    emit({event_type: '_attached', url: window.location.href});
 }());
 """
 
@@ -337,14 +329,8 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
     worker = threading.Thread(target=_post_worker, daemon=True)
     worker.start()
 
-    _CONSOLE_PREFIX = "__BILL_EVENT__"
-
     def _enqueue(step: dict[str, Any]) -> None:
         post_queue.put(step)
-
-    # Keep CDP session objects alive — Python would GC them otherwise and the
-    # event subscription would silently stop firing.
-    _cdp_sessions: list[Any] = []
 
     def record(event: dict[str, Any]) -> None:
         et = event.get("event_type", "")
@@ -353,50 +339,9 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
             return
         now = time.monotonic()
         if now - last_event_ts.get(et, 0.0) < EVENT_DEBOUNCE:
-            print(f"  [drop ] debounced: {et}")
             return
         last_event_ts[et] = now
         _enqueue(_event_to_step(event))
-
-    def on_console(msg: Any) -> None:
-        """Fallback: page.on('console') — only fires for main frame."""
-        try:
-            if msg.type not in ("log", "info"):
-                return
-            text = msg.text
-            if not text.startswith(_CONSOLE_PREFIX):
-                return
-            event = json.loads(text[len(_CONSOLE_PREFIX):])
-            et = event.get("event_type", "?")
-            if et != "_attached":
-                print(f"  [evt/fb] received: {et}")
-            record(event)
-        except Exception as exc:
-            print(f"  [teach] console parse error: {exc}", file=sys.stderr)
-
-    def _on_cdp_console(event: dict[str, Any]) -> None:
-        """Primary handler via raw CDP — fires for main frame AND every iframe.
-
-        Playwright's page.on('console') silently drops messages from sub-frames,
-        which is why clicks inside iframe-heavy SPAs (healthcare.gov, etc.) were
-        never reaching Python.  CDP Runtime.consoleAPICalled has no such filter.
-        """
-        try:
-            if event.get("type") not in ("log", "info"):
-                return
-            args = event.get("args") or []
-            if not args:
-                return
-            text = args[0].get("value", "")
-            if not isinstance(text, str) or not text.startswith(_CONSOLE_PREFIX):
-                return
-            evt = json.loads(text[len(_CONSOLE_PREFIX):])
-            et = evt.get("event_type", "?")
-            if et != "_attached":
-                print(f"  [evt ] received: {et}")
-            record(evt)
-        except Exception as exc:
-            print(f"  [teach] CDP parse error: {exc}", file=sys.stderr)
 
     def on_navigate(url: str) -> None:
         if url == last_url[0]:
@@ -408,17 +353,35 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
         _enqueue(_event_to_step({"event_type": "navigate", "url": url, "element": {}}))
 
     def attach_page(p: Any) -> None:
-        # Prefer raw CDP — captures console from ALL frames including iframes.
-        # Fall back to page.on('console') if CDP session creation fails.
-        try:
-            cdp = context.new_cdp_session(p)
-            cdp.send("Runtime.enable")
-            cdp.on("Runtime.consoleAPICalled", _on_cdp_console)
-            _cdp_sessions.append(cdp)   # prevent GC
-        except Exception as exc:
-            print(f"  [teach] CDP attach failed ({exc}), using page.on fallback", file=sys.stderr)
-            p.on("console", on_console)
         p.on("framenavigated", lambda frame: on_navigate(frame.url) if frame == p.main_frame else None)
+
+    def _drain_frames() -> None:
+        """Poll every frame in every open page and drain their window.__billEvents.
+
+        JS pushes events into window.__billEvents (a per-frame array).
+        frame.evaluate() reads and clears the array atomically from Python.
+        This bypasses console.log overrides, CSP, and cross-origin iframe
+        restrictions that defeated the previous console.log / CDP approaches.
+        """
+        try:
+            for p in context.pages:
+                if p.is_closed():
+                    continue
+                for frame in p.frames:
+                    try:
+                        events = frame.evaluate(
+                            "() => { var e = window.__billEvents || []; "
+                            "window.__billEvents = []; return e; }"
+                        )
+                        for evt in (events or []):
+                            et = evt.get("event_type", "?")
+                            if et != "_attached":
+                                print(f"  [evt ] received: {et}")
+                            record(evt)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -448,7 +411,8 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
 
         try:
             while browser.is_connected():
-                time.sleep(0.4)
+                _drain_frames()
+                time.sleep(0.2)
         except KeyboardInterrupt:
             print("\n  [teach] Interrupted.")
         finally:
