@@ -342,6 +342,10 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
     def _enqueue(step: dict[str, Any]) -> None:
         post_queue.put(step)
 
+    # Keep CDP session objects alive — Python would GC them otherwise and the
+    # event subscription would silently stop firing.
+    _cdp_sessions: list[Any] = []
+
     def record(event: dict[str, Any]) -> None:
         et = event.get("event_type", "")
         if et == "_attached":
@@ -355,9 +359,8 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
         _enqueue(_event_to_step(event))
 
     def on_console(msg: Any) -> None:
-        """Receive browser-side events routed through console.log."""
+        """Fallback: page.on('console') — only fires for main frame."""
         try:
-            # Accept 'log' and 'info' — some browsers/sites remap console.log
             if msg.type not in ("log", "info"):
                 return
             text = msg.text
@@ -366,10 +369,34 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
             event = json.loads(text[len(_CONSOLE_PREFIX):])
             et = event.get("event_type", "?")
             if et != "_attached":
-                print(f"  [evt ] received: {et}")
+                print(f"  [evt/fb] received: {et}")
             record(event)
         except Exception as exc:
             print(f"  [teach] console parse error: {exc}", file=sys.stderr)
+
+    def _on_cdp_console(event: dict[str, Any]) -> None:
+        """Primary handler via raw CDP — fires for main frame AND every iframe.
+
+        Playwright's page.on('console') silently drops messages from sub-frames,
+        which is why clicks inside iframe-heavy SPAs (healthcare.gov, etc.) were
+        never reaching Python.  CDP Runtime.consoleAPICalled has no such filter.
+        """
+        try:
+            if event.get("type") not in ("log", "info"):
+                return
+            args = event.get("args") or []
+            if not args:
+                return
+            text = args[0].get("value", "")
+            if not isinstance(text, str) or not text.startswith(_CONSOLE_PREFIX):
+                return
+            evt = json.loads(text[len(_CONSOLE_PREFIX):])
+            et = evt.get("event_type", "?")
+            if et != "_attached":
+                print(f"  [evt ] received: {et}")
+            record(evt)
+        except Exception as exc:
+            print(f"  [teach] CDP parse error: {exc}", file=sys.stderr)
 
     def on_navigate(url: str) -> None:
         if url == last_url[0]:
@@ -381,7 +408,16 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
         _enqueue(_event_to_step({"event_type": "navigate", "url": url, "element": {}}))
 
     def attach_page(p: Any) -> None:
-        p.on("console", on_console)
+        # Prefer raw CDP — captures console from ALL frames including iframes.
+        # Fall back to page.on('console') if CDP session creation fails.
+        try:
+            cdp = context.new_cdp_session(p)
+            cdp.send("Runtime.enable")
+            cdp.on("Runtime.consoleAPICalled", _on_cdp_console)
+            _cdp_sessions.append(cdp)   # prevent GC
+        except Exception as exc:
+            print(f"  [teach] CDP attach failed ({exc}), using page.on fallback", file=sys.stderr)
+            p.on("console", on_console)
         p.on("framenavigated", lambda frame: on_navigate(frame.url) if frame == p.main_frame else None)
 
     with sync_playwright() as pw:
