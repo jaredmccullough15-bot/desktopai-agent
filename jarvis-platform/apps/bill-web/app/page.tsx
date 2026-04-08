@@ -78,6 +78,45 @@ type BrainCommandResponse = {
   task?: BrainTaskRef | null;
 };
 
+type DraftVariableInput = {
+  field_key: string;
+  sample_value: string;
+  is_variable: boolean;
+  required_input: boolean;
+  input_source: string;
+  source_detail: string;
+  prompt_question: string;
+};
+
+type DraftFieldMapping = {
+  field: string;
+  source: string;
+  source_detail: string;
+};
+
+type DraftStep = {
+  step_order: number;
+  name: string;
+  step_name: string;
+  purpose: string;
+  instruction: string;
+  action: string;
+  selector: string;
+  url: string;
+  value: string;
+  option: string;
+  manual_review_required: boolean;
+  variable_inputs: DraftVariableInput[];
+  field_mappings: DraftFieldMapping[];
+  validation_rules: string[];
+  intent: string;
+  description: string;
+  success_condition: string;
+  failure_condition: string;
+  failure_behavior: string;
+  recovery_strategy: string;
+};
+
 type WorkflowLearningDraft = {
   draft_id: string;
   created_at: string;
@@ -89,13 +128,16 @@ type WorkflowLearningDraft = {
   required_inputs: string[];
   required_session_state: string[];
   safe_for_unattended: boolean;
-  steps: Array<Record<string, unknown>>;
+  steps: DraftStep[];
   validation_rules: string[];
   fallback_strategies: string[];
   common_failures: string[];
   review_status: string;
   reviewer_notes?: string | null;
   published_workflow_name?: string | null;
+  variables?: Array<Record<string, unknown>>;
+  teaching_complete?: boolean;
+  teaching_pending_step?: number | null;
 };
 
 type ChatEntry = {
@@ -129,6 +171,23 @@ type ActionFeedback = {
   kind: "success" | "error";
   message: string;
   timestamp: string;
+};
+
+type TeachingStepQuestionItem = {
+  step_order: number;
+  field: string;
+  question: string;
+  current_value: string | null;
+  options: string[];
+};
+
+type TeachingSessionQuestion = {
+  draft_id: string;
+  step_order: number;
+  step_name: string;
+  questions: TeachingStepQuestionItem[];
+  teaching_complete: boolean;
+  steps_remaining: number;
 };
 
 const getApiBase = (): string => {
@@ -274,8 +333,15 @@ export default function Home() {
   const [learningGoal, setLearningGoal] = useState("");
   const [learningSourceText, setLearningSourceText] = useState("");
   const [workflowDrafts, setWorkflowDrafts] = useState<WorkflowLearningDraft[]>([]);
+  const [expandedDraftId, setExpandedDraftId] = useState<string | null>(null);
+  const [draftStepEdits, setDraftStepEdits] = useState<Record<string, DraftStep[]>>({});
   const [learningBusyKey, setLearningBusyKey] = useState<string | null>(null);
   const [learningFeedback, setLearningFeedback] = useState<ActionFeedback | null>(null);
+  const [teachingSessionDraftId, setTeachingSessionDraftId] = useState<string | null>(null);
+  const [teachingOverlayOpen, setTeachingOverlayOpen] = useState(false);
+  const [teachingStatus, setTeachingStatus] = useState<"watching" | "step_captured" | "waiting_clarification" | "paused">("watching");
+  const [teachingCurrentQuestion, setTeachingCurrentQuestion] = useState<TeachingSessionQuestion | null>(null);
+  const [teachingAnswers, setTeachingAnswers] = useState<Record<string, string>>({});
   const [chatHistory, setChatHistory] = useState<ChatEntry[]>([
     {
       role: "assistant",
@@ -302,6 +368,209 @@ export default function Home() {
       message,
       timestamp: new Date().toLocaleTimeString(),
     });
+  };
+
+  const toDraftVariableInput = (item: Partial<DraftVariableInput> | undefined, fallbackField: string): DraftVariableInput => ({
+    field_key: String(item?.field_key ?? fallbackField).trim() || fallbackField,
+    sample_value: String(item?.sample_value ?? "").trim(),
+    is_variable: Boolean(item?.is_variable ?? true),
+    required_input: Boolean(item?.required_input ?? true),
+    input_source: String(item?.input_source ?? "ask_user").trim() || "ask_user",
+    source_detail: String(item?.source_detail ?? "").trim(),
+    prompt_question: String(item?.prompt_question ?? `How should ${fallbackField} be populated?`).trim(),
+  });
+
+  const toDraftFieldMapping = (item: Partial<DraftFieldMapping> | undefined, fallbackField: string): DraftFieldMapping => ({
+    field: String(item?.field ?? fallbackField).trim() || fallbackField,
+    source: String(item?.source ?? "ask_user").trim() || "ask_user",
+    source_detail: String(item?.source_detail ?? "").trim(),
+  });
+
+  const toDraftStep = (step: Partial<DraftStep>, index: number): DraftStep => {
+    const selector = String(step.selector ?? "").trim();
+    const fallbackField = selector || `step_${index + 1}_value`;
+    const variableInputsRaw = Array.isArray(step.variable_inputs) ? step.variable_inputs : [];
+    const fieldMappingsRaw = Array.isArray(step.field_mappings) ? step.field_mappings : [];
+    return {
+      step_order: Number(step.step_order ?? index + 1),
+      name: String(step.name ?? `step_${index + 1}`).trim() || `step_${index + 1}`,
+      step_name: String(step.step_name ?? step.name ?? `Step ${index + 1}`).trim() || `Step ${index + 1}`,
+      purpose: String(step.purpose ?? "").trim(),
+      instruction: String(step.instruction ?? "").trim(),
+      action: String(step.action ?? "manual_step").trim() || "manual_step",
+      selector,
+      url: String(step.url ?? "").trim(),
+      value: String(step.value ?? "").trim(),
+      option: String(step.option ?? "").trim(),
+      manual_review_required: Boolean(step.manual_review_required),
+      variable_inputs: variableInputsRaw.map((item) => toDraftVariableInput(item, fallbackField)),
+      field_mappings: fieldMappingsRaw.map((item) => toDraftFieldMapping(item, fallbackField)),
+      validation_rules: Array.isArray(step.validation_rules) ? step.validation_rules.map((rule) => String(rule)) : [],
+      success_condition: String(step.success_condition ?? "").trim(),
+      failure_behavior: String(step.failure_behavior ?? "").trim(),
+      intent: String(step.intent ?? "").trim(),
+      description: String(step.description ?? "").trim(),
+      failure_condition: String(step.failure_condition ?? "").trim(),
+      recovery_strategy: String(step.recovery_strategy ?? "").trim(),
+    };
+  };
+
+  const cloneDraftSteps = (steps: DraftStep[] | Array<Record<string, unknown>>): DraftStep[] =>
+    (steps ?? []).map((step, index) => toDraftStep(step as DraftStep, index));
+
+  const ensureDraftEditingState = (draft: WorkflowLearningDraft) => {
+    setDraftStepEdits((current) => {
+      if (current[draft.draft_id]) {
+        return current;
+      }
+      return { ...current, [draft.draft_id]: cloneDraftSteps(draft.steps) };
+    });
+  };
+
+  const getDraftStepsForDisplay = (draft: WorkflowLearningDraft): DraftStep[] =>
+    draftStepEdits[draft.draft_id] ?? cloneDraftSteps(draft.steps);
+
+  const updateDraftStep = (draftId: string, stepIndex: number, patch: Partial<DraftStep>) => {
+    setDraftStepEdits((current) => {
+      const existing = current[draftId] ? [...current[draftId]] : [];
+      if (!existing[stepIndex]) {
+        return current;
+      }
+      existing[stepIndex] = { ...existing[stepIndex], ...patch };
+      return { ...current, [draftId]: existing };
+    });
+  };
+
+  const updateDraftStepVariable = (
+    draftId: string,
+    stepIndex: number,
+    variableIndex: number,
+    patch: Partial<DraftVariableInput>,
+  ) => {
+    setDraftStepEdits((current) => {
+      const existing = current[draftId] ? [...current[draftId]] : [];
+      if (!existing[stepIndex]) {
+        return current;
+      }
+      const variables = [...(existing[stepIndex].variable_inputs ?? [])];
+      if (!variables[variableIndex]) {
+        return current;
+      }
+      variables[variableIndex] = { ...variables[variableIndex], ...patch };
+      existing[stepIndex] = { ...existing[stepIndex], variable_inputs: variables };
+      return { ...current, [draftId]: existing };
+    });
+  };
+
+  const draftStepSummary = (step: Record<string, unknown>, index: number): string => {
+    const action = String(step.action ?? step.type ?? "manual_step").trim().toLowerCase();
+    const instruction = String(step.instruction ?? "").trim();
+    const selector = String(step.selector ?? "").trim();
+    const url = String(step.url ?? "").trim();
+    const value = String(step.value ?? "").trim();
+    const name = String(step.name ?? `step_${index + 1}`).trim();
+
+    if (instruction && action === "manual_step") {
+      return `Manual step: ${instruction}`;
+    }
+
+    if (action === "open_url") {
+      return url ? `Open ${url}` : "Open the target page";
+    }
+
+    if (action === "wait_for_element") {
+      return selector ? `Wait until ${selector} appears` : "Wait for the page to be ready";
+    }
+
+    if (action === "click_selector") {
+      return selector ? `Click ${selector}` : "Click the required on-screen element";
+    }
+
+    if (action === "type_text") {
+      if (selector && value) return `Type \"${value}\" into ${selector}`;
+      if (selector) return `Enter required text into ${selector}`;
+      return "Enter the required text in the form";
+    }
+
+    if (action === "take_screenshot") {
+      return "Capture a screenshot";
+    }
+
+    if (instruction) {
+      return instruction;
+    }
+
+    return `Perform ${name.replaceAll("_", " ")}`;
+  };
+
+  const draftStepExtraDetail = (step: Record<string, unknown>): string => {
+    const action = String(step.action ?? step.type ?? "manual_step").trim().toLowerCase();
+    const instruction = String(step.instruction ?? "").trim();
+    const selector = String(step.selector ?? "").trim();
+    const url = String(step.url ?? "").trim();
+    const value = String(step.value ?? "").trim();
+    const manualRequired = Boolean(step.manual_review_required);
+
+    const details: string[] = [];
+    if (instruction && action !== "manual_step") details.push(`Instruction: ${instruction}`);
+    if (selector) details.push(`Selector: ${selector}`);
+    if (url) details.push(`URL: ${url}`);
+    if (value) details.push(`Value: ${value}`);
+    if (manualRequired) details.push("Needs manual review before unattended run");
+
+    return details.join(" | ");
+  };
+
+  const saveDraftStructure = async (draft: WorkflowLearningDraft) => {
+    if (learningBusyKey) {
+      return;
+    }
+
+    const editedSteps = draftStepEdits[draft.draft_id] ?? cloneDraftSteps(draft.steps);
+    const requiredInputs = editedSteps
+      .flatMap((step) => step.variable_inputs ?? [])
+      .filter((item) => item.required_input)
+      .map((item) => item.field_key.trim())
+      .filter((field, index, list) => field.length > 0 && list.indexOf(field) === index);
+
+    setLearningBusyKey(`save-structure-${draft.draft_id}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${draft.draft_id}/structure`;
+      const response = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          steps: editedSteps,
+          required_inputs: requiredInputs,
+        }),
+      });
+
+      const body = (await response.json()) as WorkflowLearningDraft | { detail?: string };
+      if (!response.ok) {
+        throw new Error((body as { detail?: string }).detail ?? `Save structure failed (${response.status})`);
+      }
+
+      setFeedback(setLearningFeedback, "success", `Saved structured draft for ${draft.workflow_name}.`);
+      await loadBrainPanels();
+      setDraftStepEdits((current) => {
+        const next = { ...current };
+        next[draft.draft_id] = cloneDraftSteps((body as WorkflowLearningDraft).steps);
+        return next;
+      });
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Save structure failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
   };
 
   const fetchJson = async <T,>(url: string): Promise<T> => {
@@ -815,9 +1084,23 @@ export default function Home() {
   };
 
   const createWorkflowDraft = async () => {
-    if (!learningSourceText.trim() || learningBusyKey) {
+    const normalizedName = learningWorkflowName.trim();
+    const normalizedGoal = learningGoal.trim();
+    const normalizedSource = learningSourceText.trim();
+    const isDemonstrationPath = learningPath === "demonstration";
+
+    if (learningBusyKey) {
       return;
     }
+
+    if (!normalizedName) {
+      return;
+    }
+
+    if (!isDemonstrationPath && !normalizedSource) {
+      return;
+    }
+
     setLearningBusyKey("create-draft");
     try {
       const apiBase = getApiBase();
@@ -831,9 +1114,9 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           learning_path: learningPath,
-          source_text: learningSourceText,
-          workflow_name: learningWorkflowName || undefined,
-          goal: learningGoal || undefined,
+          source_text: normalizedSource || undefined,
+          workflow_name: normalizedName || undefined,
+          goal: normalizedGoal || undefined,
         }),
       });
       const body = (await response.json()) as WorkflowLearningDraft | { detail?: string };
@@ -844,8 +1127,11 @@ export default function Home() {
       setFeedback(
         setLearningFeedback,
         "success",
-        `Created draft ${(body as WorkflowLearningDraft).draft_id} for ${(body as WorkflowLearningDraft).workflow_name}`,
+        isDemonstrationPath
+          ? `Started teaching draft ${(body as WorkflowLearningDraft).draft_id} for ${(body as WorkflowLearningDraft).workflow_name}. Waiting for real demonstration capture.`
+          : `Created draft ${(body as WorkflowLearningDraft).draft_id} for ${(body as WorkflowLearningDraft).workflow_name}`,
       );
+      startTeachingSession((body as WorkflowLearningDraft).draft_id);
       setLearningSourceText("");
       await loadBrainPanels();
     } catch (error) {
@@ -888,6 +1174,44 @@ export default function Home() {
         setLearningFeedback,
         "error",
         `Update draft status failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
+  const deleteDraft = async (draftId: string, workflowName: string) => {
+    if (!draftId || learningBusyKey) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete draft \"${workflowName}\"? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+
+    setLearningBusyKey(`delete-${draftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${draftId}`;
+      const response = await fetch(url, { method: "DELETE" });
+      if (!response.ok) {
+        const body = (await response.json()) as { detail?: string };
+        throw new Error(body.detail ?? `Delete draft failed (${response.status})`);
+      }
+
+      setExpandedDraftId((current) => (current === draftId ? null : current));
+      setFeedback(setLearningFeedback, "success", `Deleted draft ${workflowName}.`);
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Delete draft failed: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     } finally {
       setLearningBusyKey(null);
@@ -973,6 +1297,144 @@ export default function Home() {
       setLearningBusyKey(null);
     }
   };
+
+  const loadTeachingQuestion = async (draftId: string) => {
+    if (learningBusyKey) {
+      return;
+    }
+    setLearningBusyKey(`teach-load-${draftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${draftId}/teach`;
+      const response = await fetch(url);
+      const body = (await response.json()) as TeachingSessionQuestion | { detail?: string };
+      if (!response.ok) {
+        throw new Error(
+          (body as { detail?: string }).detail ?? `Fetch teaching question failed (${response.status})`,
+        );
+      }
+      const question = body as TeachingSessionQuestion;
+      setTeachingCurrentQuestion(question);
+      setTeachingAnswers({});
+      setTeachingStatus(question.teaching_complete ? "watching" : "waiting_clarification");
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Teaching question fetch failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
+  const startTeachingSession = (draftId: string) => {
+    setTeachingSessionDraftId(draftId);
+    setTeachingOverlayOpen(true);
+    setTeachingStatus("watching");
+    setTeachingCurrentQuestion(null);
+    setTeachingAnswers({});
+  };
+
+  const submitTeachingAnswers = async () => {
+    if (!teachingSessionDraftId || !teachingCurrentQuestion || learningBusyKey) {
+      return;
+    }
+    const answers = teachingCurrentQuestion.questions.map((q) => ({
+      field: q.field,
+      value: teachingAnswers[q.field] ?? q.current_value ?? "",
+    }));
+    setLearningBusyKey(`teach-submit-${teachingSessionDraftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const url = `${apiBase}/api/brain/workflow-learning/drafts/${teachingSessionDraftId}/teach`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ step_order: teachingCurrentQuestion.step_order, answers }),
+      });
+      const body = (await response.json()) as TeachingSessionQuestion | { detail?: string };
+      if (!response.ok) {
+        throw new Error(
+          (body as { detail?: string }).detail ?? `Submit teaching answers failed (${response.status})`,
+        );
+      }
+      const next = body as TeachingSessionQuestion;
+      setTeachingCurrentQuestion(next);
+      setTeachingAnswers({});
+      setTeachingStatus("step_captured");
+      setTimeout(() => {
+        setTeachingStatus(next.teaching_complete ? "watching" : "waiting_clarification");
+      }, 1200);
+      await loadBrainPanels();
+    } catch (error) {
+      setFeedback(
+        setLearningFeedback,
+        "error",
+        `Submit answers failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+      setTeachingStatus("waiting_clarification");
+    } finally {
+      setLearningBusyKey(null);
+    }
+  };
+
+  const pauseResumeTeaching = () => {
+    setTeachingStatus((prev) => {
+      if (prev === "paused") {
+        return teachingCurrentQuestion && !teachingCurrentQuestion.teaching_complete
+          ? "waiting_clarification"
+          : "watching";
+      }
+      return "paused";
+    });
+  };
+
+  const finishTeachingSession = async () => {
+    setTeachingSessionDraftId(null);
+    setTeachingOverlayOpen(false);
+    setTeachingCurrentQuestion(null);
+    setTeachingAnswers({});
+    setTeachingStatus("watching");
+    await loadBrainPanels();
+  };
+
+  const teachingActiveDraft = teachingSessionDraftId
+    ? (workflowDrafts.find((d) => d.draft_id === teachingSessionDraftId) ?? null)
+    : null;
+
+  const teachingStatusDot =
+    teachingStatus === "step_captured"
+      ? "bg-emerald-400"
+      : teachingStatus === "waiting_clarification"
+        ? "bg-cyan-400 animate-pulse"
+        : teachingStatus === "paused"
+          ? "bg-slate-400"
+          : "bg-amber-400 animate-pulse";
+
+  const teachingStatusLabel =
+    teachingStatus === "step_captured"
+      ? "Step Captured"
+      : teachingStatus === "waiting_clarification"
+        ? "Awaiting Answer"
+        : teachingStatus === "paused"
+          ? "Paused"
+          : "Watching";
+
+  const teachingStatusRing =
+    teachingStatus === "step_captured"
+      ? "border-emerald-400/50 bg-emerald-500/10"
+      : teachingStatus === "waiting_clarification"
+        ? "border-cyan-400/50 bg-cyan-500/10"
+        : teachingStatus === "paused"
+          ? "border-slate-500/50 bg-slate-800/70"
+          : "border-amber-500/40 bg-amber-500/10";
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#13324a_0%,_#090d14_45%,_#070a11_100%)] text-slate-100">
@@ -1443,15 +1905,39 @@ export default function Home() {
 
             <section className="rounded-2xl border border-amber-500/30 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
               <div className="mb-3">
-                <h2 className="text-lg font-semibold">Learn New Workflow</h2>
+                <h2 className="text-lg font-semibold">Teach Bill a Workflow</h2>
                 <p className="text-xs text-slate-400">
-                  Trainer mode: create drafts from plain English, demonstrations, or SOP text. Publish only after review.
+                  Training experience: teach Bill like a human operator, test step-by-step, then approve and publish.
                 </p>
+              </div>
+
+              <div className="mb-4 rounded-xl border border-cyan-400/30 bg-cyan-500/10 p-3 text-xs text-cyan-100">
+                <p className="font-semibold">Training Stages</p>
+                <p className="mt-1">1) Workflow Setup · 2) Teaching Mode · 3) Step Builder · 4) Validation · 5) Failure Behavior · 6) Test Mode · 7) Publish</p>
+              </div>
+
+              <div className="mb-3 grid gap-3 sm:grid-cols-2">
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input type="checkbox" className="h-4 w-4 rounded border-slate-600 bg-slate-900" defaultChecked />
+                  Login required
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input type="checkbox" className="h-4 w-4 rounded border-slate-600 bg-slate-900" defaultChecked />
+                  Visible mode required
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input type="checkbox" className="h-4 w-4 rounded border-slate-600 bg-slate-900" />
+                  Safe for unattended
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input type="checkbox" className="h-4 w-4 rounded border-slate-600 bg-slate-900" />
+                  Includes manual confirmations
+                </label>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="text-xs text-slate-400">
-                  Learning path
+                  Teaching path
                   <select
                     value={learningPath}
                     onChange={(event) => setLearningPath(event.target.value)}
@@ -1464,7 +1950,7 @@ export default function Home() {
                 </label>
 
                 <label className="text-xs text-slate-400">
-                  Workflow name (optional)
+                  Workflow name
                   <input
                     type="text"
                     value={learningWorkflowName}
@@ -1475,7 +1961,7 @@ export default function Home() {
               </div>
 
               <label className="mt-3 block text-xs text-slate-400">
-                Goal (optional)
+                Goal
                 <input
                   type="text"
                   value={learningGoal}
@@ -1485,12 +1971,16 @@ export default function Home() {
               </label>
 
               <label className="mt-3 block text-xs text-slate-400">
-                Source text
+                Teaching notes / observed run details
                 <textarea
                   rows={6}
                   value={learningSourceText}
                   onChange={(event) => setLearningSourceText(event.target.value)}
-                  placeholder="Describe steps line-by-line, paste checklist, or summarize observed run."
+                  placeholder={
+                    learningPath === "demonstration"
+                      ? "Optional notes. Start Teaching will open an empty draft and wait for real captured steps."
+                      : "Describe steps line-by-line, paste checklist, or summarize observed run."
+                  }
                   className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
                 />
               </label>
@@ -1499,12 +1989,22 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => void createWorkflowDraft()}
-                  disabled={!learningSourceText.trim() || learningBusyKey !== null}
+                  disabled={
+                    learningBusyKey !== null ||
+                    !learningWorkflowName.trim() ||
+                    (learningPath !== "demonstration" && !learningSourceText.trim())
+                  }
                   className={BUTTON_PRIMARY}
                 >
-                  {learningBusyKey === "create-draft" ? "Creating..." : "Create Draft"}
+                  {learningBusyKey === "create-draft" ? "Starting..." : "Start Teaching Mode"}
                 </button>
               </div>
+
+              {learningPath === "demonstration" && (
+                <p className="mt-2 text-xs text-cyan-200/90">
+                  Demonstration mode now ignores setup form text as workflow steps. It starts an empty draft and waits for actual captured actions.
+                </p>
+              )}
 
               {errors.drafts && <p className="mt-3 text-sm text-rose-300">{errors.drafts}</p>}
 
@@ -1520,20 +2020,246 @@ export default function Home() {
                 </div>
               )}
 
+              <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90">
+                Draft cards below show parsed steps from the teaching input (snapshot at draft update time). For live per-click capture while you perform the workflow,
+                use the desktop app Teach Bill panel.
+              </p>
+
               <div className="mt-4 max-h-[360px] space-y-3 overflow-auto pr-1">
                 {workflowDrafts.length === 0 ? (
                   <p className="text-sm text-slate-400">No workflow drafts yet.</p>
                 ) : (
                   workflowDrafts.map((draft) => (
-                    <article key={draft.draft_id} className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                    <article key={draft.draft_id} className={`rounded-xl border p-3 ${teachingSessionDraftId === draft.draft_id ? "border-amber-500/40 bg-amber-950/20" : "border-slate-800 bg-slate-950/70"}`}>
                       <p className="text-sm font-semibold text-slate-100">{draft.workflow_name}</p>
                       <p className="mt-1 text-xs text-slate-400">
-                        Path: {draft.learning_path} · Status: {draft.review_status} · Updated: {toDisplayTime(draft.updated_at)}
+                        Teaching path: {draft.learning_path} · Status: {draft.review_status} · Updated: {toDisplayTime(draft.updated_at)}
                       </p>
                       <p className="mt-2 text-xs text-slate-300">{draft.goal}</p>
-                      <p className="mt-2 text-xs text-slate-500">Steps: {draft.steps.length}</p>
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <p className="text-xs text-slate-500">Parsed steps: {draft.steps.length}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            ensureDraftEditingState(draft);
+                            setExpandedDraftId((current) => (current === draft.draft_id ? null : draft.draft_id));
+                          }}
+                          className={BUTTON_ACCENT_GHOST}
+                        >
+                          {expandedDraftId === draft.draft_id ? "Hide Steps" : "View Steps"}
+                        </button>
+                      </div>
+
+                      {expandedDraftId === draft.draft_id && (
+                        <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/80 p-2">
+                          {getDraftStepsForDisplay(draft).length === 0 ? (
+                            <p className="text-xs text-slate-400">No parsed steps yet.</p>
+                          ) : (
+                            <div className="space-y-3 text-xs text-slate-200">
+                              {getDraftStepsForDisplay(draft).map((step, idx) => (
+                                <div key={`${draft.draft_id}-step-${idx}`} className="rounded border border-slate-800 bg-slate-950/70 px-2 py-2">
+                                  <p className="font-medium text-slate-100">
+                                    {idx + 1}. {draftStepSummary(step, idx)}
+                                  </p>
+                                  {draftStepExtraDetail(step) && (
+                                    <p className="mt-1 text-[11px] text-slate-400">{draftStepExtraDetail(step)}</p>
+                                  )}
+
+                                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                                    <label className="text-[11px] text-slate-400">
+                                      Step name
+                                      <input
+                                        type="text"
+                                        value={step.step_name}
+                                        onChange={(event) =>
+                                          updateDraftStep(draft.draft_id, idx, { step_name: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                      />
+                                    </label>
+                                    <label className="text-[11px] text-slate-400">
+                                      Detected action
+                                      <input
+                                        type="text"
+                                        value={step.action}
+                                        readOnly
+                                        className="mt-1 w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 text-xs text-slate-300"
+                                      />
+                                    </label>
+                                  </div>
+
+                                  <label className="mt-2 block text-[11px] text-slate-400">
+                                    Step purpose
+                                    <textarea
+                                      rows={2}
+                                      value={step.purpose}
+                                      onChange={(event) =>
+                                        updateDraftStep(draft.draft_id, idx, { purpose: event.target.value })
+                                      }
+                                      className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                    />
+                                  </label>
+
+                                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                                    <label className="text-[11px] text-slate-400">
+                                      Success condition
+                                      <input
+                                        type="text"
+                                        value={step.success_condition}
+                                        onChange={(event) =>
+                                          updateDraftStep(draft.draft_id, idx, { success_condition: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                      />
+                                    </label>
+                                    <label className="text-[11px] text-slate-400">
+                                      Failure behavior
+                                      <input
+                                        type="text"
+                                        value={step.failure_behavior}
+                                        onChange={(event) =>
+                                          updateDraftStep(draft.draft_id, idx, { failure_behavior: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                      />
+                                    </label>
+                                  </div>
+
+                                  {step.variable_inputs.length > 0 && (
+                                    <div className="mt-2 rounded border border-cyan-500/20 bg-cyan-500/5 p-2">
+                                      <p className="text-[11px] font-semibold text-cyan-100">Variable inputs</p>
+                                      {step.variable_inputs.map((variable, variableIdx) => (
+                                        <div key={`${draft.draft_id}-step-${idx}-var-${variableIdx}`} className="mt-2 rounded border border-slate-800 bg-slate-900/70 p-2">
+                                          <label className="text-[11px] text-slate-400">
+                                            Field key
+                                            <input
+                                              type="text"
+                                              value={variable.field_key}
+                                              onChange={(event) =>
+                                                updateDraftStepVariable(draft.draft_id, idx, variableIdx, { field_key: event.target.value })
+                                              }
+                                              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                            />
+                                          </label>
+
+                                          <label className="mt-2 block text-[11px] text-slate-400">
+                                            Clarifying question
+                                            <input
+                                              type="text"
+                                              value={variable.prompt_question}
+                                              onChange={(event) =>
+                                                updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
+                                                  prompt_question: event.target.value,
+                                                })
+                                              }
+                                              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                            />
+                                          </label>
+
+                                          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                                            <label className="text-[11px] text-slate-400">
+                                              Sample value
+                                              <input
+                                                type="text"
+                                                value={variable.sample_value}
+                                                onChange={(event) =>
+                                                  updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
+                                                    sample_value: event.target.value,
+                                                  })
+                                                }
+                                                className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                              />
+                                            </label>
+                                            <label className="text-[11px] text-slate-400">
+                                              Future value source
+                                              <select
+                                                value={variable.input_source}
+                                                onChange={(event) =>
+                                                  updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
+                                                    input_source: event.target.value,
+                                                  })
+                                                }
+                                                className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                              >
+                                                <option value="ask_user">Ask user at runtime</option>
+                                                <option value="client_record">Pull from client record</option>
+                                                <option value="fixed_default">Use fixed default</option>
+                                                <option value="derive_previous_step">Derive from previous step</option>
+                                              </select>
+                                            </label>
+                                          </div>
+
+                                          <label className="mt-2 block text-[11px] text-slate-400">
+                                            Source detail (optional)
+                                            <input
+                                              type="text"
+                                              value={variable.source_detail}
+                                              onChange={(event) =>
+                                                updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
+                                                  source_detail: event.target.value,
+                                                })
+                                              }
+                                              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                            />
+                                          </label>
+
+                                          <div className="mt-2 flex gap-4 text-[11px] text-slate-300">
+                                            <label className="flex items-center gap-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={variable.is_variable}
+                                                onChange={(event) =>
+                                                  updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
+                                                    is_variable: event.target.checked,
+                                                  })
+                                                }
+                                              />
+                                              Variable each run
+                                            </label>
+                                            <label className="flex items-center gap-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={variable.required_input}
+                                                onChange={(event) =>
+                                                  updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
+                                                    required_input: event.target.checked,
+                                                  })
+                                                }
+                                              />
+                                              Required workflow input
+                                            </label>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+
+                              <div className="flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => void saveDraftStructure(draft)}
+                                  disabled={learningBusyKey !== null}
+                                  className={BUTTON_PRIMARY}
+                                >
+                                  {learningBusyKey === `save-structure-${draft.draft_id}` ? "Saving..." : "Save Structured Draft"}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void deleteDraft(draft.draft_id, draft.workflow_name)}
+                          disabled={learningBusyKey !== null}
+                          className={BUTTON_DANGER}
+                        >
+                          {learningBusyKey === `delete-${draft.draft_id}` ? "Deleting..." : "Delete"}
+                        </button>
                         <button
                           type="button"
                           onClick={() => void updateDraftStatus(draft.draft_id, "in_review")}
@@ -1552,11 +2278,19 @@ export default function Home() {
                         </button>
                         <button
                           type="button"
+                          onClick={() => startTeachingSession(draft.draft_id)}
+                          disabled={learningBusyKey !== null}
+                          className={teachingSessionDraftId === draft.draft_id ? `${BUTTON_ACCENT_GHOST} border-amber-400/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20` : BUTTON_ACCENT_GHOST}
+                        >
+                          {teachingSessionDraftId === draft.draft_id ? "● Teaching Active" : "Teach Steps"}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => void testDraftGuided(draft.draft_id)}
                           disabled={learningBusyKey !== null}
                           className={BUTTON_ACCENT_GHOST}
                         >
-                          {learningBusyKey === `test-${draft.draft_id}` ? "Testing..." : "Guided Test"}
+                          {learningBusyKey === `test-${draft.draft_id}` ? "Testing..." : "Test Mode"}
                         </button>
                         <button
                           type="button"
@@ -1675,6 +2409,195 @@ export default function Home() {
           </div>
         </section>
       </div>
+
+      {/* Teaching Mode Floating Overlay */}
+      {teachingSessionDraftId !== null && (
+        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2">
+          {teachingOverlayOpen && (
+            <div className="w-80 overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-950/95 shadow-2xl shadow-black/70 backdrop-blur-sm">
+              {/* Header */}
+              <div className={`flex items-center justify-between border-b border-slate-800/80 px-4 py-3 ${teachingStatusRing}`}>
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 flex-shrink-0 rounded-full ${teachingStatusDot}`} />
+                  <span className="text-xs font-semibold text-slate-100">Teaching Mode Active</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTeachingOverlayOpen(false)}
+                  className="ml-2 text-slate-500 transition hover:text-slate-200"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Workflow info */}
+              <div className="border-b border-slate-800/60 px-4 py-3">
+                <p className="truncate text-sm font-semibold text-slate-100">
+                  {teachingActiveDraft?.workflow_name ?? "—"}
+                </p>
+                <div className="mt-1.5 flex items-center gap-3 text-xs text-slate-400">
+                  <span>
+                    Status:{" "}
+                    <span
+                      className={
+                        teachingStatus === "step_captured"
+                          ? "text-emerald-300"
+                          : teachingStatus === "waiting_clarification"
+                            ? "text-cyan-300"
+                            : teachingStatus === "paused"
+                              ? "text-slate-400"
+                              : "text-amber-300"
+                      }
+                    >
+                      {teachingStatusLabel}
+                    </span>
+                  </span>
+                  <span className="text-slate-600">·</span>
+                  <span>
+                    Steps: <span className="text-slate-200">{teachingActiveDraft?.steps?.length ?? 0}</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* Q&A body */}
+              <div className="px-4 py-3">
+                {teachingCurrentQuestion && !teachingCurrentQuestion.teaching_complete ? (
+                  <div>
+                    <div className="mb-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-400">
+                        Step {teachingCurrentQuestion.step_order}: {teachingCurrentQuestion.step_name}
+                      </p>
+                      {teachingCurrentQuestion.steps_remaining > 0 && (
+                        <p className="mt-0.5 text-[10px] text-slate-500">
+                          {teachingCurrentQuestion.steps_remaining} step
+                          {teachingCurrentQuestion.steps_remaining !== 1 ? "s" : ""} remaining after this
+                        </p>
+                      )}
+                    </div>
+                    <div className="max-h-56 space-y-3 overflow-y-auto pr-1">
+                      {teachingCurrentQuestion.questions.map((q, qi) => (
+                        <div key={`tq-${qi}`}>
+                          <p className="text-[11px] leading-relaxed text-slate-300">{q.question}</p>
+                          {q.current_value && !teachingAnswers[q.field] && (
+                            <p className="mt-0.5 text-[10px] italic text-slate-500">Current: {q.current_value}</p>
+                          )}
+                          {q.options.length > 0 ? (
+                            <div className="mt-1.5 flex flex-wrap gap-1.5">
+                              {q.options.map((opt) => (
+                                <button
+                                  key={opt}
+                                  type="button"
+                                  onClick={() => setTeachingAnswers((prev) => ({ ...prev, [q.field]: opt }))}
+                                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
+                                    (teachingAnswers[q.field] ?? q.current_value) === opt
+                                      ? "bg-cyan-500 text-slate-950 shadow shadow-cyan-500/30"
+                                      : "border border-slate-700 bg-slate-900 text-slate-300 hover:border-cyan-400/50 hover:text-cyan-200"
+                                  }`}
+                                >
+                                  {opt}
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <input
+                              type="text"
+                              value={teachingAnswers[q.field] ?? q.current_value ?? ""}
+                              onChange={(e) =>
+                                setTeachingAnswers((prev) => ({ ...prev, [q.field]: e.target.value }))
+                              }
+                              className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-900/80 px-2.5 py-1.5 text-xs text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-1 focus:ring-cyan-500/30"
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void submitTeachingAnswers()}
+                      disabled={learningBusyKey !== null}
+                      className="mt-3 w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 shadow shadow-cyan-500/20 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {learningBusyKey?.startsWith("teach-submit") ? "Saving\u2026" : "Submit Answers \u2192"}
+                    </button>
+                  </div>
+                ) : teachingCurrentQuestion?.teaching_complete ? (
+                  <div className="py-3 text-center">
+                    <p className="text-xl">✓</p>
+                    <p className="mt-1 text-sm font-semibold text-emerald-300">All steps taught</p>
+                    <p className="mt-1 text-xs text-slate-400">Review the draft and publish when ready.</p>
+                  </div>
+                ) : (
+                  <div className="py-1">
+                    <p className="text-xs leading-relaxed text-slate-400">
+                      {teachingActiveDraft?.learning_path === "demonstration"
+                        ? "Demonstration mode — steps are captured as you perform actions in the browser."
+                        : "Start the teaching loop to answer enrichment questions for each step."}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void loadTeachingQuestion(teachingSessionDraftId)}
+                      disabled={learningBusyKey !== null || (teachingActiveDraft?.steps?.length ?? 0) === 0}
+                      className="mt-3 w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 shadow shadow-cyan-500/20 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {(teachingActiveDraft?.steps?.length ?? 0) === 0
+                        ? "No steps — use Plain English path first"
+                        : learningBusyKey?.startsWith("teach-load")
+                          ? "Loading\u2026"
+                          : "Start Teaching Loop"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="flex flex-wrap gap-2 rounded-b-2xl border-t border-slate-800/60 px-4 py-3">
+                <button
+                  type="button"
+                  onClick={pauseResumeTeaching}
+                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-[11px] text-slate-300 transition hover:border-amber-400/50 hover:text-amber-300"
+                >
+                  {teachingStatus === "paused" ? "Resume" : "Pause"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void finishTeachingSession()}
+                  className="rounded-lg border border-rose-400/20 bg-rose-500/5 px-3 py-1.5 text-[11px] text-rose-300 transition hover:bg-rose-500/15"
+                >
+                  Finish Teaching
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Floating pill badge */}
+          <button
+            type="button"
+            onClick={() => setTeachingOverlayOpen((prev) => !prev)}
+            className={`flex items-center gap-2.5 rounded-full border px-4 py-2.5 shadow-lg shadow-black/50 backdrop-blur-sm transition hover:scale-[1.03] active:scale-100 ${teachingStatusRing}`}
+          >
+            <span className={`h-2 w-2 flex-shrink-0 rounded-full ${teachingStatusDot}`} />
+            <span className="whitespace-nowrap text-xs font-semibold text-slate-100">Teaching Mode</span>
+            {teachingActiveDraft && (
+              <span className="max-w-[7rem] truncate text-xs text-slate-400">
+                {teachingActiveDraft.workflow_name}
+              </span>
+            )}
+            <span className="rounded-full bg-slate-800/80 px-1.5 py-0.5 text-[10px] font-medium text-slate-300">
+              {teachingActiveDraft?.steps?.length ?? 0}
+            </span>
+            <svg
+              className={`h-3 w-3 flex-shrink-0 text-slate-500 transition-transform ${teachingOverlayOpen ? "rotate-180" : ""}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+        </div>
+      )}
     </main>
   );
 }
