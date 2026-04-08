@@ -217,13 +217,13 @@ Write-Step "Freeing required ports (8000, $webPort)"
 Stop-PortListeners -Ports @(8000, $webPort)
 
 $workerPkgFile = Join-Path $root "jarvis-platform\workers\bill-worker\package-output\bill-worker-lite.zip"
-$coreCommand = "Set-Location -Path `"$corePath`"; `$env:BILL_CORE_HOST=`"0.0.0.0`"; `$env:BILL_CORE_PORT=`"8000`"; `$env:BILL_WORKER_LATEST_VERSION=`"0.3.21`"; `$env:BILL_WORKER_PACKAGE_FILE=`"$workerPkgFile`"; `$env:BILL_WORKER_PACKAGE_PUBLIC_URL=`"https://api.bill-core.com/worker/update/package`"; `$env:BILL_WORKER_FORCE_UPDATE=`"true`"; & `"$corePythonExe`" -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+$coreCommand = "Set-Location -Path `"$corePath`"; `$env:BILL_CORE_HOST=`"0.0.0.0`"; `$env:BILL_CORE_PORT=`"8000`"; `$env:BILL_WORKER_LATEST_VERSION=`"0.3.21`"; `$env:BILL_WORKER_PACKAGE_FILE=`"$workerPkgFile`"; `$env:BILL_WORKER_PACKAGE_PUBLIC_URL=`"https://api.bill-core.com/worker/update/package`"; `$env:BILL_WORKER_FORCE_UPDATE=`"false`"; & `"$corePythonExe`" -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
 $workerCommand = "Set-Location -Path `"$workerPath`"; `$env:BILL_CORE_URL=`"http://127.0.0.1:8000`"; `$env:JARVIS_CORE_URL=`"http://127.0.0.1:8000`"; & `"$workerPythonExe`" main.py"
 $webCommand = "Set-Location -Path `"$webPath`"; `$env:NEXT_PUBLIC_API_BASE = `"http://127.0.0.1:8000`"; `$env:Path = `"C:\Program Files\nodejs;`" + `$env:Path; & `"$nodeExe`" .\node_modules\next\dist\bin\next dev -p $webPort"
 Write-Step "Freeing required ports (8010, $webPort)"
 Stop-PortListeners -Ports @(8010, $webPort)
 
-$coreCommand = "Set-Location -Path `"$corePath`"; `$env:BILL_CORE_HOST=`"0.0.0.0`"; `$env:BILL_CORE_PORT=`"8010`"; `$env:BILL_WORKER_LATEST_VERSION=`"0.3.21`"; `$env:BILL_WORKER_PACKAGE_FILE=`"$workerPkgFile`"; `$env:BILL_WORKER_PACKAGE_PUBLIC_URL=`"https://api.bill-core.com/worker/update/package`"; `$env:BILL_WORKER_FORCE_UPDATE=`"true`"; & `"$corePythonExe`" -m uvicorn main:app --reload --host 0.0.0.0 --port 8010"
+$coreCommand = "Set-Location -Path `"$corePath`"; `$env:BILL_CORE_HOST=`"0.0.0.0`"; `$env:BILL_CORE_PORT=`"8010`"; `$env:BILL_WORKER_LATEST_VERSION=`"0.3.21`"; `$env:BILL_WORKER_PACKAGE_FILE=`"$workerPkgFile`"; `$env:BILL_WORKER_PACKAGE_PUBLIC_URL=`"https://api.bill-core.com/worker/update/package`"; `$env:BILL_WORKER_FORCE_UPDATE=`"false`"; & `"$corePythonExe`" -m uvicorn main:app --reload --host 0.0.0.0 --port 8010"
 $workerCommand = "Set-Location -Path `"$workerPath`"; `$env:BILL_CORE_URL=`"http://127.0.0.1:8010`"; `$env:JARVIS_CORE_URL=`"http://127.0.0.1:8010`"; & `"$workerPythonExe`" main.py"
 $webCommand = "Set-Location -Path `"$webPath`"; `$env:NEXT_PUBLIC_API_BASE = `"http://127.0.0.1:8010`"; `$env:Path = `"C:\Program Files\nodejs;`" + `$env:Path; & `"$nodeExe`" .\node_modules\next\dist\bin\next dev -p $webPort"
 Write-Step "Install steps complete. Starting services..."
