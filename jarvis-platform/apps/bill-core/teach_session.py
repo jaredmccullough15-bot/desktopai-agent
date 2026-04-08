@@ -55,33 +55,41 @@ except ImportError:
 # ── Config ────────────────────────────────────────────────────────────────────
 DEFAULT_API_BASE = "http://127.0.0.1:8010"
 APPEND_TIMEOUT = 8  # HTTP timeout seconds
-EVENT_DEBOUNCE = 0.35  # Ignore duplicate event types within this many seconds
+EVENT_DEBOUNCE = 0.25  # Ignore exact-duplicate event types within this many seconds
 
 # ── Browser-side listener (injected via add_init_script on every page load) ───
 _LISTENER_JS = r"""
 (function () {
-    if (window.__billTeachActive) { return; }
-    window.__billTeachActive = true;
+    // Re-attach on every navigation — guard by storing the token on window so
+    // we only ever attach ONE set of listeners even if the script re-runs.
+    if (window.__billListenersAttached) { return; }
+    window.__billListenersAttached = true;
 
-    var _lastClickMs = 0;
-
-    function esc(s) {
-        return s ? s.replace(/["\\]/g, function (c) { return '\\' + c; }) : '';
+    // Safely fire the Playwright-exposed callback; log if missing/erroring.
+    function emit(payload) {
+        if (typeof window.__billTeachEvent !== 'function') {
+            console.warn('[bill-teach] __billTeachEvent not ready, dropped:', payload.event_type);
+            return;
+        }
+        try { window.__billTeachEvent(payload); }
+        catch (err) { console.error('[bill-teach] emit error:', err); }
     }
+
+    function esc(s) { return s ? String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') : ''; }
 
     function getInfo(el) {
         if (!el || el === document || el === document.body) return {};
         return {
-            tag:         (el.tagName  || '').toLowerCase(),
+            tag:         String(el.tagName || '').toLowerCase(),
             id:          el.id || '',
             name:        el.getAttribute('name')        || '',
-            class_name:  el.className || '',
+            class_name:  typeof el.className === 'string' ? el.className : '',
             aria_label:  el.getAttribute('aria-label')  || '',
             data_testid: el.getAttribute('data-testid') || '',
             placeholder: el.getAttribute('placeholder') || '',
-            text:        (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
-            input_type:  (el.getAttribute('type') || '').toLowerCase(),
-            value:       el.value || '',
+            text:        String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+            input_type:  String(el.getAttribute('type') || '').toLowerCase(),
+            value:       el.value != null ? String(el.value) : '',
             href:        el.href  || '',
             role:        el.getAttribute('role') || '',
         };
@@ -89,98 +97,100 @@ _LISTENER_JS = r"""
 
     function buildSelector(info) {
         if (info.id)
-            return '#' + info.id.replace(/[^\w-]/g, '\\$&');
+            return '#' + info.id.replace(/([^\w-])/g, '\\$1');
         if (info.data_testid)
             return '[data-testid="' + esc(info.data_testid) + '"]';
         if (info.aria_label)
             return '[aria-label="' + esc(info.aria_label) + '"]';
-        if (info.name && ['input', 'select', 'textarea'].indexOf(info.tag) !== -1)
+        if (info.name && ['input','select','textarea'].indexOf(info.tag) !== -1)
             return info.tag + '[name="' + esc(info.name) + '"]';
-        if (info.text && ['button', 'a'].indexOf(info.tag) !== -1 && info.text.length < 45)
-            return info.tag;
+        if (info.text && ['button','a'].indexOf(info.tag) !== -1 && info.text.length < 50)
+            return info.tag + ':has-text("' + esc(info.text.slice(0, 40)) + '")';
         if (info.class_name && info.tag) {
-            var cls = info.class_name.trim().split(/\s+/)
-                .filter(function (c) {
-                    return c.length > 0 && c.length < 30
-                        && c.indexOf(':') === -1
-                        && !/^(ng-|js-|is-|has-)/.test(c);
-                })
-                .slice(0, 2).join('.');
-            if (cls) return info.tag + '.' + cls;
+            var classes = info.class_name.trim().split(/\s+/)
+                .filter(function(c) {
+                    return c.length > 1 && c.length < 30 && !/[:()[\]{}]/.test(c);
+                }).slice(0, 2);
+            if (classes.length) return info.tag + '.' + classes.join('.');
         }
         return info.tag || 'div';
     }
 
-    /* ── Click ──────────────────────────────────────────────── */
-    document.addEventListener('click', function (e) {
-        var now = Date.now();
-        if (now - _lastClickMs < 350) return;
-        _lastClickMs = now;
-
-        var el = e.target;
-        for (var i = 0; i < 6 && el && el.parentElement; i++) {
-            var t = (el.tagName || '').toLowerCase();
-            var role = (el.getAttribute('role') || '');
-            if (t === 'button' || t === 'a' || role === 'button' || role === 'link' || el.onclick) break;
-            if (t === 'input' || t === 'select' || t === 'textarea') break;
+    // Walk up the DOM to find the most meaningful interactive ancestor
+    function findInteractive(el) {
+        for (var i = 0; i < 8; i++) {
+            if (!el || el === document.body) break;
+            var t = String(el.tagName || '').toLowerCase();
+            var role = el.getAttribute('role') || '';
+            if (t === 'button' || t === 'a' || t === 'input' ||
+                t === 'select' || t === 'textarea' ||
+                role === 'button' || role === 'link' || role === 'tab' ||
+                role === 'menuitem' || role === 'option' ||
+                el.getAttribute('tabindex') === '0') {
+                return el;
+            }
             el = el.parentElement;
         }
-        if (!el || el === document.body) el = e.target;
+        return null;
+    }
 
+    /* ── Click ────────────────────────────────────────────── */
+    document.addEventListener('click', function (e) {
+        var raw = e.target;
+        var el = findInteractive(raw) || raw;
         var info = getInfo(el);
-        if (info.tag === 'input' || info.tag === 'textarea' || info.tag === 'select') return;
 
-        try {
-            window.__billTeachEvent({
-                event_type: 'click',
-                selector:   buildSelector(info),
-                element:    info,
-                url:        window.location.href,
-                ts:         now,
-            });
-        } catch (err) { /* callback not yet available on this frame */ }
+        // Skip pure input fields (captured on blur instead)
+        var t = info.tag;
+        if (t === 'input' || t === 'textarea' || t === 'select') return;
+
+        emit({
+            event_type: 'click',
+            selector:   buildSelector(info),
+            element:    info,
+            url:        window.location.href,
+            ts:         Date.now(),
+        });
     }, true);
 
-    /* ── Text input (blur = final value, avoids every-keypress noise) ── */
+    /* ── Text input (on blur = final value) ─────────────── */
     document.addEventListener('blur', function (e) {
         var el = e.target;
         if (!el) return;
-        var t = (el.tagName || '').toLowerCase();
-        if ((t === 'input' || t === 'textarea') && el.value) {
-            if (el.getAttribute('type') === 'password') return; // never capture passwords
-            var info = getInfo(el);
-            try {
-                window.__billTeachEvent({
-                    event_type: 'type_text',
-                    selector:   buildSelector(info),
-                    value:      el.value,
-                    element:    info,
-                    url:        window.location.href,
-                    ts:         Date.now(),
-                });
-            } catch (err) {}
-        }
+        var t = String(el.tagName || '').toLowerCase();
+        if (t !== 'input' && t !== 'textarea') return;
+        if (!el.value) return;
+        if (String(el.getAttribute('type') || '').toLowerCase() === 'password') return;
+        var info = getInfo(el);
+        emit({
+            event_type: 'type_text',
+            selector:   buildSelector(info),
+            value:      el.value,
+            element:    info,
+            url:        window.location.href,
+            ts:         Date.now(),
+        });
     }, true);
 
-    /* ── Select / dropdown ──────────────────────────────────── */
+    /* ── Select / dropdown ──────────────────────────────── */
     document.addEventListener('change', function (e) {
         var el = e.target;
-        if (!el || (el.tagName || '').toLowerCase() !== 'select') return;
+        if (!el || String(el.tagName || '').toLowerCase() !== 'select') return;
         var info = getInfo(el);
         var selectedText = (el.options && el.selectedIndex >= 0)
             ? el.options[el.selectedIndex].text : '';
-        try {
-            window.__billTeachEvent({
-                event_type:  'select_option',
-                selector:    buildSelector(info),
-                value:       el.value,
-                option_text: selectedText,
-                element:     info,
-                url:         window.location.href,
-                ts:          Date.now(),
-            });
-        } catch (err) {}
+        emit({
+            event_type:  'select_option',
+            selector:    buildSelector(info),
+            value:       el.value,
+            option_text: selectedText,
+            element:     info,
+            url:         window.location.href,
+            ts:          Date.now(),
+        });
     }, true);
+
+    console.log('[bill-teach] Listeners attached on', window.location.href);
 }());
 """
 
