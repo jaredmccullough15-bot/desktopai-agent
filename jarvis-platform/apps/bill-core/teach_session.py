@@ -25,7 +25,9 @@ Requirements (install into the same venv as bill-core):
 from __future__ import annotations
 
 import argparse
+import queue
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -291,24 +293,44 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
     last_event_ts: dict[str, float] = {}
     last_url: list[str] = [""]
     step_num: list[int] = [0]
+    step_lock = threading.Lock()
+
+    # ── Background thread drains HTTP posts so Playwright's event
+    #    loop is never blocked by a slow/failed HTTP request. ──────
+    post_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+    def _post_worker() -> None:
+        while True:
+            item = post_queue.get()
+            if item is None:        # sentinel → shut down
+                post_queue.task_done()
+                break
+            step = item
+            result = _post_step(api_base, draft_id, step)
+            if result is not None:
+                with step_lock:
+                    step_num[0] += 1
+                    n = step_num[0]
+                name  = step.get("step_name", "?")
+                action = step.get("action", "?")
+                print(f"  [{n:>3}] {action:<22} {name}")
+            post_queue.task_done()
+
+    worker = threading.Thread(target=_post_worker, daemon=True)
+    worker.start()
+
+    def _enqueue(step: dict[str, Any]) -> None:
+        post_queue.put(step)
 
     def record(event: dict[str, Any]) -> bool:
+        """Called from Playwright's thread — must return immediately."""
         et = event.get("event_type", "")
         now = time.monotonic()
         if now - last_event_ts.get(et, 0.0) < EVENT_DEBOUNCE:
             return False
         last_event_ts[et] = now
-
-        step = _event_to_step(event)
-        result = _post_step(api_base, draft_id, step)
-        if result is not None:
-            step_num[0] += 1
-            n = step_num[0]
-            name = step.get("step_name", "?")
-            action = step.get("action", "?")
-            print(f"  [{n:>3}] {action:<22} {name}")
-            return True
-        return False
+        _enqueue(_event_to_step(event))
+        return True
 
     def on_browser_event(event: dict[str, Any]) -> bool:
         return record(event)
@@ -319,12 +341,8 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
         if url.startswith(("about:", "chrome:", "data:", "javascript:")):
             return
         last_url[0] = url
-        last_event_ts["navigate"] = time.monotonic()  # suppress duplicate
-        step = _event_to_step({"event_type": "navigate", "url": url, "element": {}})
-        result = _post_step(api_base, draft_id, step)
-        if result is not None:
-            step_num[0] += 1
-            print(f"  [{step_num[0]:>3}] {'open_url':<22} {step['step_name']}")
+        last_event_ts["navigate"] = time.monotonic()
+        _enqueue(_event_to_step({"event_type": "navigate", "url": url, "element": {}}))
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -370,8 +388,13 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
                 browser.close()
             except Exception:
                 pass
+            # Drain remaining queued steps before exiting
+            post_queue.put(None)
+            worker.join(timeout=30)
 
-    print(f"\n  Session complete. {step_num[0]} steps captured.")
+    with step_lock:
+        total = step_num[0]
+    print(f"\n  Session complete. {total} steps captured.")
     print(f"  Open the Bill dashboard to review, enrich, and publish the draft.\n")
 
 
