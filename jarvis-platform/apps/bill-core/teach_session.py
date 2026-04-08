@@ -25,6 +25,7 @@ Requirements (install into the same venv as bill-core):
 from __future__ import annotations
 
 import argparse
+import json
 import queue
 import sys
 import threading
@@ -65,14 +66,12 @@ _LISTENER_JS = r"""
     if (window.__billListenersAttached) { return; }
     window.__billListenersAttached = true;
 
-    // Safely fire the Playwright-exposed callback; log if missing/erroring.
+    // Send events to Python via console.log with a prefix — works on all sites,
+    // no expose_function limitations, no CSP issues.
+    var PREFIX = '__BILL_EVENT__';
     function emit(payload) {
-        if (typeof window.__billTeachEvent !== 'function') {
-            console.warn('[bill-teach] __billTeachEvent not ready, dropped:', payload.event_type);
-            return;
-        }
-        try { window.__billTeachEvent(payload); }
-        catch (err) { console.error('[bill-teach] emit error:', err); }
+        try { console.log(PREFIX + JSON.stringify(payload)); }
+        catch (err) { /* ignore */ }
     }
 
     function esc(s) { return s ? String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') : ''; }
@@ -190,7 +189,7 @@ _LISTENER_JS = r"""
         });
     }, true);
 
-    console.log('[bill-teach] Listeners attached on', window.location.href);
+    console.log(PREFIX + JSON.stringify({event_type:'_attached', url: window.location.href}));
 }());
 """
 
@@ -329,21 +328,34 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
     worker = threading.Thread(target=_post_worker, daemon=True)
     worker.start()
 
+    _CONSOLE_PREFIX = "__BILL_EVENT__"
+
     def _enqueue(step: dict[str, Any]) -> None:
         post_queue.put(step)
 
-    def record(event: dict[str, Any]) -> bool:
-        """Called from Playwright's thread — must return immediately."""
+    def record(event: dict[str, Any]) -> None:
         et = event.get("event_type", "")
+        if et == "_attached":
+            print(f"  [listen] Attached on {event.get('url', '?')}")
+            return
         now = time.monotonic()
         if now - last_event_ts.get(et, 0.0) < EVENT_DEBOUNCE:
-            return False
+            return
         last_event_ts[et] = now
         _enqueue(_event_to_step(event))
-        return True
 
-    def on_browser_event(event: dict[str, Any]) -> bool:
-        return record(event)
+    def on_console(msg: Any) -> None:
+        """Receive browser-side events routed through console.log."""
+        try:
+            if msg.type != "log":
+                return
+            text = msg.text
+            if not text.startswith(_CONSOLE_PREFIX):
+                return
+            event = json.loads(text[len(_CONSOLE_PREFIX):])
+            record(event)
+        except Exception as exc:
+            print(f"  [teach] console parse error: {exc}", file=sys.stderr)
 
     def on_navigate(url: str) -> None:
         if url == last_url[0]:
@@ -354,6 +366,10 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
         last_event_ts["navigate"] = time.monotonic()
         _enqueue(_event_to_step({"event_type": "navigate", "url": url, "element": {}}))
 
+    def attach_page(p: Any) -> None:
+        p.on("console", on_console)
+        p.on("framenavigated", lambda frame: on_navigate(frame.url) if frame == p.main_frame else None)
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             headless=False,
@@ -363,20 +379,12 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
         context.add_init_script(_LISTENER_JS)
 
         page = context.new_page()
-        page.expose_function("__billTeachEvent", on_browser_event)
-        page.on(
-            "framenavigated",
-            lambda frame: on_navigate(frame.url) if frame == page.main_frame else None,
-        )
+        attach_page(page)
 
         def on_new_page(new_page: Any) -> None:
             """Attach listeners to pages opened by the workflow (new tabs etc.)."""
             try:
-                new_page.expose_function("__billTeachEvent", on_browser_event)
-                new_page.on(
-                    "framenavigated",
-                    lambda frame: on_navigate(frame.url) if frame == new_page.main_frame else None,
-                )
+                attach_page(new_page)
             except Exception:
                 pass
 
