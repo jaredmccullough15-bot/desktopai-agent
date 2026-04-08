@@ -68,9 +68,18 @@ _LISTENER_JS = r"""
 
     // Send events to Python via console.log with a prefix — works on all sites,
     // no expose_function limitations, no CSP issues.
+    //
+    // IMPORTANT: capture the ORIGINAL console.log right now, before the page's
+    // own scripts run.  Many sites (including healthcare.gov) replace
+    // console.log with a no-op after page load — if we call window.console.log
+    // inside click handlers, we'd call the override and emit nothing.
+    // Binding the reference here makes every emit() use the real V8 function.
     var PREFIX = '__BILL_EVENT__';
+    var _log = (window.console && typeof window.console.log === 'function')
+        ? window.console.log.bind(window.console)
+        : function() {};
     function emit(payload) {
-        try { console.log(PREFIX + JSON.stringify(payload)); }
+        try { _log(PREFIX + JSON.stringify(payload)); }
         catch (err) { /* ignore */ }
     }
 
@@ -340,6 +349,7 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
             return
         now = time.monotonic()
         if now - last_event_ts.get(et, 0.0) < EVENT_DEBOUNCE:
+            print(f"  [drop ] debounced: {et}")
             return
         last_event_ts[et] = now
         _enqueue(_event_to_step(event))
@@ -347,12 +357,16 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
     def on_console(msg: Any) -> None:
         """Receive browser-side events routed through console.log."""
         try:
-            if msg.type != "log":
+            # Accept 'log' and 'info' — some browsers/sites remap console.log
+            if msg.type not in ("log", "info"):
                 return
             text = msg.text
             if not text.startswith(_CONSOLE_PREFIX):
                 return
             event = json.loads(text[len(_CONSOLE_PREFIX):])
+            et = event.get("event_type", "?")
+            if et != "_attached":
+                print(f"  [evt ] received: {et}")
             record(event)
         except Exception as exc:
             print(f"  [teach] console parse error: {exc}", file=sys.stderr)
