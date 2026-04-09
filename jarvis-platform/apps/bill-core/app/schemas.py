@@ -37,10 +37,36 @@ class WorkerHeartbeatRequest(BaseModel):
     execution_mode: str | None = None
     current_task_id: str | None = None
     current_step: str | None = None
+    update_status: str | None = None
+    update_target_version: str | None = None
+    update_error: str | None = None
 
 
 class WorkerUpdateCheckResponse(WorkerUpdateInstruction):
     pass
+
+
+class WorkerReleaseRecord(BaseModel):
+    id: str
+    version: str
+    upload_time: str
+    release_notes: str | None = None
+    package_filename: str
+    package_sha256: str | None = None
+    is_active: bool = False
+    channel: str = "optional"
+
+
+class WorkerDeployRequest(BaseModel):
+    machine_uuids: list[str] | None = None
+    force: bool = False
+    idle_only: bool = False
+
+
+class WorkerDeployResponse(BaseModel):
+    queued: list[str]
+    skipped: list[str]
+    message: str
 
 
 class TaskCreateRequest(BaseModel):

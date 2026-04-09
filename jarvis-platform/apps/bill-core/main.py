@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import json
@@ -11,7 +12,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -46,6 +47,9 @@ from app.schemas import (
     TaskFailRequest,
     TaskRecord,
     WorkflowRecord,
+    WorkerDeployRequest,
+    WorkerDeployResponse,
+    WorkerReleaseRecord,
     WorkerUpdateInstruction,
     WorkerUpdateCheckResponse,
     WorkerHeartbeatRequest,
@@ -138,6 +142,44 @@ def _save_workers_store() -> None:
 registered_workers: dict[str, dict] = _load_workers_store()
 tasks: list[dict] = []
 
+WORKER_RELEASES_PATH = Path(os.getenv("BILL_CORE_WORKER_RELEASES") or (Path(__file__).resolve().parent / "worker_releases.json"))
+WORKER_PACKAGES_DIR = Path(os.getenv("BILL_CORE_WORKER_PACKAGES_DIR") or (Path(__file__).resolve().parent / "worker-packages"))
+_releases_lock = threading.Lock()
+
+
+def _load_worker_releases() -> list[dict]:
+    if not WORKER_RELEASES_PATH.exists():
+        return []
+    try:
+        raw = json.loads(WORKER_RELEASES_PATH.read_text(encoding="utf-8-sig"))
+        return raw if isinstance(raw, list) else []
+    except Exception as error:
+        logger.error("Failed loading worker releases %s: %s", WORKER_RELEASES_PATH, error)
+        return []
+
+
+def _save_worker_releases() -> None:
+    WORKER_RELEASES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    WORKER_RELEASES_PATH.write_text(json.dumps(worker_releases, indent=2), encoding="utf-8")
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _get_active_release() -> dict | None:
+    for r in worker_releases:
+        if r.get("is_active"):
+            return r
+    return None
+
+
+worker_releases: list[dict] = _load_worker_releases()
+
 WORKFLOWS_CONFIG_PATH = Path(os.getenv("BILL_CORE_WORKFLOWS_CONFIG") or (Path(__file__).resolve().parent / "workflows_registry.json"))
 BRAIN_AUDIT_PATH = Path(os.getenv("BILL_CORE_BRAIN_AUDIT") or (Path(__file__).resolve().parent / "brain_command_audit.json"))
 OP_MEMORY_PATH = Path(os.getenv("BILL_CORE_OPERATIONAL_MEMORY") or (Path(__file__).resolve().parent / "operational_memory.json"))
@@ -177,6 +219,7 @@ def log_server_binding() -> None:
     WORKFLOW_REGISTRY = _load_workflow_registry()
     _normalize_all_proposals()
     _normalize_all_workflow_drafts()
+    WORKER_PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
     logger.info("Server running on: http://%s:%s", SERVER_HOST, SERVER_PORT)
     logger.info("Loaded workflows: %s from %s", len(WORKFLOW_REGISTRY), WORKFLOWS_CONFIG_PATH)
     logger.info("Loaded brain audit entries: %s", len(brain_audit_log))
@@ -188,6 +231,10 @@ def log_server_binding() -> None:
     logger.info("Loaded conversation preferences: %s", len(conversation_preferences))
     logger.info("Loaded workflow learning drafts: %s", len(workflow_learning_drafts))
     logger.info("Loaded learned procedure templates: %s", len(learned_procedure_templates))
+    logger.info("Loaded worker releases: %s (packages dir: %s)", len(worker_releases), WORKER_PACKAGES_DIR)
+    active = _get_active_release()
+    if active:
+        logger.info("Active worker release: v%s id=%s channel=%s", active["version"], active["id"], active["channel"])
 
 
 def _version_key(version: str) -> tuple[int, ...]:
@@ -227,10 +274,35 @@ def _resolve_worker_package_file() -> Path | None:
 
 
 def _build_worker_update_instruction(current_version: str, machine_uuid: str) -> WorkerUpdateInstruction:
-    latest_version = (os.getenv("BILL_WORKER_LATEST_VERSION") or "").strip()
-    package_url = (os.getenv("BILL_WORKER_PACKAGE_PUBLIC_URL") or os.getenv("BILL_WORKER_PACKAGE_URL") or "").strip()
-    package_sha256 = (os.getenv("BILL_WORKER_PACKAGE_SHA256") or "").strip() or None
-    force_update_enabled = (os.getenv("BILL_WORKER_FORCE_UPDATE") or "").strip().lower() in {"1", "true", "yes", "on"}
+    # Prefer the actively published release over env-var config
+    active_release = _get_active_release()
+    if active_release:
+        latest_version = active_release.get("version", "").strip()
+        package_url_base = (os.getenv("BILL_WORKER_PACKAGE_PUBLIC_URL") or "").strip().rstrip("/")
+        if not package_url_base:
+            # auto-derive package URL from the release record
+            package_url_base = ""
+        package_url = f"{package_url_base}/{active_release.get('id', '')}" if package_url_base else ""
+        # fall back if we cannot build a URL — use the old env-var endpoint
+        if not package_url:
+            package_url = "/worker/update/package"
+        package_sha256 = active_release.get("package_sha256") or None
+        channel = active_release.get("channel", "optional")
+
+        # Check if this machine has a forced deploy assigned
+        with _workers_lock:
+            machine = registered_workers.get(machine_uuid, {})
+        assigned_target = machine.get("update_target_version", "").strip()
+        force_for_machine = (
+            channel == "required"
+            or (bool(assigned_target) and assigned_target == latest_version)
+        )
+    else:
+        latest_version = (os.getenv("BILL_WORKER_LATEST_VERSION") or "").strip()
+        package_url = (os.getenv("BILL_WORKER_PACKAGE_PUBLIC_URL") or os.getenv("BILL_WORKER_PACKAGE_URL") or "").strip()
+        package_sha256 = (os.getenv("BILL_WORKER_PACKAGE_SHA256") or "").strip() or None
+        force_update_enabled = (os.getenv("BILL_WORKER_FORCE_UPDATE") or "").strip().lower() in {"1", "true", "yes", "on"}
+        force_for_machine = force_update_enabled
 
     if not latest_version:
         return WorkerUpdateInstruction(
@@ -248,27 +320,35 @@ def _build_worker_update_instruction(current_version: str, machine_uuid: str) ->
         )
 
     update_available = _is_newer_version(latest_version, current_version)
+    force_update = force_for_machine and update_available
+
     logger.info(
-        "Worker update evaluation: uuid=%s current=%s latest=%s update_available=%s",
-        machine_uuid,
-        current_version,
-        latest_version,
-        update_available,
+        "Worker update evaluation: uuid=%s current=%s latest=%s update_available=%s force=%s",
+        machine_uuid, current_version, latest_version, update_available, force_update,
     )
 
     return WorkerUpdateInstruction(
         update_available=update_available,
-        force_update=(force_update_enabled and update_available),
+        force_update=force_update,
         current_version=current_version,
         latest_version=latest_version,
         package_url=package_url,
         package_sha256=package_sha256,
-        message=("Forced update required" if (force_update_enabled and update_available) else ("Update available" if update_available else "Worker is up to date")),
+        message=("Forced update required" if force_update else ("Update available" if update_available else "Worker is up to date")),
     )
 
 
 @app.get("/worker/update/package")
 def download_worker_update_package() -> FileResponse:
+    # If there's an active release, serve its file
+    active = _get_active_release()
+    if active:
+        pkg_path = WORKER_PACKAGES_DIR / active["package_filename"]
+        if pkg_path.exists():
+            logger.info("Serving active release package: %s v%s", pkg_path.name, active["version"])
+            return FileResponse(path=pkg_path, filename=pkg_path.name, media_type="application/zip")
+
+    # Fall back to env-var configured file
     package_file = _resolve_worker_package_file()
     if package_file is None:
         raise HTTPException(status_code=404, detail="No local worker package configured")
@@ -279,6 +359,19 @@ def download_worker_update_package() -> FileResponse:
 
     logger.info("Serving worker update package from: %s", package_path)
     return FileResponse(path=package_path, filename=package_path.name, media_type="application/zip")
+
+
+@app.get("/worker/update/package/{release_id}")
+def download_worker_release_package(release_id: str) -> FileResponse:
+    with _releases_lock:
+        release = next((r for r in worker_releases if r.get("id") == release_id), None)
+    if not release:
+        raise HTTPException(status_code=404, detail=f"Release not found: {release_id}")
+    pkg_path = WORKER_PACKAGES_DIR / release["package_filename"]
+    if not pkg_path.exists():
+        raise HTTPException(status_code=404, detail="Package file not found on server")
+    logger.info("Serving release package: %s v%s", pkg_path.name, release["version"])
+    return FileResponse(path=pkg_path, filename=pkg_path.name, media_type="application/zip")
 
 PROCEDURE_TEMPLATES: dict[str, dict] = {
     "smart_sherpa_sync": {
@@ -465,6 +558,12 @@ def register_worker(payload: WorkerRegisterRequest) -> WorkerRegisterResponse:
             "created_at": (existing_worker or {}).get("created_at") or now_iso,
             "updated_at": now_iso,
         }
+        # Auto-detect update completion: worker came back with target version
+        prev_target = (existing_worker or {}).get("update_target_version", "").strip()
+        if prev_target and (payload.worker_version or "").strip() == prev_target:
+            registered_workers[payload.machine_uuid]["update_status"] = "updated"
+            registered_workers[payload.machine_uuid]["update_target_version"] = None
+            registered_workers[payload.machine_uuid]["update_error"] = None
         _save_workers_store()
 
     logger.info(
@@ -525,21 +624,235 @@ def worker_heartbeat(payload: WorkerHeartbeatRequest) -> dict[str, str]:
         worker["updated_at"] = datetime.utcnow().isoformat()
         if payload.worker_version:
             worker["worker_version"] = payload.worker_version
+            # Auto-clear update tracking when worker reports the target version
+            target = worker.get("update_target_version", "").strip()
+            if target and payload.worker_version.strip() == target:
+                worker["update_status"] = "updated"
+                worker["update_target_version"] = None
+                worker["update_error"] = None
         if payload.execution_mode:
             worker["execution_mode"] = payload.execution_mode
         worker["current_task_id"] = payload.current_task_id
         worker["current_step"] = payload.current_step
+        # Persist update status reported by worker
+        if payload.update_status:
+            worker["update_status"] = payload.update_status
+            if payload.update_target_version:
+                worker["update_target_version"] = payload.update_target_version
+            if payload.update_error:
+                worker["update_error"] = payload.update_error
         _save_workers_store()
 
     logger.info(
-        "worker updated via heartbeat: name=%s uuid=%s status=%s prev_status=%s prev_last_seen=%s",
+        "worker updated via heartbeat: name=%s uuid=%s status=%s prev_status=%s prev_last_seen=%s update_status=%s",
         payload.machine_name,
         payload.machine_uuid,
         payload.status,
         old_status,
         old_last_seen,
+        payload.update_status,
     )
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Worker Release Management API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/worker/releases", response_model=list[WorkerReleaseRecord])
+def list_worker_releases() -> list[WorkerReleaseRecord]:
+    with _releases_lock:
+        return [WorkerReleaseRecord(**r) for r in worker_releases]
+
+
+@app.post("/api/worker/releases", response_model=WorkerReleaseRecord)
+async def upload_worker_release(
+    version: str = Form(...),
+    release_notes: str = Form(""),
+    channel: str = Form("optional"),
+    package: UploadFile = File(...),
+) -> WorkerReleaseRecord:
+    if not package.filename or not package.filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Package must be a .zip file")
+
+    WORKER_PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+    release_id = str(uuid4())
+    safe_version = re.sub(r"[^a-zA-Z0-9._\-]", "_", version)
+    filename = f"bill-worker-{safe_version}.zip"
+    dest = WORKER_PACKAGES_DIR / filename
+
+    # Write the uploaded file
+    data = await package.read()
+    dest.write_bytes(data)
+    sha256 = _sha256_file(dest)
+
+    record: dict = {
+        "id": release_id,
+        "version": version,
+        "upload_time": datetime.utcnow().isoformat(),
+        "release_notes": release_notes or None,
+        "package_filename": filename,
+        "package_sha256": sha256,
+        "is_active": False,
+        "channel": channel,
+    }
+
+    with _releases_lock:
+        worker_releases.append(record)
+        _save_worker_releases()
+
+    logger.info("Worker release uploaded: version=%s id=%s sha256=%s", version, release_id, sha256)
+    return WorkerReleaseRecord(**record)
+
+
+@app.delete("/api/worker/releases/{release_id}", status_code=204)
+def delete_worker_release(release_id: str) -> None:
+    with _releases_lock:
+        idx = next((i for i, r in enumerate(worker_releases) if r.get("id") == release_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail="Release not found")
+        removed = worker_releases.pop(idx)
+        _save_worker_releases()
+
+    # Delete the package file
+    pkg_path = WORKER_PACKAGES_DIR / removed["package_filename"]
+    if pkg_path.exists():
+        try:
+            pkg_path.unlink()
+        except Exception as e:
+            logger.warning("Could not delete package file %s: %s", pkg_path, e)
+
+    logger.info("Worker release deleted: version=%s id=%s", removed.get("version"), release_id)
+
+
+@app.post("/api/worker/releases/{release_id}/activate", response_model=WorkerReleaseRecord)
+def activate_worker_release(release_id: str) -> WorkerReleaseRecord:
+    with _releases_lock:
+        target = next((r for r in worker_releases if r.get("id") == release_id), None)
+        if not target:
+            raise HTTPException(status_code=404, detail="Release not found")
+        # Deactivate all others
+        for r in worker_releases:
+            r["is_active"] = r.get("id") == release_id
+        _save_worker_releases()
+
+    logger.info("Worker release activated: version=%s id=%s channel=%s", target.get("version"), release_id, target.get("channel"))
+    return WorkerReleaseRecord(**target)
+
+
+@app.post("/api/worker/deploy", response_model=WorkerDeployResponse)
+def deploy_worker_update(payload: WorkerDeployRequest) -> WorkerDeployResponse:
+    active = _get_active_release()
+    if not active:
+        raise HTTPException(status_code=400, detail="No active release to deploy. Activate a release first.")
+
+    target_version = active["version"]
+    queued: list[str] = []
+    skipped: list[str] = []
+
+    with _workers_lock:
+        uuids = payload.machine_uuids if payload.machine_uuids else list(registered_workers.keys())
+        for uuid in uuids:
+            machine = registered_workers.get(uuid)
+            if not machine:
+                skipped.append(uuid)
+                continue
+
+            current_ver = machine.get("worker_version", "").strip()
+            # Skip if already at target version
+            if current_ver == target_version and not payload.force:
+                skipped.append(uuid)
+                continue
+
+            # Skip if busy and idle_only is set
+            if payload.idle_only and machine.get("status") not in ("idle", None, ""):
+                skipped.append(uuid)
+                continue
+
+            machine["update_status"] = "pending"
+            machine["update_target_version"] = target_version
+            machine["update_error"] = None
+            machine["update_started_at"] = datetime.utcnow().isoformat()
+            queued.append(uuid)
+
+        if queued:
+            _save_workers_store()
+
+    logger.info(
+        "Worker deploy triggered: version=%s queued=%s skipped=%s force=%s idle_only=%s",
+        target_version, len(queued), len(skipped), payload.force, payload.idle_only,
+    )
+    return WorkerDeployResponse(
+        queued=queued,
+        skipped=skipped,
+        message=f"Deploy queued for {len(queued)} worker(s) targeting v{target_version}",
+    )
+
+
+@app.get("/api/worker/deploy/status")
+def get_worker_deploy_status() -> dict:
+    with _workers_lock:
+        machines_snapshot = {k: dict(v) for k, v in registered_workers.items()}
+
+    statuses = []
+    for uuid, machine in machines_snapshot.items():
+        statuses.append({
+            "machine_uuid": uuid,
+            "machine_name": machine.get("machine_name"),
+            "worker_version": machine.get("worker_version"),
+            "update_status": machine.get("update_status"),
+            "update_target_version": machine.get("update_target_version"),
+            "update_error": machine.get("update_error"),
+            "update_started_at": machine.get("update_started_at"),
+        })
+
+    active = _get_active_release()
+    return {
+        "active_release_version": active["version"] if active else None,
+        "workers": statuses,
+    }
+
+
+@app.post("/api/worker/releases/{release_id}/deploy", response_model=WorkerDeployResponse)
+def deploy_specific_release(release_id: str, payload: WorkerDeployRequest) -> WorkerDeployResponse:
+    with _releases_lock:
+        release = next((r for r in worker_releases if r.get("id") == release_id), None)
+    if not release:
+        raise HTTPException(status_code=404, detail="Release not found")
+
+    target_version = release["version"]
+    queued: list[str] = []
+    skipped: list[str] = []
+
+    with _workers_lock:
+        uuids = payload.machine_uuids if payload.machine_uuids else list(registered_workers.keys())
+        for uuid in uuids:
+            machine = registered_workers.get(uuid)
+            if not machine:
+                skipped.append(uuid)
+                continue
+            current_ver = machine.get("worker_version", "").strip()
+            if current_ver == target_version and not payload.force:
+                skipped.append(uuid)
+                continue
+            if payload.idle_only and machine.get("status") not in ("idle", None, ""):
+                skipped.append(uuid)
+                continue
+            machine["update_status"] = "pending"
+            machine["update_target_version"] = target_version
+            machine["update_error"] = None
+            machine["update_started_at"] = datetime.utcnow().isoformat()
+            queued.append(uuid)
+
+        if queued:
+            _save_workers_store()
+
+    return WorkerDeployResponse(
+        queued=queued,
+        skipped=skipped,
+        message=f"Deploy queued for {len(queued)} worker(s) targeting v{target_version}",
+    )
 
 
 @app.post("/api/tasks", response_model=TaskCreateResponse)

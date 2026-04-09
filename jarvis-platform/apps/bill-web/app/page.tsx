@@ -24,6 +24,35 @@ type Machine = {
   execution_mode?: string;
   current_task_id?: string | null;
   current_step?: string | null;
+  update_status?: string | null;
+  update_target_version?: string | null;
+  update_error?: string | null;
+};
+
+type WorkerRelease = {
+  id: string;
+  version: string;
+  upload_time: string;
+  release_notes?: string | null;
+  package_filename: string;
+  package_sha256?: string | null;
+  is_active: boolean;
+  channel: string;
+};
+
+type DeployWorkerStatus = {
+  machine_uuid: string;
+  machine_name?: string | null;
+  worker_version?: string | null;
+  update_status?: string | null;
+  update_target_version?: string | null;
+  update_error?: string | null;
+  update_started_at?: string | null;
+};
+
+type WorkerDeployStatus = {
+  active_release_version?: string | null;
+  workers: DeployWorkerStatus[];
 };
 
 type Task = {
@@ -281,6 +310,15 @@ const workerStatusText = (machine: Machine): string => {
   return `Online · ${machine.status ?? "Unknown"}`;
 };
 
+const updateStatusClasses = (status?: string | null): string => {
+  const s = (status ?? "").toLowerCase();
+  if (s === "updated") return "bg-emerald-500/15 text-emerald-200 border border-emerald-400/30";
+  if (s === "failed") return "bg-rose-500/15 text-rose-200 border border-rose-400/30";
+  if (s === "downloading" || s === "installing") return "bg-sky-500/15 text-sky-200 border border-sky-400/30";
+  if (s === "pending" || s === "restarting") return "bg-amber-500/15 text-amber-200 border border-amber-400/30";
+  return "bg-slate-700/60 text-slate-400 border border-slate-600/50";
+};
+
 const shortTaskId = (id?: string): string => {
   if (!id) return "No ID";
   return id.length > 10 ? `${id.slice(0, 8)}...` : id;
@@ -353,6 +391,20 @@ export default function Home() {
         "I am Bill Core Orchestrator. Ask things like: 'Which worker is free?', 'What failed last?', or 'Run Marketplace workflow on Worker A'.",
     },
   ]);
+
+  // Worker Update Management state
+  const [workerReleases, setWorkerReleases] = useState<WorkerRelease[]>([]);
+  const [workerDeployStatus, setWorkerDeployStatus] = useState<WorkerDeployStatus | null>(null);
+  const [releaseUploadVersion, setReleaseUploadVersion] = useState("");
+  const [releaseUploadNotes, setReleaseUploadNotes] = useState("");
+  const [releaseUploadChannel, setReleaseUploadChannel] = useState("optional");
+  const [releaseUploadFile, setReleaseUploadFile] = useState<File | null>(null);
+  const [releaseUploadBusy, setReleaseUploadBusy] = useState(false);
+  const [releaseBusyKey, setReleaseBusyKey] = useState<string | null>(null);
+  const [releasesFeedback, setReleasesFeedback] = useState<ActionFeedback | null>(null);
+  const [deployBusy, setDeployBusy] = useState(false);
+  const [deployForce, setDeployForce] = useState(false);
+  const [deployIdleOnly, setDeployIdleOnly] = useState(false);
 
   const selectedMachine = machines.find((machine) => machine.machine_uuid === targetMachineUuid) ?? null;
 
@@ -676,10 +728,14 @@ export default function Home() {
     const workflowsUrl = `${apiBase}/api/workflows`;
     const auditUrl = `${apiBase}/api/brain/audit?limit=20`;
     const draftsUrl = `${apiBase}/api/brain/workflow-learning/drafts?limit=100`;
-    const [workflowsResult, auditResult, draftsResult] = await Promise.allSettled([
+    const releasesUrl = `${apiBase}/api/worker/releases`;
+    const deployStatusUrl = `${apiBase}/api/worker/deploy/status`;
+    const [workflowsResult, auditResult, draftsResult, releasesResult, deployStatusResult] = await Promise.allSettled([
       fetchJson<WorkflowRecord[]>(workflowsUrl),
       fetchJson<BrainAuditEntry[]>(auditUrl),
       fetchJson<WorkflowLearningDraft[]>(draftsUrl),
+      fetchJson<WorkerRelease[]>(releasesUrl),
+      fetchJson<WorkerDeployStatus>(deployStatusUrl),
     ]);
 
     setErrors((current) => {
@@ -708,6 +764,14 @@ export default function Home() {
         delete next.drafts;
       } else {
         next.drafts = `Workflow drafts fetch failed: ${String(draftsResult.reason)}`;
+      }
+
+      if (releasesResult.status === "fulfilled") {
+        setWorkerReleases(Array.isArray(releasesResult.value) ? releasesResult.value : []);
+      }
+
+      if (deployStatusResult.status === "fulfilled" && deployStatusResult.value) {
+        setWorkerDeployStatus(deployStatusResult.value as WorkerDeployStatus);
       }
 
       return next;
@@ -770,6 +834,98 @@ export default function Home() {
   const createTestTask = async () => {
     await submitTask({ payload: { source: "bill-web", type: "test" } });
   };
+
+  // ── Worker Update Management handlers ──────────────────────────────────────
+
+  const uploadRelease = async () => {
+    if (!releaseUploadVersion.trim() || !releaseUploadFile) return;
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setReleaseUploadBusy(true);
+    setReleasesFeedback(null);
+    try {
+      const form = new FormData();
+      form.append("version", releaseUploadVersion.trim());
+      form.append("release_notes", releaseUploadNotes);
+      form.append("channel", releaseUploadChannel);
+      form.append("package", releaseUploadFile);
+      const res = await fetch(`${apiBase}/api/worker/releases`, { method: "POST", body: form });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Upload failed (${res.status}): ${text}`);
+      }
+      setReleaseUploadVersion("");
+      setReleaseUploadNotes("");
+      setReleaseUploadFile(null);
+      setFeedback(setReleasesFeedback, "success", "Release uploaded successfully.");
+      await loadBrainPanels();
+    } catch (err) {
+      setFeedback(setReleasesFeedback, "error", err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setReleaseUploadBusy(false);
+    }
+  };
+
+  const activateRelease = async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setReleaseBusyKey(`activate-${releaseId}`);
+    setReleasesFeedback(null);
+    try {
+      const res = await fetch(`${apiBase}/api/worker/releases/${releaseId}/activate`, { method: "POST" });
+      if (!res.ok) throw new Error(`Activate failed (${res.status})`);
+      setFeedback(setReleasesFeedback, "success", "Release activated.");
+      await loadBrainPanels();
+    } catch (err) {
+      setFeedback(setReleasesFeedback, "error", err instanceof Error ? err.message : "Activate failed");
+    } finally {
+      setReleaseBusyKey(null);
+    }
+  };
+
+  const deleteRelease = async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setReleaseBusyKey(`delete-${releaseId}`);
+    setReleasesFeedback(null);
+    try {
+      const res = await fetch(`${apiBase}/api/worker/releases/${releaseId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      setFeedback(setReleasesFeedback, "success", "Release deleted.");
+      await loadBrainPanels();
+    } catch (err) {
+      setFeedback(setReleasesFeedback, "error", err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setReleaseBusyKey(null);
+    }
+  };
+
+  const deployToWorkers = async (machineUuids?: string[]) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setDeployBusy(true);
+    setReleasesFeedback(null);
+    try {
+      const res = await fetch(`${apiBase}/api/worker/deploy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ machine_uuids: machineUuids ?? null, force: deployForce, idle_only: deployIdleOnly }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Deploy failed (${res.status}): ${text}`);
+      }
+      const result = (await res.json()) as { message?: string };
+      setFeedback(setReleasesFeedback, "success", result.message ?? "Deploy queued.");
+      await loadBrainPanels();
+    } catch (err) {
+      setFeedback(setReleasesFeedback, "error", err instanceof Error ? err.message : "Deploy failed");
+    } finally {
+      setDeployBusy(false);
+    }
+  };
+
+  // ── End Worker Update Management handlers ──────────────────────────────────
 
   const createScreenshotTask = async () => {
     await submitTask({
@@ -2473,6 +2629,234 @@ export default function Home() {
 
               <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-400">
                 Health: {errors.health ? "Unavailable" : health?.status ?? "Unknown"}
+              </div>
+            </section>
+
+            {/* ── Worker Updates ── */}
+            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Worker Updates</h2>
+                  <p className="text-xs text-slate-400">
+                    Manage releases and push updates to worker machines.
+                    {workerDeployStatus?.active_release_version && (
+                      <span className="ml-2 text-cyan-400">Active: v{workerDeployStatus.active_release_version}</span>
+                    )}
+                  </p>
+                </div>
+                <button type="button" onClick={() => void loadBrainPanels()} className={BUTTON_SECONDARY}>
+                  Refresh
+                </button>
+              </div>
+
+              {releasesFeedback && (
+                <div
+                  className={`mb-3 rounded-lg px-3 py-2 text-xs ${releasesFeedback.kind === "success" ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}
+                >
+                  {releasesFeedback.message}
+                </div>
+              )}
+
+              {/* Worker update status table */}
+              {workerDeployStatus && workerDeployStatus.workers.length > 0 && (
+                <div className="mb-5">
+                  <p className="mb-2 text-xs font-medium text-slate-400">Worker Status</p>
+                  <div className="overflow-x-auto rounded-xl border border-slate-800">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-left text-slate-500">
+                          <th className="px-3 py-2 font-medium">Worker</th>
+                          <th className="px-3 py-2 font-medium">Version</th>
+                          <th className="px-3 py-2 font-medium">Update Status</th>
+                          <th className="px-3 py-2 font-medium">Target</th>
+                          <th className="px-3 py-2 font-medium"></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/70">
+                        {workerDeployStatus.workers.map((w) => (
+                          <tr key={w.machine_uuid} className="text-slate-300">
+                            <td className="px-3 py-2 font-medium">{w.machine_name ?? shortTaskId(w.machine_uuid)}</td>
+                            <td className="px-3 py-2 font-mono">{w.worker_version ?? "-"}</td>
+                            <td className="px-3 py-2">
+                              {w.update_status ? (
+                                <span className={`rounded-full px-2 py-0.5 ${updateStatusClasses(w.update_status)}`}>
+                                  {w.update_status}
+                                </span>
+                              ) : (
+                                <span className="text-slate-600">—</span>
+                              )}
+                              {w.update_error && (
+                                <p className="mt-0.5 truncate text-[10px] text-rose-400" title={w.update_error}>
+                                  {w.update_error}
+                                </p>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-slate-500">{w.update_target_version ?? "—"}</td>
+                            <td className="px-3 py-2">
+                              <button
+                                type="button"
+                                onClick={() => void deployToWorkers([w.machine_uuid])}
+                                disabled={deployBusy || !workerDeployStatus.active_release_version}
+                                className={BUTTON_ACCENT_GHOST}
+                              >
+                                Deploy
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Bulk deploy controls */}
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void deployToWorkers()}
+                      disabled={deployBusy || !workerDeployStatus.active_release_version}
+                      className={BUTTON_PRIMARY}
+                    >
+                      {deployBusy ? "Deploying…" : "Deploy to All Workers"}
+                    </button>
+                    <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={deployForce}
+                        onChange={(e) => setDeployForce(e.target.checked)}
+                        className="accent-cyan-400"
+                      />
+                      Force (re-deploy even if up to date)
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={deployIdleOnly}
+                        onChange={(e) => setDeployIdleOnly(e.target.checked)}
+                        className="accent-cyan-400"
+                      />
+                      Idle workers only
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {/* Releases list */}
+              {workerReleases.length > 0 && (
+                <div className="mb-5">
+                  <p className="mb-2 text-xs font-medium text-slate-400">Available Releases</p>
+                  <div className="space-y-2">
+                    {workerReleases.map((release) => (
+                      <div
+                        key={release.id}
+                        className={`rounded-xl border p-3 ${release.is_active ? "border-cyan-400/40 bg-cyan-500/5" : "border-slate-800 bg-slate-900/60"}`}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-sm font-semibold text-slate-100">
+                                v{release.version}
+                              </span>
+                              {release.is_active && (
+                                <span className="rounded-full bg-cyan-500/20 px-2 py-0.5 text-[10px] font-medium text-cyan-300 border border-cyan-400/30">
+                                  Active
+                                </span>
+                              )}
+                              <span className="rounded-full bg-slate-700/60 px-2 py-0.5 text-[10px] text-slate-400 border border-slate-600/40">
+                                {release.channel}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 text-[11px] text-slate-500">{toDisplayTime(release.upload_time)}</p>
+                            {release.release_notes && (
+                              <p className="mt-1 text-xs text-slate-400">{release.release_notes}</p>
+                            )}
+                            {release.package_sha256 && (
+                              <p className="mt-0.5 font-mono text-[10px] text-slate-600" title={release.package_sha256}>
+                                sha256: {release.package_sha256.slice(0, 16)}…
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {!release.is_active && (
+                              <button
+                                type="button"
+                                onClick={() => void activateRelease(release.id)}
+                                disabled={releaseBusyKey !== null}
+                                className={BUTTON_ACCENT_GHOST}
+                              >
+                                {releaseBusyKey === `activate-${release.id}` ? "…" : "Activate"}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => void deleteRelease(release.id)}
+                              disabled={releaseBusyKey !== null}
+                              className={BUTTON_DANGER}
+                            >
+                              {releaseBusyKey === `delete-${release.id}` ? "…" : "Delete"}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Upload new release form */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                <p className="mb-3 text-xs font-medium text-slate-400">Publish New Release</p>
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="mb-1 block text-[11px] text-slate-500">Version</label>
+                      <input
+                        type="text"
+                        placeholder="0.3.22"
+                        value={releaseUploadVersion}
+                        onChange={(e) => setReleaseUploadVersion(e.target.value)}
+                        className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:border-cyan-400/60 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] text-slate-500">Channel</label>
+                      <select
+                        value={releaseUploadChannel}
+                        onChange={(e) => setReleaseUploadChannel(e.target.value)}
+                        className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 focus:border-cyan-400/60 focus:outline-none"
+                      >
+                        <option value="optional">optional</option>
+                        <option value="required">required</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-slate-500">Release Notes</label>
+                    <textarea
+                      rows={2}
+                      placeholder="What changed in this release…"
+                      value={releaseUploadNotes}
+                      onChange={(e) => setReleaseUploadNotes(e.target.value)}
+                      className="w-full resize-none rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:border-cyan-400/60 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-slate-500">Package (.zip)</label>
+                    <input
+                      type="file"
+                      accept=".zip"
+                      onChange={(e) => setReleaseUploadFile(e.target.files?.[0] ?? null)}
+                      className="w-full text-xs text-slate-400 file:mr-3 file:rounded file:border-0 file:bg-slate-700 file:px-2.5 file:py-1 file:text-xs file:text-slate-200 file:cursor-pointer"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void uploadRelease()}
+                    disabled={releaseUploadBusy || !releaseUploadVersion.trim() || !releaseUploadFile}
+                    className={BUTTON_PRIMARY}
+                  >
+                    {releaseUploadBusy ? "Uploading…" : "Publish Release"}
+                  </button>
+                </div>
               </div>
             </section>
 

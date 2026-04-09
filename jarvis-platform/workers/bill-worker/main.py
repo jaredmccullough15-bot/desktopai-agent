@@ -808,11 +808,27 @@ def _apply_update_payload(
     updates_dir.mkdir(parents=True, exist_ok=True)
     package_path = updates_dir / f"bill-worker-{latest_version}.zip"
 
+    # Pull identity from state so we can report progress to bill-core
+    _report_machine_uuid = str(state.get("machine_uuid") or "")
+    _report_machine_name = str(state.get("machine_name") or "")
+
+    def _status(s: str, error: str | None = None) -> None:
+        if _report_machine_uuid and runtime_state is not None:
+            _report_update_status(
+                machine_name=_report_machine_name,
+                machine_uuid=_report_machine_uuid,
+                runtime_state=runtime_state,
+                update_status=s,
+                update_target_version=latest_version,
+                update_error=error,
+            )
+
     try:
         log_info(
             f"Worker auto-update ({source}): current={WORKER_VERSION} latest={latest_version} package_url={package_url}"
         )
         log_info(f"Downloading worker update {latest_version} from {package_url} ({source})")
+        _status("downloading")
         _download_update_package(package_url, package_path)
         log_info(f"Downloaded update package to {package_path}")
 
@@ -824,6 +840,7 @@ def _apply_update_payload(
                 )
 
         log_info(f"Worker auto-update ({source}): launching updater helper process")
+        _status("installing")
 
         exe_path = Path(sys.executable).resolve()
         _launch_windows_updater(package_path=package_path, app_root=APP_ROOT, executable_path=exe_path)
@@ -850,6 +867,7 @@ def _apply_update_payload(
         log_warn(f"Applying worker update to version {latest_version}. Worker will restart.")
         return True
     except Exception as error:
+        _status("failed", error=str(error))
         pending = dict(state.get("pending_update") or {})
         pending["retry_count"] = int(pending.get("retry_count") or 0) + 1
         pending["last_error"] = str(error)
@@ -995,6 +1013,38 @@ def register_worker(machine_name: str, machine_uuid: str, runtime_state: Runtime
         runtime_state.set_connected(False)
         _log_http_failure("register", register_url, error)
         return None
+
+
+def _report_update_status(
+    machine_name: str,
+    machine_uuid: str,
+    runtime_state: RuntimeState,
+    update_status: str,
+    update_target_version: str,
+    update_error: str | None = None,
+) -> None:
+    """Send a heartbeat to bill-core carrying an update progress status."""
+    snap = runtime_state.snapshot()
+    heartbeat_url = f"{API_BASE}/worker/heartbeat"
+    try:
+        requests.post(
+            heartbeat_url,
+            json={
+                "machine_name": machine_name,
+                "machine_uuid": machine_uuid,
+                "status": snap["status"],
+                "worker_version": WORKER_VERSION,
+                "execution_mode": snap["execution_mode"],
+                "current_task_id": snap["current_task_id"],
+                "current_step": snap["current_step"],
+                "update_status": update_status,
+                "update_target_version": update_target_version,
+                "update_error": update_error,
+            },
+            timeout=10,
+        )
+    except Exception:
+        pass  # Non-critical; don't interrupt the update flow
 
 
 def send_heartbeat(machine_name: str, machine_uuid: str, runtime_state: RuntimeState) -> None:
@@ -1619,6 +1669,10 @@ def main() -> None:
     if not machine_uuid:
         machine_uuid = str(uuid.uuid4())
         state["machine_uuid"] = machine_uuid
+
+    # Keep machine_name in state so _apply_update_payload can read it for status reporting
+    state["machine_name"] = machine_name
+    save_state(state)
 
     if WORKER_UI_ENABLED:
         start_local_status_panel(machine_name, machine_uuid_getter=lambda: machine_uuid, runtime_state=runtime_state)
