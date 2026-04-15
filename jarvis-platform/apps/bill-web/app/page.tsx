@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import MobileNav, { type MobileView } from "./components/MobileNav";
+import MobileDashboard from "./components/MobileDashboard";
 import AlertsPanel, { type AlertItem, type AlertKind, type HelpTask } from "./components/AlertsPanel";
 import { useVoice } from "./hooks/useVoice";
 
@@ -415,7 +416,7 @@ export default function Home() {
   const [deployIdleOnly, setDeployIdleOnly] = useState(false);
 
   // ── Mobile / Phase 1-5 state ────────────────────────────────────────────────
-  const [mobileView, setMobileView] = useState<MobileView>("chat");
+  const [mobileView, setMobileView] = useState<MobileView>("status");
   const [humanHelpTasks, setHumanHelpTasks] = useState<HelpTask[]>([]);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [resolveBusyKey, setResolveBusyKey] = useState<string | null>(null);
@@ -1860,6 +1861,9 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#13324a_0%,_#090d14_45%,_#070a11_100%)] text-slate-100 pb-16 lg:pb-0">
+
+      {/* ── Desktop Full Control Center (hidden on mobile) ─────────────────── */}
+      <div className="hidden lg:block">
       <div className="mx-auto max-w-[1600px] px-4 py-4 sm:px-6 lg:px-10 lg:py-6">
         <header className="mb-4 rounded-2xl border border-slate-800/90 bg-slate-900/75 px-4 py-4 shadow-[0_22px_45px_-30px_rgba(8,145,178,0.7)] backdrop-blur sm:px-5 sm:py-5">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -1870,22 +1874,6 @@ export default function Home() {
                 <p className="mt-1 hidden text-sm text-slate-400 lg:block">
                   Calm, real-time control of workers, orchestration, and task execution.
                 </p>
-              </div>
-              {/* Mobile quick-status row */}
-              <div className="flex items-center gap-2 lg:hidden">
-                {humanHelpTasks.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setMobileView("alerts")}
-                    className="flex items-center gap-1.5 rounded-full border border-violet-500/40 bg-violet-500/15 px-3 py-1.5 text-xs font-medium text-violet-200 animate-pulse"
-                  >
-                    <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
-                    {humanHelpTasks.length} need{humanHelpTasks.length > 1 ? "" : "s"} you
-                  </button>
-                )}
-                <span className={`rounded-full border px-2.5 py-1 text-xs ${health?.status === "ok" ? "border-emerald-400/30 bg-emerald-500/15 text-emerald-300" : "border-slate-700 bg-slate-900 text-slate-400"}`}>
-                  {health?.status === "ok" ? "Online" : "Offline"}
-                </span>
               </div>
             </div>
 
@@ -1916,36 +1904,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* ── Mobile Alerts Tab ─────────────────────────────────────────────── */}
-        <section className={`mb-4 ${mobileView === "alerts" ? "block lg:hidden" : "hidden"}`}>
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold">Alerts</h2>
-                <p className="text-xs text-slate-400">Failures, timeouts, and worker events.</p>
-              </div>
-              {(alerts.length + humanHelpTasks.length) > 0 && (
-                <span className="rounded-full border border-rose-400/30 bg-rose-500/10 px-2.5 py-1 text-xs text-rose-200">
-                  {alerts.length + humanHelpTasks.length}
-                </span>
-              )}
-            </div>
-            <AlertsPanel
-              alerts={alerts}
-              humanHelpTasks={humanHelpTasks}
-              onResolve={(taskId) => void resolveHumanHelpTask(taskId)}
-              onRetry={(taskId, payload) => void retryFailedTask({ id: taskId, status: "failed", payload } as Task)}
-              onClearAlert={(alertId) => setAlerts((prev) => prev.filter((a) => a.id !== alertId))}
-              onClearAll={() => setAlerts([])}
-              resolveBusyKey={resolveBusyKey}
-              onRequestNotifications={() => void requestNotificationPermission()}
-              notificationPermission={notificationPermission}
-            />
-          </div>
-        </section>
-
         <section className="grid gap-6 lg:grid-cols-12">
-          <div className={`space-y-6 lg:col-span-4 ${mobileView !== "chat" ? "hidden lg:block" : ""}`}>
+          <div className="space-y-6 lg:col-span-4">
             <section className="rounded-2xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-900/70 p-5 shadow-[0_24px_45px_-30px_rgba(8,145,178,0.8)]">
               <div className="mb-4 flex items-center justify-between">
                 <div>
@@ -2069,7 +2029,7 @@ export default function Home() {
             </section>
           </div>
 
-          <div className={`space-y-6 lg:col-span-5 ${mobileView !== "tasks" ? "hidden lg:block" : ""}`}>
+          <div className="space-y-6 lg:col-span-5">
             <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
               <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                 <div>
@@ -2844,7 +2804,7 @@ export default function Home() {
             </section>
           </div>
 
-          <div className={`space-y-6 lg:col-span-3 ${mobileView !== "workers" ? "hidden lg:block" : ""}`}>
+          <div className="space-y-6 lg:col-span-3">
             <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
               <h2 className="text-lg font-semibold">Workers</h2>
               <p className="mb-3 text-xs text-slate-400">Availability and assignment at a glance.</p>
@@ -3173,6 +3133,41 @@ export default function Home() {
           </div>
         </section>
       </div>
+      </div>{/* /desktop hidden lg:block */}
+
+      {/* ── Mobile Lightweight Interface (hidden on desktop) ──────────────── */}
+      <div className="block lg:hidden">
+        <MobileDashboard
+          mobileView={mobileView}
+          onNavigate={setMobileView}
+          health={health}
+          machines={machines}
+          activeTasks={activeTasks}
+          failedTasks={failedTasks}
+          successfulTasks={successfulTasks}
+          humanHelpTasks={humanHelpTasks}
+          alerts={alerts}
+          resolveBusyKey={resolveBusyKey}
+          notificationPermission={notificationPermission}
+          chatInput={chatInput}
+          setChatInput={setChatInput}
+          chatHistory={chatHistory}
+          chatLoading={chatLoading}
+          onSendCommand={() => void submitBrainCommand()}
+          voiceSupported={voiceSupported}
+          isListening={isListening}
+          isSpeaking={isSpeaking}
+          ttsEnabled={ttsEnabled}
+          setTtsEnabled={setTtsEnabled}
+          startListening={startListening}
+          stopListening={stopListening}
+          onRetry={(task) => void retryFailedTask(task as Task)}
+          onResolve={(taskId) => void resolveHumanHelpTask(taskId)}
+          onClearAlert={(alertId) => setAlerts((prev) => prev.filter((a) => a.id !== alertId))}
+          onClearAll={() => setAlerts([])}
+          onRequestNotifications={() => void requestNotificationPermission()}
+        />
+      </div>
 
       {/* Teaching Mode Floating Overlay */}
       {teachingSessionDraftId !== null && (
@@ -3416,11 +3411,11 @@ export default function Home() {
         </div>
       )}
 
-      {/* ── Mobile Bottom Navigation (Phase 1) ────────────────────────────── */}
+      {/* ── Mobile Bottom Navigation ─────────────────────────────────────── */}
       <MobileNav
         activeView={mobileView}
         onNavigate={setMobileView}
-        alertCount={humanHelpTasks.length + alerts.filter((a) => a.kind === "needs_human" || a.kind === "task_failed" || a.kind === "worker_offline").length}
+        urgentCount={humanHelpTasks.length + failedTasks.length}
       />
     </main>
   );

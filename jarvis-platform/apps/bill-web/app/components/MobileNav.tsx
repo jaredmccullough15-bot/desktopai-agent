@@ -1,38 +1,22 @@
 "use client";
 
-export type MobileView = "chat" | "tasks" | "workers" | "alerts" | "more";
+// Mobile views — purpose-built for awareness and quick action, not desktop replication
+export type MobileView = "status" | "alerts" | "actions" | "ask";
 
 interface MobileNavProps {
   activeView: MobileView;
   onNavigate: (view: MobileView) => void;
-  alertCount: number;
+  /** Count of items needing immediate action (failed + needs_human_help) */
+  urgentCount: number;
 }
 
 const tabs: { id: MobileView; label: string; icon: React.ReactNode }[] = [
   {
-    id: "chat",
-    label: "Ask Bill",
+    id: "status",
+    label: "Status",
     icon: (
       <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-      </svg>
-    ),
-  },
-  {
-    id: "tasks",
-    label: "Tasks",
-    icon: (
-      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-      </svg>
-    ),
-  },
-  {
-    id: "workers",
-    label: "Workers",
-    icon: (
-      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17H3a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2h-2" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
       </svg>
     ),
   },
@@ -46,17 +30,26 @@ const tabs: { id: MobileView; label: string; icon: React.ReactNode }[] = [
     ),
   },
   {
-    id: "more",
-    label: "More",
+    id: "actions",
+    label: "Actions",
     icon: (
       <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+      </svg>
+    ),
+  },
+  {
+    id: "ask",
+    label: "Ask Bill",
+    icon: (
+      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
       </svg>
     ),
   },
 ];
 
-export default function MobileNav({ activeView, onNavigate, alertCount }: MobileNavProps) {
+export default function MobileNav({ activeView, onNavigate, urgentCount }: MobileNavProps) {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-slate-800 bg-slate-950/95 backdrop-blur-md lg:hidden"
          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -74,9 +67,9 @@ export default function MobileNav({ activeView, onNavigate, alertCount }: Mobile
                   : "text-slate-500 hover:text-slate-300"
               }`}
             >
-              {tab.id === "alerts" && alertCount > 0 && (
+              {tab.id === "actions" && urgentCount > 0 && (
                 <span className="absolute right-[calc(50%-10px)] top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold text-white">
-                  {alertCount > 9 ? "9+" : alertCount}
+                  {urgentCount > 9 ? "9+" : urgentCount}
                 </span>
               )}
               <span className={isActive ? "text-cyan-400" : "text-current"}>
