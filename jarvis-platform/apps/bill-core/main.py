@@ -94,6 +94,7 @@ def _split_csv_env(name: str) -> list[str]:
 
 default_allow_origins = [
     "https://core.bill-core.com",
+    "https://desktopai-agent.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:3001",
