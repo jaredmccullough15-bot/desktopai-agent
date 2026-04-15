@@ -132,6 +132,17 @@ class ProcedureRunRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkflowTimeoutPolicy(BaseModel):
+    """Per-workflow timeout recovery policy. All fields are optional — defaults apply."""
+    max_step_retries: int = 2
+    max_recovery_attempts: int = 3
+    restart_allowed: bool = True
+    prefer_human_escalation: bool = False
+    step_timeout_ms: int = 20000
+    page_timeout_ms: int = 45000
+    checkpoint_after_n_steps: int = 5
+
+
 class WorkflowRecord(BaseModel):
     workflow_name: str
     description: str
@@ -140,6 +151,7 @@ class WorkflowRecord(BaseModel):
     safe_for_unattended: bool = True
     compatible_worker_types: list[str] = Field(default_factory=lambda: ["any"])
     procedure_name: str | None = None
+    timeout_policy: WorkflowTimeoutPolicy | None = None
 
 
 class BrainCommandRequest(BaseModel):
@@ -257,6 +269,13 @@ class TaskReflectionRecord(BaseModel):
     # Human-readable explanation layer
     human_summary: str | None = None
     human_explanation: HumanExplanation | None = None
+    # Timeout-specific recovery fields (populated when failure_classification == "timeout")
+    timeout_type: str | None = None
+    timeout_recovery_attempts: int | None = None
+    timeout_recovery_log: list[dict[str, Any]] | None = None
+    timeout_restart_attempted: bool | None = None
+    timeout_narrative: str | None = None
+    timeout_policy_applied: dict[str, Any] | None = None
 
 
 class ImprovementProposalRecord(BaseModel):
@@ -439,6 +458,10 @@ class TaskFailRequest(BaseModel):
     machine_uuid: str
     error: str
     result_json: dict[str, Any] | None = None
+    # Optional step context for richer timeout classification
+    step_name: str | None = None
+    step_index: int | None = None
+    recovery_context: dict[str, Any] | None = None
 
 
 class TaskRecord(BaseModel):

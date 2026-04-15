@@ -8,7 +8,16 @@
     "compatible_worker_types": [
       "interactive_visible"
     ],
-    "procedure_name": "smart_sherpa_sync"
+    "procedure_name": "smart_sherpa_sync",
+    "timeout_policy": {
+      "max_step_retries": 2,
+      "max_recovery_attempts": 3,
+      "restart_allowed": false,
+      "prefer_human_escalation": true,
+      "step_timeout_ms": 20000,
+      "page_timeout_ms": 45000,
+      "checkpoint_after_n_steps": 5
+    }
   },
   {
     "workflow_name": "marketplace_workflow",
@@ -20,6 +29,43 @@
       "interactive_visible",
       "headless_background"
     ],
-    "procedure_name": "marketplace_workflow"
+    "procedure_name": "marketplace_workflow",
+    "timeout_policy": {
+      "max_step_retries": 3,
+      "max_recovery_attempts": 3,
+      "restart_allowed": true,
+      "prefer_human_escalation": false,
+      "step_timeout_ms": 20000,
+      "page_timeout_ms": 45000,
+      "checkpoint_after_n_steps": 5
+    }
+  },
+  {
+    "workflow_name": "quote",
+    "description": "Awaiting observed demonstration capture.",
+    "required_inputs": [
+      "#autocomplete--13",
+      "#choice--69",
+      "#text-field--88",
+      "#choice-list--89__choice--0",
+      "#choice-list--90__choice--4",
+      "#text-field--135"
+    ],
+    "login_or_session_required": true,
+    "safe_for_unattended": false,
+    "compatible_worker_types": [
+      "interactive_visible",
+      "headless_background"
+    ],
+    "procedure_name": "quote",
+    "timeout_policy": {
+      "max_step_retries": 2,
+      "max_recovery_attempts": 3,
+      "restart_allowed": true,
+      "prefer_human_escalation": false,
+      "step_timeout_ms": 20000,
+      "page_timeout_ms": 45000,
+      "checkpoint_after_n_steps": 5
+    }
   }
 ]

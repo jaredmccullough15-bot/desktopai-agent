@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import logging
 import os
 import json
@@ -22,6 +23,17 @@ from app.error_explainer import (
     build_human_summary,
     find_similar_failure,
     score_confidence,
+)
+from app.timeout_recovery import (
+    TimeoutPolicy,
+    DEFAULT_POLICY,
+    classify_timeout_type,
+    is_repeated_persistent,
+    next_recovery_action,
+    build_recovery_payload,
+    build_timeout_reflection_fields,
+    get_or_create_recovery_state,
+    clear_recovery_state,
 )
 from app.schemas import (
     BrainCommandRequest,
@@ -1127,7 +1139,7 @@ def _cancel_task_if_possible(task: dict | None) -> tuple[bool, str]:
         return False, "Task not found."
 
     status = str(task.get("status") or "").lower()
-    if status in {"completed", "failed", "canceled", "cancelled"}:
+    if status in {"completed", "failed", "canceled", "cancelled", "needs_human_help"}:
         return False, f"Task is already terminal with status={status}."
 
     task["status"] = "canceled"
@@ -2505,6 +2517,10 @@ def _create_proposal(
     return proposal
 
 
+# Alias used by learning-proposal helpers
+_build_phase3_proposal = _create_proposal
+
+
 def _generate_phase3_proposals_for_workflow(workflow_name: str | None) -> list[dict[str, Any]]:
     if not workflow_name:
         return []
@@ -2840,12 +2856,63 @@ def _build_task_reflection(task: dict, outcome: str, machine_uuid: str | None = 
         "human_summary": human_summary,
         "human_explanation": human_explanation,
     }
+
+    # Enrich timeout failures with recovery narrative
+    if status in ("failed", "needs_human_help") and failure_classification == "timeout":
+        task_id_str = str(task.get("id") or "")
+        recovery_state = get_or_create_recovery_state(task_id_str, workflow_name)
+        policy = _get_workflow_timeout_policy(workflow_name)
+        final_action = task.get("recovery_last_action") or "needs_human_help"
+        timeout_fields = build_timeout_reflection_fields(
+            recovery_state, final_action, error_text, policy
+        )
+        reflection.update(timeout_fields)
+        # Override root_cause and next_action with timeout-specific text
+        reflection["likely_root_cause"] = (
+            f"Timeout ({recovery_state.timeout_type.replace('_', ' ')}) "
+            f"after {recovery_state.total_timeout_hits} total attempt(s)."
+        )
+        if final_action == "needs_human_help":
+            reflection["recommended_next_action"] = (
+                "Automated recovery was exhausted. A human operator must review and intervene."
+            )
+
     return reflection
 
 
 def _proposal_exists_with_title(title: str) -> bool:
     needle = title.strip().lower()
     return any(str(item.get("title") or "").strip().lower() == needle for item in improvement_proposals)
+
+
+def _get_workflow_timeout_policy(workflow_name: str | None) -> TimeoutPolicy:
+    """
+    Look up the timeout policy for a given workflow.
+    Searches WORKFLOW_REGISTRY first, then learned_procedure_templates.
+    Falls back to DEFAULT_POLICY if no policy is defined.
+    """
+    if not workflow_name:
+        return DEFAULT_POLICY
+    # Check the live workflow registry
+    for record in WORKFLOW_REGISTRY:
+        if str(record.workflow_name or "").lower() == workflow_name.lower():
+            raw_policy = getattr(record, "timeout_policy", None)
+            if raw_policy is not None:
+                try:
+                    d = raw_policy.model_dump() if hasattr(raw_policy, "model_dump") else dict(raw_policy)
+                    return TimeoutPolicy.from_dict(d)
+                except Exception:
+                    pass
+    # Check learned procedure templates (stored as raw dicts)
+    for tmpl in learned_procedure_templates:
+        if str(tmpl.get("name") or "").lower() == workflow_name.lower():
+            raw_policy = (tmpl.get("payload") or {}).get("timeout_policy")
+            if isinstance(raw_policy, dict):
+                try:
+                    return TimeoutPolicy.from_dict(raw_policy)
+                except Exception:
+                    pass
+    return DEFAULT_POLICY
 
 
 def _generate_improvement_proposal_from_reflection(reflection: dict[str, Any]) -> dict[str, Any] | None:
@@ -3707,6 +3774,22 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
 
     api_base = str(payload.api_base or "http://127.0.0.1:8010").strip().rstrip("/")
 
+    missing_modules: list[str] = []
+    if importlib.util.find_spec("requests") is None:
+        missing_modules.append("requests")
+    if importlib.util.find_spec("playwright") is None:
+        missing_modules.append("playwright")
+
+    if missing_modules:
+        missing_text = ", ".join(missing_modules)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Teach session dependencies missing in Bill Core environment: {missing_text}. "
+                "Install with: python -m pip install requests playwright; python -m playwright install chromium"
+            ),
+        )
+
     cmd = [sys.executable, script_path, "--draft-id", draft_id, "--api-base", api_base]
 
     if payload.start_url.strip():
@@ -3716,18 +3799,36 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
         cmd.extend(["--start-url", start_url])
 
     try:
+        teach_logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teach-session-logs")
+        os.makedirs(teach_logs_dir, exist_ok=True)
+        log_file_path = os.path.join(
+            teach_logs_dir,
+            f"teach_session_{draft_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log",
+        )
+        log_handle = open(log_file_path, "a", encoding="utf-8")
+        launch_env = dict(os.environ)
+        launch_env["PYTHONIOENCODING"] = "utf-8"
+        launch_env["PYTHONUTF8"] = "1"
+
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
-            # Open a new console window so the user sees capture output
-            kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE  # type: ignore[attr-defined]
-        proc = subprocess.Popen(cmd, **kwargs)
+            # Keep web-launch clean; write process output to log file instead.
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+        proc = subprocess.Popen(
+            cmd,
+            cwd=os.path.dirname(script_path),
+            env=launch_env,
+            stdout=log_handle,
+            stderr=log_handle,
+            **kwargs,
+        )
         _record_operational_memory(
             "teach_session_started",
             f"Playwright teach session started for draft {draft_id} (PID {proc.pid})",
-            details={"draft_id": draft_id, "pid": proc.pid},
+            details={"draft_id": draft_id, "pid": proc.pid, "log_file": log_file_path},
             tags=["workflow_learning", "teach_session"],
         )
-        return {"status": "started", "pid": proc.pid, "draft_id": draft_id}
+        return {"status": "started", "pid": proc.pid, "draft_id": draft_id, "log_file": log_file_path}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to launch teach session: {exc}") from exc
 
@@ -3996,16 +4097,48 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
                 f"worker={failed.get('assigned_machine_uuid') or 'unassigned'} error={failed.get('error') or 'no error text'}"
             )
             if reflection:
-                after_execution += (
-                    f" Retry strategy: {reflection.get('retry_strategy') or 'retry once with reduced scope'}."
-                    f" Alternative worker: {reflection.get('alternative_worker') or 'none_available'}."
-                    f" Potential fix: {reflection.get('potential_fix') or 'inspect logs and selectors'}."
-                )
+                timeout_narrative = reflection.get("timeout_narrative")
+                if timeout_narrative:
+                    after_execution += f" Timeout recovery narrative: {timeout_narrative}"
+                else:
+                    after_execution += (
+                        f" Retry strategy: {reflection.get('retry_strategy') or 'retry once with reduced scope'}."
+                        f" Alternative worker: {reflection.get('alternative_worker') or 'none_available'}."
+                        f" Potential fix: {reflection.get('potential_fix') or 'inspect logs and selectors'}."
+                    )
             retry_recommended = True
             suggested_next_action = "Say 'retry last failed task' to queue it again."
         else:
             after_execution = "I did not find any failed tasks in recent history."
             suggested_next_action = "You can ask me to run a workflow now."
+
+    elif (
+        "needs human" in command_lower
+        or "human help" in command_lower
+        or "waiting for human" in command_lower
+        or "needs_human_help" in command_lower
+    ):
+        recognized_intent = "human_help_status"
+        before_execution = "I checked for tasks that are waiting for human intervention."
+        human_tasks = [t for t in tasks if str(t.get("status") or "") == "needs_human_help"]
+        if human_tasks:
+            summaries = []
+            for ht in human_tasks[:5]:
+                wf = (ht.get("payload") or {}).get("workflow_name") or (ht.get("payload") or {}).get("task_type") or "unknown"
+                summaries.append(
+                    f"Task {ht.get('id')} ({wf}) — "
+                    f"error: {(ht.get('error') or 'no error')[:100]}"
+                )
+            after_execution = (
+                f"I found {len(human_tasks)} task(s) waiting for human help: "
+                + "; ".join(summaries)
+            )
+            suggested_next_action = (
+                "Review the task logs and resolve via POST /api/tasks/{task_id}/resolve."
+            )
+        else:
+            after_execution = "No tasks are currently waiting for human intervention."
+            suggested_next_action = "All automated workflows are running normally."
 
     elif "why did this fail" in command_lower or "why did it fail" in command_lower:
         recognized_intent = "memory_failure_reason"
@@ -4596,7 +4729,7 @@ def pause_task(task_id: str) -> dict[str, str]:
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     status = str(task.get("status") or "").lower()
-    if status in {"completed", "failed", "canceled", "cancelled"}:
+    if status in {"completed", "failed", "canceled", "cancelled", "needs_human_help"}:
         raise HTTPException(status_code=400, detail=f"Task is terminal with status={status}")
     task["status"] = "paused"
     task["updated_at"] = datetime.utcnow().isoformat()
@@ -4616,6 +4749,53 @@ def resume_task(task_id: str) -> dict[str, str]:
     task["updated_at"] = datetime.utcnow().isoformat()
     _append_task_log(task, "Task resumed and returned to queue")
     return {"status": "queued", "message": f"Task {task.get('id')} resumed"}
+
+
+@app.post("/api/tasks/{task_id}/resolve")
+def resolve_human_task(task_id: str, body: dict = None) -> dict[str, str]:
+    """
+    Mark a needs_human_help task as resolved by a human operator.
+    Optionally provide a ``resolution`` note in the request body.
+    """
+    task = _find_task_by_ref(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    status = str(task.get("status") or "").lower()
+    if status != "needs_human_help":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is not in needs_human_help state (status={status})",
+        )
+    resolution_note = str((body or {}).get("resolution") or "Resolved by human operator.").strip()
+    task["status"] = "resolved_by_human"
+    task["updated_at"] = datetime.utcnow().isoformat()
+    task["completed_at"] = datetime.utcnow().isoformat()
+    _append_task_log(task, f"Task resolved by human operator: {resolution_note}")
+    clear_recovery_state(task_id)
+    logger.info("Task resolved by human: id=%s resolution=%s", task_id, resolution_note)
+    return {
+        "status": "resolved_by_human",
+        "message": f"Task {task_id} marked as resolved.",
+        "resolution": resolution_note,
+    }
+
+
+@app.get("/api/tasks/needs-human-help")
+def get_tasks_needing_help() -> dict[str, Any]:
+    """Return all tasks currently in the needs_human_help state."""
+    pending = [
+        {
+            "id": t.get("id"),
+            "workflow_name": (t.get("payload") or {}).get("workflow_name") or (t.get("payload") or {}).get("task_type"),
+            "error": t.get("error"),
+            "assigned_machine_uuid": t.get("assigned_machine_uuid"),
+            "updated_at": t.get("updated_at"),
+            "recovery_last_action": t.get("recovery_last_action"),
+        }
+        for t in tasks
+        if str(t.get("status") or "") == "needs_human_help"
+    ]
+    return {"count": len(pending), "tasks": pending}
 
 
 @app.get("/worker/tasks/next", response_model=TaskRecord | None)
@@ -4661,6 +4841,12 @@ def complete_task(task_id: str, payload: TaskCompleteRequest) -> dict[str, str]:
             _append_task_log(task, f"Task completed by machine_uuid={payload.machine_uuid}")
             reflection = _record_task_outcome_learning(task, outcome="success", machine_uuid=payload.machine_uuid)
             _append_task_log(task, f"Reflection recorded: {reflection.get('id')}")
+            # Clear any in-progress recovery state on successful completion
+            # Also clear the origin task's state if this was a retry task
+            clear_recovery_state(task_id)
+            origin_id = (task.get("payload") or {}).get("recovery_origin_task_id")
+            if origin_id:
+                clear_recovery_state(origin_id)
             logger.info("Task completed: id=%s machine_uuid=%s", task_id, payload.machine_uuid)
             return {"status": "completed"}
 
@@ -4668,30 +4854,169 @@ def complete_task(task_id: str, payload: TaskCompleteRequest) -> dict[str, str]:
 
 
 @app.post("/worker/tasks/{task_id}/fail")
-def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, str]:
+def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
     for task in tasks:
-        if task["id"] == task_id:
-            task["status"] = "failed"
-            task["assigned_machine_uuid"] = payload.machine_uuid
-            task["error"] = payload.error
-            task["result_json"] = payload.result_json
-            task["updated_at"] = datetime.utcnow().isoformat()
-            task["completed_at"] = datetime.utcnow().isoformat()
-            _append_task_log(task, f"Task failed on machine_uuid={payload.machine_uuid}: {payload.error}", level="error")
-            reflection = _record_task_outcome_learning(
-                task,
-                outcome="failure",
-                machine_uuid=payload.machine_uuid,
+        if task["id"] != task_id:
+            continue
+
+        task["assigned_machine_uuid"] = payload.machine_uuid
+        task["error"] = payload.error
+        task["result_json"] = payload.result_json
+        task["updated_at"] = datetime.utcnow().isoformat()
+        task["completed_at"] = datetime.utcnow().isoformat()
+
+        error_class = classify_error(payload.error)
+
+        # ----------------------------------------------------------------
+        # TIMEOUT RECOVERY LADDER
+        # When the error is a timeout, attempt staged recovery before
+        # marking the task as a hard failure.
+        # ----------------------------------------------------------------
+        if error_class == "timeout":
+            task_payload = dict(task.get("payload") or {})
+            workflow_name = task_payload.get("workflow_name") or task_payload.get("task_type")
+            policy = _get_workflow_timeout_policy(workflow_name)
+
+            # Use the origin task ID when this is a retry task so all failures
+            # in the chain share a single recovery state.
+            origin_task_id = task_payload.get("recovery_origin_task_id") or task_id
+            recovery_state = get_or_create_recovery_state(origin_task_id, workflow_name)
+
+            # Classify the specific timeout subtype
+            timeout_type = classify_timeout_type(payload.error)
+            if is_repeated_persistent(recovery_state):
+                timeout_type = "repeated_persistent_timeout"
+            recovery_state.timeout_type = timeout_type
+
+            # Determine the next recovery action
+            attempts_so_far = recovery_state.total_timeout_hits  # before recording this one
+            action = next_recovery_action(attempts_so_far, policy)
+
+            # Record this recovery attempt
+            recovery_state.record_attempt(
+                action=action,
                 error_text=payload.error,
+                step_name=payload.step_name,
             )
-            _append_task_log(task, f"Reflection recorded: {reflection.get('id')}")
-            _create_failure_interaction_if_needed(task, reflection)
-            logger.error("Task failed: id=%s machine_uuid=%s error=%s", task_id, payload.machine_uuid, payload.error)
+
+            _append_task_log(
+                task,
+                f"Timeout #{recovery_state.total_timeout_hits} on machine_uuid={payload.machine_uuid}: "
+                f"type={timeout_type} action={action} error={payload.error[:200]}",
+                level="warning",
+            )
+
+            if action == "needs_human_help":
+                # ------------------------------------------------------------------
+                # All recovery exhausted — escalate to needs_human_help
+                # ------------------------------------------------------------------
+                task["status"] = "needs_human_help"
+                task["recovery_last_action"] = action
+                reflection = _record_task_outcome_learning(
+                    task,
+                    outcome="failure",
+                    machine_uuid=payload.machine_uuid,
+                    error_text=payload.error,
+                )
+                _append_task_log(task, f"Reflection recorded (needs_human_help): {reflection.get('id')}")
+                _create_failure_interaction_if_needed(task, reflection)
+                logger.error(
+                    "Task escalated to needs_human_help after %d timeout recovery attempts: "
+                    "id=%s timeout_type=%s machine_uuid=%s",
+                    recovery_state.total_timeout_hits,
+                    task_id,
+                    timeout_type,
+                    payload.machine_uuid,
+                )
+                return {
+                    "status": "needs_human_help",
+                    "recovery_exhausted": True,
+                    "timeout_type": timeout_type,
+                    "recovery_attempts": recovery_state.total_timeout_hits,
+                    "timeout_narrative": reflection.get("timeout_narrative") or (
+                        f"Task timed out {recovery_state.total_timeout_hits} time(s) and all "
+                        f"automated recovery has been exhausted."
+                    ),
+                    "retry_strategy": str(reflection.get("retry_strategy") or "Human review required."),
+                    "potential_fix": str(reflection.get("potential_fix") or "Inspect worker logs and verify page state."),
+                }
+
+            # ------------------------------------------------------------------
+            # Recovery still in progress — auto-queue a retry task
+            # ------------------------------------------------------------------
+            task["status"] = "recovering"
+            task["recovery_last_action"] = action
+            _append_task_log(
+                task,
+                f"Recovery action '{action}' queued as retry task "
+                f"(attempt {recovery_state.total_timeout_hits}/{policy.max_recovery_attempts}).",
+            )
+
+            retry_payload = build_recovery_payload(
+                task_payload,
+                action=action,
+                attempt_number=recovery_state.total_timeout_hits,
+                origin_task_id=origin_task_id,
+            )
+            retry_task = _create_task_record(retry_payload)
+            logger.info(
+                "Timeout recovery: id=%s action=%s retry_task=%s attempt=%d/%d",
+                task_id,
+                action,
+                retry_task.id,
+                recovery_state.total_timeout_hits,
+                policy.max_recovery_attempts,
+            )
             return {
-                "status": "failed",
-                "retry_strategy": str(reflection.get("retry_strategy") or "Retry once with focused scope."),
-                "alternative_worker": str(reflection.get("alternative_worker") or "none_available"),
-                "potential_fix": str(reflection.get("potential_fix") or "Inspect latest worker logs."),
+                "status": "recovering",
+                "recovery_action": action,
+                "recovery_action_description": _RECOVERY_ACTION_DESCRIPTION(action),
+                "recovery_attempt": recovery_state.total_timeout_hits,
+                "max_recovery_attempts": policy.max_recovery_attempts,
+                "retry_task_id": retry_task.id,
+                "timeout_type": timeout_type,
             }
 
+        # ----------------------------------------------------------------
+        # NON-TIMEOUT FAILURE — standard handling
+        # ----------------------------------------------------------------
+        task["status"] = "failed"
+        _append_task_log(
+            task,
+            f"Task failed on machine_uuid={payload.machine_uuid}: {payload.error}",
+            level="error",
+        )
+        reflection = _record_task_outcome_learning(
+            task,
+            outcome="failure",
+            machine_uuid=payload.machine_uuid,
+            error_text=payload.error,
+        )
+        _append_task_log(task, f"Reflection recorded: {reflection.get('id')}")
+        _create_failure_interaction_if_needed(task, reflection)
+        logger.error(
+            "Task failed: id=%s machine_uuid=%s error=%s",
+            task_id,
+            payload.machine_uuid,
+            payload.error,
+        )
+        return {
+            "status": "failed",
+            "retry_strategy": str(reflection.get("retry_strategy") or "Retry once with focused scope."),
+            "alternative_worker": str(reflection.get("alternative_worker") or "none_available"),
+            "potential_fix": str(reflection.get("potential_fix") or "Inspect latest worker logs."),
+        }
+
     raise HTTPException(status_code=404, detail="Task not found")
+
+
+def _RECOVERY_ACTION_DESCRIPTION(action: str) -> str:  # noqa: N802
+    """Plain-English description of a recovery action for API responses."""
+    return {
+        "retry_step": "Retry the current step with the same parameters.",
+        "local_recovery": "Reload the page, clear open dialogs, then retry the workflow.",
+        "checkpoint_resume": "Resume the workflow from the last safe checkpoint.",
+        "task_restart": "Restart the entire task from the beginning.",
+        "needs_human_help": "All automated recovery exhausted — human intervention required.",
+    }.get(action, action)
+
