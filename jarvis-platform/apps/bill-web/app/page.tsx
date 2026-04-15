@@ -1,6 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import MobileNav, { type MobileView } from "./components/MobileNav";
+import AlertsPanel, { type AlertItem, type AlertKind, type HelpTask } from "./components/AlertsPanel";
+import { useVoice } from "./hooks/useVoice";
 
 type TaskCreateResponse = {
   id?: string;
@@ -200,6 +203,11 @@ type ActionFeedback = {
   kind: "success" | "error";
   message: string;
   timestamp: string;
+};
+
+type HelpTasksResponse = {
+  count: number;
+  tasks: HelpTask[];
 };
 
 type TeachingStepQuestionItem = {
@@ -406,7 +414,34 @@ export default function Home() {
   const [deployForce, setDeployForce] = useState(false);
   const [deployIdleOnly, setDeployIdleOnly] = useState(false);
 
+  // ── Mobile / Phase 1-5 state ────────────────────────────────────────────────
+  const [mobileView, setMobileView] = useState<MobileView>("chat");
+  const [humanHelpTasks, setHumanHelpTasks] = useState<HelpTask[]>([]);
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [resolveBusyKey, setResolveBusyKey] = useState<string | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >("unsupported");
+
+  // Refs for alert diffing (previous poll state)
+  const prevTasksRef = useRef<Task[]>([]);
+  const prevMachinesRef = useRef<Machine[]>([]);
+
   const selectedMachine = machines.find((machine) => machine.machine_uuid === targetMachineUuid) ?? null;
+
+  // ── Voice (Phase 4) ──────────────────────────────────────────────────────────
+  const { isSupported: voiceSupported, isListening, isSpeaking, ttsEnabled, setTtsEnabled, startListening, stopListening, speak } = useVoice({
+    onTranscript: (text) => {
+      setChatInput(text);
+    },
+  });
+
+  // Init notification permission state on mount
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotificationPermission(Notification.permission);
+    }
+  }, []);
 
   const activeTaskStatuses = new Set(["queued", "assigned", "running"]);
   const activeTasks = tasks.filter((task) => activeTaskStatuses.has((task.status ?? "").toLowerCase()));
@@ -656,11 +691,13 @@ export default function Home() {
     const healthUrl = `${apiBase}/health`;
     const machinesUrl = `${apiBase}/api/machines`;
     const tasksUrl = `${apiBase}/api/tasks`;
+    const helpUrl = `${apiBase}/api/tasks/needs-human-help`;
 
-    const [healthResult, machinesResult, tasksResult] = await Promise.allSettled([
+    const [healthResult, machinesResult, tasksResult, helpResult] = await Promise.allSettled([
       fetchJson<HealthResponse>(healthUrl),
       fetchJson<Machine[]>(machinesUrl),
-      fetchJson<Task[]>(tasksUrl)
+      fetchJson<Task[]>(tasksUrl),
+      fetchJson<HelpTasksResponse>(helpUrl),
     ]);
 
     const nextErrors: EndpointErrors = {};
@@ -711,9 +748,105 @@ export default function Home() {
       } else {
         setSelectedTask(null);
       }
+
+      // ── Alert diffing: detect new failures, recoveries, completions ──────────
+      const prev = prevTasksRef.current;
+      const prevById = new Map(prev.map((t) => [t.id, t]));
+      const newAlerts: AlertItem[] = [];
+
+      for (const task of nextTasks) {
+        const prevTask = prevById.get(task.id);
+        const prevStatus = (prevTask?.status ?? "").toLowerCase();
+        const currStatus = (task.status ?? "").toLowerCase();
+
+        if (prevTask && prevStatus !== currStatus) {
+          const name = (task.payload?.task_type as string | undefined) ?? "Task";
+          const short = (task.id ?? "").slice(0, 8);
+
+          if (currStatus === "failed") {
+            newAlerts.push({
+              id: `alert-fail-${task.id}-${Date.now()}`,
+              kind: "task_failed" as AlertKind,
+              title: `${name} failed`,
+              detail: task.error ?? `Task ${short} reported a failure.`,
+              timestamp: new Date().toISOString(),
+              taskId: task.id,
+              taskPayload: task.payload as Record<string, unknown> | undefined,
+            });
+            _sendBrowserNotification(`Task Failed: ${name}`, task.error ?? short);
+          } else if (currStatus === "needs_human_help") {
+            newAlerts.push({
+              id: `alert-help-${task.id}-${Date.now()}`,
+              kind: "needs_human" as AlertKind,
+              title: `${name} needs your help`,
+              detail: "All automated recovery exhausted. Human action required.",
+              timestamp: new Date().toISOString(),
+              taskId: task.id,
+              taskPayload: task.payload as Record<string, unknown> | undefined,
+            });
+            _sendBrowserNotification(`Needs Attention: ${name}`, "Human intervention required.");
+          } else if (currStatus === "recovering" && prevStatus !== "recovering") {
+            newAlerts.push({
+              id: `alert-recover-${task.id}-${Date.now()}`,
+              kind: "recovering" as AlertKind,
+              title: `${name} is recovering`,
+              detail: "Timeout recovery in progress.",
+              timestamp: new Date().toISOString(),
+              taskId: task.id,
+              taskPayload: task.payload as Record<string, unknown> | undefined,
+            });
+          } else if (currStatus === "completed" && prevStatus !== "completed") {
+            newAlerts.push({
+              id: `alert-done-${task.id}-${Date.now()}`,
+              kind: "task_completed" as AlertKind,
+              title: `${name} completed`,
+              detail: `Task ${short} finished successfully.`,
+              timestamp: new Date().toISOString(),
+              taskId: task.id,
+            });
+          }
+        }
+      }
+
+      if (newAlerts.length > 0) {
+        setAlerts((prev) => [...newAlerts, ...prev].slice(0, 50));
+      }
+      prevTasksRef.current = nextTasks;
     } else {
       console.error(`[dashboard] Tasks fetch failed for ${tasksUrl}`, tasksResult.reason);
       nextErrors.tasks = `Tasks fetch failed: ${String(tasksResult.reason)}`;
+    }
+
+    // ── Alert diffing for workers going offline ─────────────────────────────
+    if (machinesResult.status === "fulfilled") {
+      const nextMachines = Array.isArray(machinesResult.value) ? machinesResult.value : [];
+      const prevMachines = prevMachinesRef.current;
+      const prevByUuid = new Map(prevMachines.map((m) => [m.machine_uuid, m]));
+
+      for (const machine of nextMachines) {
+        const prev = prevByUuid.get(machine.machine_uuid);
+        if (prev?.online && !machine.online) {
+          const name = machine.machine_name ?? machine.worker_name ?? machine.machine_uuid ?? "Worker";
+          setAlerts((current) => [
+            {
+              id: `alert-offline-${machine.machine_uuid}-${Date.now()}`,
+              kind: "worker_offline" as AlertKind,
+              title: `${name} went offline`,
+              detail: `Last status: ${prev.status ?? "unknown"}`,
+              timestamp: new Date().toISOString(),
+              workerName: name,
+            },
+            ...current,
+          ].slice(0, 50));
+          _sendBrowserNotification(`Worker Offline: ${name}`, "The worker is no longer reachable.");
+        }
+      }
+      prevMachinesRef.current = nextMachines;
+    }
+
+    // ── Human help tasks ────────────────────────────────────────────────────
+    if (helpResult.status === "fulfilled" && helpResult.value) {
+      setHumanHelpTasks((helpResult.value as HelpTasksResponse).tasks ?? []);
     }
 
     setErrors(nextErrors);
@@ -1087,6 +1220,11 @@ export default function Home() {
         },
       ]);
 
+      // Speak the response if TTS is enabled (Phase 4)
+      if (ttsEnabled && lines.length > 0) {
+        speak(lines.join(". "));
+      }
+
       await loadDashboardData();
       await loadBrainPanels();
     } catch (error) {
@@ -1197,6 +1335,48 @@ export default function Home() {
       );
     } finally {
       setTaskActionBusyKey(null);
+    }
+  };
+
+  // ── Browser notifications (Phase 2) ─────────────────────────────────────────
+  const _sendBrowserNotification = useCallback((title: string, body: string) => {
+    if (typeof window === "undefined") return;
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    try {
+      new Notification(title, { body, icon: "/icon-192.png" });
+    } catch {
+      // Ignore — some browsers restrict programmatic notifications
+    }
+  }, []);
+
+  const requestNotificationPermission = useCallback(async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    const result = await Notification.requestPermission();
+    setNotificationPermission(result);
+  }, []);
+
+  // ── Resolve needs_human_help task (Phase 2/3) ────────────────────────────────
+  const resolveHumanHelpTask = async (taskId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setResolveBusyKey(`resolve-${taskId}`);
+    try {
+      const res = await fetch(`${apiBase}/api/tasks/${taskId}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolution: "Resolved from mobile dashboard." }),
+      });
+      if (!res.ok) throw new Error(`Resolve failed (${res.status})`);
+      await loadDashboardData();
+    } catch (err) {
+      setFeedback(
+        setTaskActionFeedback,
+        "error",
+        `Resolve failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+      );
+    } finally {
+      setResolveBusyKey(null);
     }
   };
 
@@ -1679,34 +1859,52 @@ export default function Home() {
           : "border-amber-500/40 bg-amber-500/10";
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#13324a_0%,_#090d14_45%,_#070a11_100%)] text-slate-100">
-      <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-10">
-        <header className="mb-6 rounded-2xl border border-slate-800/90 bg-slate-900/75 px-5 py-5 shadow-[0_22px_45px_-30px_rgba(8,145,178,0.7)] backdrop-blur">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Bill Operations Control</p>
-              <h1 className="mt-2 text-3xl font-semibold tracking-tight">AI Workflow Command Center</h1>
-              <p className="mt-2 text-sm text-slate-400">
-                Calm, real-time control of workers, orchestration, and task execution.
-              </p>
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#13324a_0%,_#090d14_45%,_#070a11_100%)] text-slate-100 pb-16 lg:pb-0">
+      <div className="mx-auto max-w-[1600px] px-4 py-4 sm:px-6 lg:px-10 lg:py-6">
+        <header className="mb-4 rounded-2xl border border-slate-800/90 bg-slate-900/75 px-4 py-4 shadow-[0_22px_45px_-30px_rgba(8,145,178,0.7)] backdrop-blur sm:px-5 sm:py-5">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div className="flex items-center justify-between gap-4 lg:block">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-cyan-300 sm:text-xs">Bill Operations Control</p>
+                <h1 className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl lg:text-3xl">AI Workflow Command Center</h1>
+                <p className="mt-1 hidden text-sm text-slate-400 lg:block">
+                  Calm, real-time control of workers, orchestration, and task execution.
+                </p>
+              </div>
+              {/* Mobile quick-status row */}
+              <div className="flex items-center gap-2 lg:hidden">
+                {humanHelpTasks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setMobileView("alerts")}
+                    className="flex items-center gap-1.5 rounded-full border border-violet-500/40 bg-violet-500/15 px-3 py-1.5 text-xs font-medium text-violet-200 animate-pulse"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
+                    {humanHelpTasks.length} need{humanHelpTasks.length > 1 ? "" : "s"} you
+                  </button>
+                )}
+                <span className={`rounded-full border px-2.5 py-1 text-xs ${health?.status === "ok" ? "border-emerald-400/30 bg-emerald-500/15 text-emerald-300" : "border-slate-700 bg-slate-900 text-slate-400"}`}>
+                  {health?.status === "ok" ? "Online" : "Offline"}
+                </span>
+              </div>
             </div>
 
-            <div className="grid w-full gap-3 sm:grid-cols-2 lg:w-[540px]">
-              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-4 py-3 shadow-[0_10px_24px_-18px_rgba(2,132,199,0.6)]">
-                <p className="text-xs text-slate-400">Workers Online</p>
-                <p className="mt-1 text-2xl font-semibold text-cyan-300">{onlineWorkers.length}</p>
+            <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-4 lg:w-[540px] lg:gap-3">
+              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-3 py-2.5 shadow-[0_10px_24px_-18px_rgba(2,132,199,0.6)]">
+                <p className="text-[10px] text-slate-400 sm:text-xs">Workers Online</p>
+                <p className="mt-0.5 text-xl font-semibold text-cyan-300 sm:text-2xl">{onlineWorkers.length}</p>
               </div>
-              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-4 py-3 shadow-[0_10px_24px_-18px_rgba(2,132,199,0.6)]">
-                <p className="text-xs text-slate-400">Active Tasks</p>
-                <p className="mt-1 text-2xl font-semibold text-cyan-300">{activeTasks.length}</p>
+              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-3 py-2.5 shadow-[0_10px_24px_-18px_rgba(2,132,199,0.6)]">
+                <p className="text-[10px] text-slate-400 sm:text-xs">Active Tasks</p>
+                <p className="mt-0.5 text-xl font-semibold text-cyan-300 sm:text-2xl">{activeTasks.length}</p>
               </div>
-              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-4 py-3 shadow-[0_10px_24px_-18px_rgba(244,63,94,0.45)]">
-                <p className="text-xs text-slate-400">Failed Tasks</p>
-                <p className="mt-1 text-2xl font-semibold text-rose-300">{failedTasks.length}</p>
+              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-3 py-2.5 shadow-[0_10px_24px_-18px_rgba(244,63,94,0.45)]">
+                <p className="text-[10px] text-slate-400 sm:text-xs">Failed Tasks</p>
+                <p className="mt-0.5 text-xl font-semibold text-rose-300 sm:text-2xl">{failedTasks.length}</p>
               </div>
-              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-4 py-3 shadow-[0_10px_24px_-18px_rgba(16,185,129,0.45)]">
-                <p className="text-xs text-slate-400">Recent Successful Runs</p>
-                <p className="mt-1 text-2xl font-semibold text-emerald-300">{successfulTasks.length}</p>
+              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-3 py-2.5 shadow-[0_10px_24px_-18px_rgba(16,185,129,0.45)]">
+                <p className="text-[10px] text-slate-400 sm:text-xs">Completed</p>
+                <p className="mt-0.5 text-xl font-semibold text-emerald-300 sm:text-2xl">{successfulTasks.length}</p>
               </div>
             </div>
           </div>
@@ -1718,8 +1916,36 @@ export default function Home() {
           </div>
         )}
 
+        {/* ── Mobile Alerts Tab ─────────────────────────────────────────────── */}
+        <section className={`mb-4 ${mobileView === "alerts" ? "block lg:hidden" : "hidden"}`}>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Alerts</h2>
+                <p className="text-xs text-slate-400">Failures, timeouts, and worker events.</p>
+              </div>
+              {(alerts.length + humanHelpTasks.length) > 0 && (
+                <span className="rounded-full border border-rose-400/30 bg-rose-500/10 px-2.5 py-1 text-xs text-rose-200">
+                  {alerts.length + humanHelpTasks.length}
+                </span>
+              )}
+            </div>
+            <AlertsPanel
+              alerts={alerts}
+              humanHelpTasks={humanHelpTasks}
+              onResolve={(taskId) => void resolveHumanHelpTask(taskId)}
+              onRetry={(taskId, payload) => void retryFailedTask({ id: taskId, status: "failed", payload } as Task)}
+              onClearAlert={(alertId) => setAlerts((prev) => prev.filter((a) => a.id !== alertId))}
+              onClearAll={() => setAlerts([])}
+              resolveBusyKey={resolveBusyKey}
+              onRequestNotifications={() => void requestNotificationPermission()}
+              notificationPermission={notificationPermission}
+            />
+          </div>
+        </section>
+
         <section className="grid gap-6 lg:grid-cols-12">
-          <div className="space-y-6 lg:col-span-4">
+          <div className={`space-y-6 lg:col-span-4 ${mobileView !== "chat" ? "hidden lg:block" : ""}`}>
             <section className="rounded-2xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-900/70 p-5 shadow-[0_24px_45px_-30px_rgba(8,145,178,0.8)]">
               <div className="mb-4 flex items-center justify-between">
                 <div>
@@ -1746,23 +1972,66 @@ export default function Home() {
                   className="w-full resize-none rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-sm leading-relaxed text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
                 />
                 <div className="mt-3 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={() => void submitBrainCommand()}
-                    disabled={chatLoading || !chatInput.trim()}
-                    className={BUTTON_PRIMARY}
-                  >
-                    {chatLoading ? "Thinking..." : "Send Command"}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {/* Voice input button (Phase 4) */}
+                    {voiceSupported && (
+                      <button
+                        type="button"
+                        onClick={isListening ? stopListening : startListening}
+                        title={isListening ? "Stop listening" : "Speak command"}
+                        className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
+                          isListening
+                            ? "bg-rose-500 text-white animate-pulse hover:bg-rose-400"
+                            : "border border-slate-700 bg-slate-900 text-slate-400 hover:border-cyan-400/60 hover:text-cyan-300"
+                        }`}
+                      >
+                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                        </svg>
+                      </button>
+                    )}
+                    {/* TTS toggle (Phase 4) */}
+                    <button
+                      type="button"
+                      onClick={() => setTtsEnabled(!ttsEnabled)}
+                      title={ttsEnabled ? "Mute Bill's voice" : "Enable Bill's voice"}
+                      className={`rounded-lg px-3 py-2 text-sm transition ${
+                        ttsEnabled
+                          ? "border border-cyan-400/40 bg-cyan-500/15 text-cyan-300"
+                          : "border border-slate-700 bg-slate-900 text-slate-600 hover:text-slate-400"
+                      }`}
+                    >
+                      {isSpeaking ? (
+                        <svg className="h-4 w-4 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072M12 6v12m3-9a3 3 0 010 6" />
+                        </svg>
+                      ) : (
+                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M11 5L6 9H2v6h4l5 4V5z" />
+                          {ttsEnabled && <path strokeLinecap="round" strokeLinejoin="round" d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" />}
+                        </svg>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void submitBrainCommand()}
+                      disabled={chatLoading || !chatInput.trim()}
+                      className={BUTTON_PRIMARY}
+                    >
+                      {chatLoading ? "Thinking..." : "Send"}
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="mt-3 flex flex-wrap gap-2">
                 {[
                   "Which worker is free?",
                   "What is running now?",
-                  "Show online workers",
+                  "What failed last?",
                   "Retry last failed task",
+                  "Summarize all workers",
+                  "Show needs human help",
                 ].map((example) => (
                   <button
                     key={example}
@@ -1800,7 +2069,7 @@ export default function Home() {
             </section>
           </div>
 
-          <div className="space-y-6 lg:col-span-5">
+          <div className={`space-y-6 lg:col-span-5 ${mobileView !== "tasks" ? "hidden lg:block" : ""}`}>
             <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
               <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                 <div>
@@ -2575,7 +2844,7 @@ export default function Home() {
             </section>
           </div>
 
-          <div className="space-y-6 lg:col-span-3">
+          <div className={`space-y-6 lg:col-span-3 ${mobileView !== "workers" ? "hidden lg:block" : ""}`}>
             <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
               <h2 className="text-lg font-semibold">Workers</h2>
               <p className="mb-3 text-xs text-slate-400">Availability and assignment at a glance.</p>
@@ -3146,6 +3415,13 @@ export default function Home() {
           </button>
         </div>
       )}
+
+      {/* ── Mobile Bottom Navigation (Phase 1) ────────────────────────────── */}
+      <MobileNav
+        activeView={mobileView}
+        onNavigate={setMobileView}
+        alertCount={humanHelpTasks.length + alerts.filter((a) => a.kind === "needs_human" || a.kind === "task_failed" || a.kind === "worker_offline").length}
+      />
     </main>
   );
 }
