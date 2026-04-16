@@ -1,3 +1,11 @@
 {
-  "rootDirectory": "jarvis-platform/apps/bill-web"
+  "builds": [
+    {
+      "src": "jarvis-platform/apps/bill-web/package.json",
+      "use": "@vercel/next"
+    }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "jarvis-platform/apps/bill-web/$1" }
+  ]
 }
