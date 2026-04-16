@@ -1,0 +1,22 @@
+Smart Sherpa Sync (Sync-Only) - Files to copy
+
+Place at USB root (E:\):
+- setup.exe
+- autorun.inf
+
+Place under E:\desktop-ai-agent\ :
+- setup.ps1
+- requirements.txt
+- start-chrome-debug.ps1
+- portable\run-sync.cmd
+- portable\run-sync.ps1
+- portable\run_smart_sherpa_sync.py
+- modules\actions.py
+- modules\memory.py
+- modules\__init__.py
+- data\ (create empty folder)
+
+How to run on the new PC:
+1) Plug in USB → AutoPlay dialog: "Run setup.exe" (click it). If no dialog, open USB and double-click setup.exe.
+2) Start Chrome debug: open desktop-ai-agent\start-chrome-debug.ps1, log into HealthSherpa in that window.
+3) Start sync: open desktop-ai-agent\portable\run-sync.cmd.

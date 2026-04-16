@@ -1,0 +1,6 @@
+[AutoRun]
+label=Desktop AI Agent
+; Note: Windows disables automatic execution from USB for security.
+; This entry helps AutoPlay show a "Run setup" action if present.
+open=setup-launcher.cmd
+action=Run Desktop AI Agent Setup

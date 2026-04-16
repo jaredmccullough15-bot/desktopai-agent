@@ -1,0 +1,3568 @@
+[
+  {
+    "id": "aebc7bd3-1f17-4ba8-86c7-1a9565a86fb2",
+    "timestamp": "2026-04-06T17:37:54.436001",
+    "kind": "brain_command",
+    "summary": "Intent=troubleshooting command='why did the most recent fail happen'",
+    "details": {
+      "command": "why did the most recent fail happen",
+      "recognized_intent": "troubleshooting",
+      "selected_workflow": null,
+      "selected_worker": null,
+      "queued_task_id": null,
+      "retry_recommended": false
+    },
+    "tags": [
+      "brain",
+      "troubleshooting"
+    ]
+  },
+  {
+    "id": "6f813068-a459-433c-be6f-f153f3a01e04",
+    "timestamp": "2026-04-06T19:08:55.320462",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 480801fd-e485-49e2-849e-8236ea9f482d for health_insurance_quote",
+    "details": {
+      "draft_id": "480801fd-e485-49e2-849e-8236ea9f482d",
+      "workflow_name": "health_insurance_quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "6ae75366-17b6-4437-b3f9-7c89319ced9c",
+    "timestamp": "2026-04-07T00:18:50.680331",
+    "kind": "brain_command",
+    "summary": "Intent=unknown command='why does billworker-pc have an error'",
+    "details": {
+      "command": "why does billworker-pc have an error",
+      "recognized_intent": "unknown",
+      "selected_workflow": null,
+      "selected_worker": null,
+      "queued_task_id": null,
+      "retry_recommended": false
+    },
+    "tags": [
+      "brain",
+      "unknown"
+    ]
+  },
+  {
+    "id": "e9418d67-2dac-4110-b3b5-ded3ee16b4fd",
+    "timestamp": "2026-04-07T01:05:48.295084",
+    "kind": "task_failure",
+    "summary": "Task cfcc484a-ec2b-4051-9178-07433fcc51c4 failed on worker 7b0c68c6-f4d6-4820-8a7f-f08ea46650a9",
+    "details": {
+      "task_id": "cfcc484a-ec2b-4051-9178-07433fcc51c4",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "7b0c68c6-f4d6-4820-8a7f-f08ea46650a9",
+      "worker_name": "SBHMIHQ18",
+      "error": "Locator.click: Timeout 45000ms exceeded.\nCall log:\n  - waiting for locator(\"#applications .MuiTablePagination-actions button:nth-child(2)\").first\n    - locator resolved to <button tabindex=\"0\" type=\"button\" title=\"Go to next page\" aria-label=\"Go to next page\" class=\"MuiButtonBase-root MuiIconButton-root MuiIconButton-colorInherit MuiIconButton-sizeMedium css-10xi1h8\">\u2026</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div tabindex=\"-1\" role=\"presentation\" class=\"MuiDialog-container MuiDialog-scrollPaper css-8azq84\">\u2026</div> from <div data-public=\"true\" role=\"presentation\" class=\"MuiDialog-root MuiModal-root css-1egf66k\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div tabindex=\"-1\" role=\"presentation\" class=\"MuiDialog-container MuiDialog-scrollPaper css-8azq84\">\u2026</div> from <div data-public=\"true\" role=\"presentation\" class=\"MuiDialog-root MuiModal-root css-1egf66k\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    18 \u00d7 waiting for element to be visible, enabled and stable\n       - element is visible, enabled and stable\n       - scrolling into view if needed\n       - done scrolling\n       - <div tabindex=\"-1\" role=\"presentation\" class=\"MuiDialog-container MuiDialog-scrollPaper css-8azq84\">\u2026</div> from <div data-public=\"true\" role=\"presentation\" class=\"MuiDialog-root MuiModal-root css-1egf66k\">\u2026</div> subtree intercepts pointer events\n     - retrying click action\n       - waiting 500ms\n    - waiting for element to be visible, enabled and stable\n",
+      "reflection_id": "b0ccb266-41a9-4823-a9aa-57a4d23a1c83"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "0be5848b-5183-473d-82de-0f5c0b9070dd",
+    "timestamp": "2026-04-07T03:26:27.719970",
+    "kind": "task_success",
+    "summary": "Task c8d9892c-ee66-46fe-8b82-0cc860f1962b completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "c8d9892c-ee66-46fe-8b82-0cc860f1962b",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "e5bb4837-871a-4648-80ad-4875cb08dd09"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "7d0d4a8c-d5f0-452c-b6e3-794187733308",
+    "timestamp": "2026-04-07T03:27:48.712463",
+    "kind": "task_failure",
+    "summary": "Task a0b8b3f2-cb54-45a7-8f17-03bbf4a7aea7 failed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "a0b8b3f2-cb54-45a7-8f17-03bbf4a7aea7",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": "Locator.click: Timeout 45000ms exceeded.\nCall log:\n  - waiting for locator(\"#applications .MuiTablePagination-actions button:nth-child(2)\").first\n    - locator resolved to <button tabindex=\"0\" type=\"button\" title=\"Go to next page\" aria-label=\"Go to next page\" class=\"MuiButtonBase-root MuiIconButton-root MuiIconButton-colorInherit MuiIconButton-sizeMedium css-10xi1h8\">\u2026</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div tabindex=\"-1\" role=\"presentation\" class=\"MuiDialog-container MuiDialog-scrollPaper css-8azq84\">\u2026</div> from <div data-public=\"true\" role=\"presentation\" class=\"MuiDialog-root MuiModal-root css-1egf66k\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div tabindex=\"-1\" role=\"presentation\" class=\"MuiDialog-container MuiDialog-scrollPaper css-8azq84\">\u2026</div> from <div data-public=\"true\" role=\"presentation\" class=\"MuiDialog-root MuiModal-root css-1egf66k\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    18 \u00d7 waiting for element to be visible, enabled and stable\n       - element is visible, enabled and stable\n       - scrolling into view if needed\n       - done scrolling\n       - <div tabindex=\"-1\" role=\"presentation\" class=\"MuiDialog-container MuiDialog-scrollPaper css-8azq84\">\u2026</div> from <div data-public=\"true\" role=\"presentation\" class=\"MuiDialog-root MuiModal-root css-1egf66k\">\u2026</div> subtree intercepts pointer events\n     - retrying click action\n       - waiting 500ms\n    - waiting for element to be visible, enabled and stable\n",
+      "reflection_id": "5a74dbbb-582b-4781-a5c6-b05ff5515383"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "0f2bfc23-978a-4620-9a70-2255f008dc96",
+    "timestamp": "2026-04-07T03:27:48.714085",
+    "kind": "proposal_generated",
+    "summary": "Generated improvement proposal: Proposal: reduce repeated timeout failures",
+    "details": {
+      "proposal_id": null,
+      "status": "pending_review"
+    },
+    "tags": [
+      "proposal",
+      "pending_review"
+    ]
+  },
+  {
+    "id": "9c400fe0-13aa-41f5-bd6e-5ba1ba93dba6",
+    "timestamp": "2026-04-07T10:40:02.387832",
+    "kind": "brain_command",
+    "summary": "Intent=unknown command='Tell me about the recent failed task'",
+    "details": {
+      "command": "Tell me about the recent failed task",
+      "recognized_intent": "unknown",
+      "selected_workflow": null,
+      "selected_worker": null,
+      "queued_task_id": null,
+      "retry_recommended": false
+    },
+    "tags": [
+      "brain",
+      "unknown"
+    ]
+  },
+  {
+    "id": "0e84c218-268e-4bc8-9708-c89ca97fdf91",
+    "timestamp": "2026-04-07T10:44:26.621249",
+    "kind": "brain_command",
+    "summary": "Intent=failure_explanation command='What failed last'",
+    "details": {
+      "command": "What failed last",
+      "recognized_intent": "failure_explanation",
+      "selected_workflow": null,
+      "selected_worker": null,
+      "queued_task_id": null,
+      "retry_recommended": true
+    },
+    "tags": [
+      "brain",
+      "failure_explanation"
+    ]
+  },
+  {
+    "id": "c5b12822-e8e6-41ef-ad5d-6745563f1077",
+    "timestamp": "2026-04-07T12:56:44.258687",
+    "kind": "brain_command",
+    "summary": "Intent=failure_explanation command='what failed last'",
+    "details": {
+      "command": "what failed last",
+      "recognized_intent": "failure_explanation",
+      "selected_workflow": null,
+      "selected_worker": null,
+      "queued_task_id": null,
+      "retry_recommended": true
+    },
+    "tags": [
+      "brain",
+      "failure_explanation"
+    ]
+  },
+  {
+    "id": "0ed713a3-ec86-4bed-b1cb-317d8dd58221",
+    "timestamp": "2026-04-07T13:08:44.323712",
+    "kind": "task_success",
+    "summary": "Task f45b857f-420a-453f-b06a-19f1363979e7 completed on worker 0e10e1bb-162a-4996-acf9-2589ea05fd96",
+    "details": {
+      "task_id": "f45b857f-420a-453f-b06a-19f1363979e7",
+      "task_type": "ambetter_export",
+      "workflow_name": "ambetter_export",
+      "machine_uuid": "0e10e1bb-162a-4996-acf9-2589ea05fd96",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "de04e28d-afff-4081-8715-1ea85400480b"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "b8919c64-2118-47dd-a7a6-0f4dcd2b8577",
+    "timestamp": "2026-04-07T13:10:31.866164",
+    "kind": "task_failure",
+    "summary": "Task e791b2d2-22e3-4a00-9d62-69b6df87a6d3 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "e791b2d2-22e3-4a00-9d62-69b6df87a6d3",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "BillWorker-PC",
+      "error": "NoSuchElementException: Unable to locate element with selector #submitBtn after 10 seconds. Element may not be present in current page state.",
+      "reflection_id": "09f0fd64-048d-46da-98c5-b15482a576b5"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "ce5365df-4f5c-449e-aa63-a04c563ae283",
+    "timestamp": "2026-04-07T13:10:31.888225",
+    "kind": "task_failure",
+    "summary": "Task f45b857f-420a-453f-b06a-19f1363979e7 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "f45b857f-420a-453f-b06a-19f1363979e7",
+      "task_type": "ambetter_export",
+      "workflow_name": "ambetter_export",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "BillWorker-PC",
+      "error": "TimeoutException: Page pagination did not advance. Stuck on page 3 of 12. Next button found but click had no effect after 3 retries.",
+      "reflection_id": "d6e35d91-a988-4561-be70-865e44164740"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "8d42cca9-6fa1-48c6-813d-ca8fd18d4673",
+    "timestamp": "2026-04-07T13:10:31.920982",
+    "kind": "task_failure",
+    "summary": "Task d76661df-2b4d-4394-aba2-e2066f1e0971 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "d76661df-2b4d-4394-aba2-e2066f1e0971",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "BillWorker-PC",
+      "error": "SessionExpiredException: Login session expired mid-workflow. HTTP 401 from portal. Re-authentication required.",
+      "reflection_id": "407d4177-432b-40a7-917f-85c35aca1ac1"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "session/login"
+    ]
+  },
+  {
+    "id": "859cfd0c-8719-452d-ad76-dac4a6ed1ec0",
+    "timestamp": "2026-04-07T13:14:54.001744",
+    "kind": "task_failure",
+    "summary": "Task e791b2d2-22e3-4a00-9d62-69b6df87a6d3 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "e791b2d2-22e3-4a00-9d62-69b6df87a6d3",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "BillWorker-PC",
+      "error": "NoSuchElementException: Unable to locate element with selector #submitBtn after 10 seconds.",
+      "reflection_id": "f1a9fea7-f718-4202-9b78-176c5127cf85"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "8cb81c81-7de6-498a-8866-cb2abb8a1b0f",
+    "timestamp": "2026-04-07T13:14:54.002642",
+    "kind": "proposal_generated",
+    "summary": "Generated improvement proposal: Proposal: reduce repeated selector failures",
+    "details": {
+      "proposal_id": null,
+      "status": "pending_review"
+    },
+    "tags": [
+      "proposal",
+      "pending_review"
+    ]
+  },
+  {
+    "id": "97f5298a-5598-4ae8-9854-b1b0753bec35",
+    "timestamp": "2026-04-07T13:15:11.528297",
+    "kind": "task_failure",
+    "summary": "Task e791b2d2-22e3-4a00-9d62-69b6df87a6d3 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "e791b2d2-22e3-4a00-9d62-69b6df87a6d3",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "BillWorker-PC",
+      "error": "NoSuchElementException: Unable to locate element with selector #submitBtn after 10 seconds.",
+      "reflection_id": "a29ef79e-fc06-41ae-b5e2-4f64e0e1c073"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "d5d62407-43fa-483c-9005-52be496ee11f",
+    "timestamp": "2026-04-07T13:15:23.268671",
+    "kind": "task_failure",
+    "summary": "Task e791b2d2-22e3-4a00-9d62-69b6df87a6d3 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "e791b2d2-22e3-4a00-9d62-69b6df87a6d3",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "BillWorker-PC",
+      "error": "NoSuchElementException: Unable to locate element with selector #submitBtn",
+      "reflection_id": "323ec0a9-e0e9-4c08-9ffd-0bbabed7ce8a"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "6fe811c7-bb7e-4052-9a68-5b21f97d7a0e",
+    "timestamp": "2026-04-07T13:15:37.792529",
+    "kind": "task_failure",
+    "summary": "Task e791b2d2-22e3-4a00-9d62-69b6df87a6d3 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "e791b2d2-22e3-4a00-9d62-69b6df87a6d3",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "BillWorker-PC",
+      "error": "NoSuchElementException: selector not found",
+      "reflection_id": "e887e624-a8bc-4bd2-a9fe-7914558b91af"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "5670fcf8-b530-463b-8737-9dfcdf352b00",
+    "timestamp": "2026-04-07T13:16:12.456673",
+    "kind": "task_failure",
+    "summary": "Task e791b2d2-22e3-4a00-9d62-69b6df87a6d3 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "e791b2d2-22e3-4a00-9d62-69b6df87a6d3",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "BillWorker-PC",
+      "error": "NoSuchElementException: selector not found",
+      "reflection_id": "c9a0a574-8e70-46e0-87f9-f1a5afad9854"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "b4c9849c-149a-4a71-982b-54f7ef15d4fd",
+    "timestamp": "2026-04-07T13:18:23.432904",
+    "kind": "task_failure",
+    "summary": "Task bbd539e5-c1d2-4b33-a751-851b57d71e4f failed on worker 0e10e1bb-162a-4996-acf9-2589ea05fd96",
+    "details": {
+      "task_id": "bbd539e5-c1d2-4b33-a751-851b57d71e4f",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "0e10e1bb-162a-4996-acf9-2589ea05fd96",
+      "worker_name": "SBHMIHQ16",
+      "error": "smart_sherpa_sync requires 'start_url' or 'url' when not already on a clients page",
+      "reflection_id": "032b7ad2-0948-4c68-b699-d8a539209d3f"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "2c8e351d-5cc9-452c-9467-fceac43cd95b",
+    "timestamp": "2026-04-07T13:18:24.351061",
+    "kind": "task_success",
+    "summary": "Task 4b81098a-b1bd-4f46-9bf2-f5cb80fd87db completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "4b81098a-b1bd-4f46-9bf2-f5cb80fd87db",
+      "task_type": "ambetter_export",
+      "workflow_name": "ambetter_export",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "4cf83bce-3517-4889-b76b-01ef48f269ea"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "45ef45c5-957e-4c3a-ac23-527e4b03912d",
+    "timestamp": "2026-04-07T13:18:28.274179",
+    "kind": "task_failure",
+    "summary": "Task a2583962-5b75-448f-b948-a9b338eaf12a failed on worker 0e10e1bb-162a-4996-acf9-2589ea05fd96",
+    "details": {
+      "task_id": "a2583962-5b75-448f-b948-a9b338eaf12a",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "0e10e1bb-162a-4996-acf9-2589ea05fd96",
+      "worker_name": "SBHMIHQ16",
+      "error": "smart_sherpa_sync requires 'start_url' or 'url' when not already on a clients page",
+      "reflection_id": "96001b3c-52c9-4537-9d7a-513edb39f3cb"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "864b4332-c1de-4749-859a-03c3d1731fa3",
+    "timestamp": "2026-04-07T13:18:28.275008",
+    "kind": "proposal_generated",
+    "summary": "Generated improvement proposal: Proposal: reduce repeated unknown failures",
+    "details": {
+      "proposal_id": null,
+      "status": "pending_review"
+    },
+    "tags": [
+      "proposal",
+      "pending_review"
+    ]
+  },
+  {
+    "id": "d392fd4d-1241-41a3-93f3-7eb75ef77221",
+    "timestamp": "2026-04-07T13:19:38.154750",
+    "kind": "task_failure",
+    "summary": "Task 201984cb-8d9f-489b-a877-70788821bcc2 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "201984cb-8d9f-489b-a877-70788821bcc2",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "smart_sherpa_sync requires 'start_url' or 'url' when not already on a clients page",
+      "reflection_id": "31c530ef-02f2-4ce3-84fe-319ee70f5c16"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "cdf1eea3-1d2b-473a-aeb1-3abaf72cc5ef",
+    "timestamp": "2026-04-07T13:19:38.625415",
+    "kind": "task_success",
+    "summary": "Task 03a49aa7-b827-4c0c-8f28-9e5c15796b70 completed on worker 0e10e1bb-162a-4996-acf9-2589ea05fd96",
+    "details": {
+      "task_id": "03a49aa7-b827-4c0c-8f28-9e5c15796b70",
+      "task_type": "ambetter_export",
+      "workflow_name": "ambetter_export",
+      "machine_uuid": "0e10e1bb-162a-4996-acf9-2589ea05fd96",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "1df8939b-6764-49d5-bdf2-729a6280a8f2"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "de4c2318-7bb4-439b-a77c-434904a2b8e2",
+    "timestamp": "2026-04-07T13:19:38.626810",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 1 adaptive proposal(s) for workflow=ambetter_export",
+    "details": {
+      "workflow_name": "ambetter_export",
+      "proposal_ids": [
+        "96b964f9-b5ed-4928-9e61-080e3b1a73b4"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "91c8153d-658a-47ee-83bb-d5427796f59c",
+    "timestamp": "2026-04-07T13:19:43.455113",
+    "kind": "task_failure",
+    "summary": "Task 91032f44-aa81-4cef-8fd9-079a0c91cc38 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "91032f44-aa81-4cef-8fd9-079a0c91cc38",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "smart_sherpa_sync requires 'start_url' or 'url' when not already on a clients page",
+      "reflection_id": "d519bbaa-fa7a-4aae-827e-af4a32a80b14"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "dc675241-1cf6-4adc-be62-4ba574e5caf5",
+    "timestamp": "2026-04-07T13:19:53.753751",
+    "kind": "task_success",
+    "summary": "Task 04ffd380-bf09-4d00-969e-018496769feb completed on worker 0e10e1bb-162a-4996-acf9-2589ea05fd96",
+    "details": {
+      "task_id": "04ffd380-bf09-4d00-969e-018496769feb",
+      "task_type": "ambetter_export",
+      "workflow_name": "ambetter_export",
+      "machine_uuid": "0e10e1bb-162a-4996-acf9-2589ea05fd96",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "fc86ac98-aff4-4028-9e5c-b84c95801fb3"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "2d392dfe-49db-4763-adb4-3afd2802648a",
+    "timestamp": "2026-04-07T13:19:53.754814",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 1 adaptive proposal(s) for workflow=ambetter_export",
+    "details": {
+      "workflow_name": "ambetter_export",
+      "proposal_ids": [
+        "4d8eefc2-b3ea-4304-9e54-d8dbfaf6f629"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "552ccf3f-423d-458b-b1e6-d6ca8188603f",
+    "timestamp": "2026-04-07T13:19:53.873318",
+    "kind": "task_failure",
+    "summary": "Task b089610d-f111-4291-ae20-29ec3b7ae782 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "b089610d-f111-4291-ae20-29ec3b7ae782",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "smart_sherpa_sync requires 'start_url' or 'url' when not already on a clients page",
+      "reflection_id": "88bb282c-afa9-4ca2-8c32-ed4469575b0b"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "bf4fab6d-db8d-4f1e-bfe1-518e06a0b6bd",
+    "timestamp": "2026-04-07T13:19:58.214437",
+    "kind": "task_success",
+    "summary": "Task 2bc49305-171d-42e2-850e-569a0b6d96e0 completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "2bc49305-171d-42e2-850e-569a0b6d96e0",
+      "task_type": "priority_health_search",
+      "workflow_name": "priority_health_search",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "fd7eab82-fa13-4252-a4a0-dd139cdf6ce9"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "8e401840-2dee-4b82-86aa-56217be0482f",
+    "timestamp": "2026-04-07T13:26:57.378558",
+    "kind": "task_success",
+    "summary": "Task d76661df-2b4d-4394-aba2-e2066f1e0971 completed on worker 7b0c68c6-f4d6-4820-8a7f-f08ea46650a9",
+    "details": {
+      "task_id": "d76661df-2b4d-4394-aba2-e2066f1e0971",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "7b0c68c6-f4d6-4820-8a7f-f08ea46650a9",
+      "worker_name": "SBHMIHQ18",
+      "error": null,
+      "reflection_id": "bddbdf36-3967-4dea-b997-c29cdb6500a7"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "c9528331-0aba-412d-8215-f93bbb375e14",
+    "timestamp": "2026-04-07T13:26:57.460248",
+    "kind": "task_success",
+    "summary": "Task e791b2d2-22e3-4a00-9d62-69b6df87a6d3 completed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "e791b2d2-22e3-4a00-9d62-69b6df87a6d3",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": null,
+      "reflection_id": "0817f486-e07f-49cd-a389-f42d03ee9e4f"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "fe0fa4e2-714b-4bb9-9c12-6e7d54e2d63a",
+    "timestamp": "2026-04-07T14:29:06.040032",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 6f570305-fffd-4bcc-955f-55a2f5eb0705 for open_you_tube",
+    "details": {
+      "draft_id": "6f570305-fffd-4bcc-955f-55a2f5eb0705",
+      "workflow_name": "open_you_tube",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "f983df00-826e-4248-86aa-9efc4312b534",
+    "timestamp": "2026-04-07T14:29:37.388085",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 6f570305-fffd-4bcc-955f-55a2f5eb0705",
+    "details": {
+      "draft_id": "6f570305-fffd-4bcc-955f-55a2f5eb0705",
+      "workflow_name": "open_you_tube"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "309de1bd-5a99-4473-9329-595821e22bd2",
+    "timestamp": "2026-04-07T15:31:05.117442",
+    "kind": "task_failure",
+    "summary": "Task a9beb8e6-4eca-4b0d-89fd-90ceaa2aa6e0 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "a9beb8e6-4eca-4b0d-89fd-90ceaa2aa6e0",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "Locator.click: Timeout 45000ms exceeded.\nCall log:\n  - waiting for locator(\"#applications .MuiTablePagination-actions button:nth-child(2)\").first\n    - locator resolved to <button tabindex=\"0\" type=\"button\" title=\"Go to next page\" aria-label=\"Go to next page\" class=\"MuiButtonBase-root MuiIconButton-root MuiIconButton-colorInherit MuiIconButton-sizeMedium css-10xi1h8\">\u2026</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div tabindex=\"-1\" role=\"presentation\" class=\"MuiDialog-container MuiDialog-scrollPaper css-8azq84\">\u2026</div> from <div data-public=\"true\" role=\"presentation\" class=\"MuiDialog-root MuiModal-root css-1egf66k\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div tabindex=\"-1\" role=\"presentation\" class=\"MuiDialog-container MuiDialog-scrollPaper css-8azq84\">\u2026</div> from <div data-public=\"true\" role=\"presentation\" class=\"MuiDialog-root MuiModal-root css-1egf66k\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    18 \u00d7 waiting for element to be visible, enabled and stable\n       - element is visible, enabled and stable\n       - scrolling into view if needed\n       - done scrolling\n       - <div tabindex=\"-1\" role=\"presentation\" class=\"MuiDialog-container MuiDialog-scrollPaper css-8azq84\">\u2026</div> from <div data-public=\"true\" role=\"presentation\" class=\"MuiDialog-root MuiModal-root css-1egf66k\">\u2026</div> subtree intercepts pointer events\n     - retrying click action\n       - waiting 500ms\n    - waiting for element to be visible, enabled and stable\n",
+      "reflection_id": "277472ef-70a5-4afa-b844-ad3e69226be3"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "68418904-b3c3-4b29-956b-5d34582de280",
+    "timestamp": "2026-04-07T15:34:57.189629",
+    "kind": "brain_command",
+    "summary": "Intent=failure_explanation command='what failed last'",
+    "details": {
+      "command": "what failed last",
+      "recognized_intent": "failure_explanation",
+      "selected_workflow": null,
+      "selected_worker": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "queued_task_id": null,
+      "retry_recommended": true
+    },
+    "tags": [
+      "brain",
+      "failure_explanation"
+    ]
+  },
+  {
+    "id": "f03ef579-1dbe-4cb3-b6ef-6f90c7fa02b6",
+    "timestamp": "2026-04-07T19:15:04.911683",
+    "kind": "task_success",
+    "summary": "Task 8fdfd930-4d20-42d9-9f67-bcc4d07ebc66 completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "8fdfd930-4d20-42d9-9f67-bcc4d07ebc66",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "55671652-ac75-46d3-a0dc-971e8b4d47fc"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "79e5e0bc-0a06-44c7-91b5-e2a240f7a22b",
+    "timestamp": "2026-04-08T14:53:17.162919",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft caad0570-1c66-4c9a-be5d-501d8a871754 for quote",
+    "details": {
+      "draft_id": "caad0570-1c66-4c9a-be5d-501d8a871754",
+      "workflow_name": "quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "e1b85897-3e90-46b6-b4f6-45941be3d0a9",
+    "timestamp": "2026-04-08T14:57:09.229102",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft caad0570-1c66-4c9a-be5d-501d8a871754",
+    "details": {
+      "draft_id": "caad0570-1c66-4c9a-be5d-501d8a871754",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "85581371-e9db-4f87-8926-c4997704d445",
+    "timestamp": "2026-04-08T15:02:42.748737",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 6daf1273-70a1-48eb-bfc8-ce731106d62c for quote",
+    "details": {
+      "draft_id": "6daf1273-70a1-48eb-bfc8-ce731106d62c",
+      "workflow_name": "quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "49a9acb0-16f4-4993-960d-81723cd49c5d",
+    "timestamp": "2026-04-08T15:04:10.931077",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 6daf1273-70a1-48eb-bfc8-ce731106d62c",
+    "details": {
+      "draft_id": "6daf1273-70a1-48eb-bfc8-ce731106d62c",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "4a5c33b2-7116-4063-ab6a-2a67987478a8",
+    "timestamp": "2026-04-08T16:13:47.996297",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 82af45e9-6713-4393-9b2a-d0749f6bfae0 for health_insurance_quote",
+    "details": {
+      "draft_id": "82af45e9-6713-4393-9b2a-d0749f6bfae0",
+      "workflow_name": "health_insurance_quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "e946cf7e-88b9-4bea-917d-dbb7b38fc2e3",
+    "timestamp": "2026-04-08T16:15:56.562610",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 82af45e9-6713-4393-9b2a-d0749f6bfae0",
+    "details": {
+      "draft_id": "82af45e9-6713-4393-9b2a-d0749f6bfae0",
+      "workflow_name": "health_insurance_quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "72715b98-7937-43fa-81ea-972ce3b52a4f",
+    "timestamp": "2026-04-08T16:15:59.338860",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 480801fd-e485-49e2-849e-8236ea9f482d",
+    "details": {
+      "draft_id": "480801fd-e485-49e2-849e-8236ea9f482d",
+      "workflow_name": "health_insurance_quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "192762e5-2dc1-4316-9f9d-5e50b7ae9a36",
+    "timestamp": "2026-04-08T16:19:01.060628",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft b608a121-c8f1-4633-a5bb-f2f95ff66cba for health_insurance_quote",
+    "details": {
+      "draft_id": "b608a121-c8f1-4633-a5bb-f2f95ff66cba",
+      "workflow_name": "health_insurance_quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "d98740d5-4664-4f6e-854c-b5f019877bc4",
+    "timestamp": "2026-04-08T16:19:32.171753",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft b608a121-c8f1-4633-a5bb-f2f95ff66cba",
+    "details": {
+      "draft_id": "b608a121-c8f1-4633-a5bb-f2f95ff66cba",
+      "workflow_name": "health_insurance_quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "8c4352a8-d785-4503-bb5c-bb4eb3fbe550",
+    "timestamp": "2026-04-08T16:24:51.073162",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 4093a51a-0a9d-40cf-a9e4-2fd456b7bfad for marketplace_quote",
+    "details": {
+      "draft_id": "4093a51a-0a9d-40cf-a9e4-2fd456b7bfad",
+      "workflow_name": "marketplace_quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "e852711c-4fc6-4b05-b433-c94a2d83dce8",
+    "timestamp": "2026-04-08T16:25:01.944255",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 4093a51a-0a9d-40cf-a9e4-2fd456b7bfad (PID 22912)",
+    "details": {
+      "draft_id": "4093a51a-0a9d-40cf-a9e4-2fd456b7bfad",
+      "pid": 22912
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "1b5e97a1-c612-488a-ba13-073305b22186",
+    "timestamp": "2026-04-08T16:26:16.279409",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 1 of draft 4093a51a-0a9d-40cf-a9e4-2fd456b7bfad",
+    "details": {
+      "draft_id": "4093a51a-0a9d-40cf-a9e4-2fd456b7bfad",
+      "step_order": 1
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "523e5e94-aec9-4ccb-8f2d-3801d9112e5f",
+    "timestamp": "2026-04-08T16:26:26.481874",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 4093a51a-0a9d-40cf-a9e4-2fd456b7bfad",
+    "details": {
+      "draft_id": "4093a51a-0a9d-40cf-a9e4-2fd456b7bfad",
+      "workflow_name": "marketplace_quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "fedbaf39-7403-4304-abe5-eb55b33484ee",
+    "timestamp": "2026-04-08T16:26:33.522976",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft d13e4e55-5aea-4fa1-9cdf-3be471fd19ce for marketplace_quote",
+    "details": {
+      "draft_id": "d13e4e55-5aea-4fa1-9cdf-3be471fd19ce",
+      "workflow_name": "marketplace_quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "48b94296-11fa-4e08-b63d-2d9effc093b2",
+    "timestamp": "2026-04-08T16:26:35.167568",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft d13e4e55-5aea-4fa1-9cdf-3be471fd19ce (PID 33472)",
+    "details": {
+      "draft_id": "d13e4e55-5aea-4fa1-9cdf-3be471fd19ce",
+      "pid": 33472
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "a9c852ea-6313-4939-b25a-492fad553aa2",
+    "timestamp": "2026-04-08T16:26:44.499195",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 1 of draft d13e4e55-5aea-4fa1-9cdf-3be471fd19ce",
+    "details": {
+      "draft_id": "d13e4e55-5aea-4fa1-9cdf-3be471fd19ce",
+      "step_order": 1
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "01fbab64-7e23-4998-9ac1-33f24a5455e5",
+    "timestamp": "2026-04-08T16:27:11.714730",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft d13e4e55-5aea-4fa1-9cdf-3be471fd19ce",
+    "details": {
+      "draft_id": "d13e4e55-5aea-4fa1-9cdf-3be471fd19ce",
+      "workflow_name": "marketplace_quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "4f53ef80-d53b-4f62-be63-94b3f5f7098e",
+    "timestamp": "2026-04-08T16:27:46.113990",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft eefad4bd-b906-4bcd-b751-8c53704b2ce5 for marketplace_quote",
+    "details": {
+      "draft_id": "eefad4bd-b906-4bcd-b751-8c53704b2ce5",
+      "workflow_name": "marketplace_quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "e7561e3c-4757-4837-a4a8-c9cbd9904ff9",
+    "timestamp": "2026-04-08T16:27:47.496165",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft eefad4bd-b906-4bcd-b751-8c53704b2ce5 (PID 47876)",
+    "details": {
+      "draft_id": "eefad4bd-b906-4bcd-b751-8c53704b2ce5",
+      "pid": 47876
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "fea42939-184a-4168-a280-2d9105f93193",
+    "timestamp": "2026-04-08T16:29:13.338470",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 1 of draft eefad4bd-b906-4bcd-b751-8c53704b2ce5",
+    "details": {
+      "draft_id": "eefad4bd-b906-4bcd-b751-8c53704b2ce5",
+      "step_order": 1
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "6d1adb7a-3ce3-499d-8a10-8e3d80432243",
+    "timestamp": "2026-04-08T16:34:40.215767",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft eefad4bd-b906-4bcd-b751-8c53704b2ce5",
+    "details": {
+      "draft_id": "eefad4bd-b906-4bcd-b751-8c53704b2ce5",
+      "workflow_name": "marketplace_quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "1c923324-bb9b-4574-bc5a-f793271911bf",
+    "timestamp": "2026-04-08T16:39:48.617242",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft a0c75e9a-e38c-4ed4-8b57-dc09f022f30c for quote",
+    "details": {
+      "draft_id": "a0c75e9a-e38c-4ed4-8b57-dc09f022f30c",
+      "workflow_name": "quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "b0ad2b65-b80b-449b-88c3-f037ffcfc1fe",
+    "timestamp": "2026-04-08T16:39:51.401325",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft a0c75e9a-e38c-4ed4-8b57-dc09f022f30c (PID 2800)",
+    "details": {
+      "draft_id": "a0c75e9a-e38c-4ed4-8b57-dc09f022f30c",
+      "pid": 2800
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "d2b87c2a-4da3-42c4-b178-837a5f66265c",
+    "timestamp": "2026-04-08T16:40:06.151955",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 1 of draft a0c75e9a-e38c-4ed4-8b57-dc09f022f30c",
+    "details": {
+      "draft_id": "a0c75e9a-e38c-4ed4-8b57-dc09f022f30c",
+      "step_order": 1
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "1893c27f-c630-4c37-b39f-a68e8c00d48f",
+    "timestamp": "2026-04-08T16:40:20.729101",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft a0c75e9a-e38c-4ed4-8b57-dc09f022f30c",
+    "details": {
+      "draft_id": "a0c75e9a-e38c-4ed4-8b57-dc09f022f30c",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "a2de7b67-5093-4e52-aa57-c6b065e8b447",
+    "timestamp": "2026-04-08T16:40:41.948810",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 593a2ad3-0351-4fad-9bf6-ee46e2f8da75 for quote",
+    "details": {
+      "draft_id": "593a2ad3-0351-4fad-9bf6-ee46e2f8da75",
+      "workflow_name": "quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "6f6aff25-41da-4f78-8053-d2976841306c",
+    "timestamp": "2026-04-08T16:40:45.696296",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 593a2ad3-0351-4fad-9bf6-ee46e2f8da75 (PID 48432)",
+    "details": {
+      "draft_id": "593a2ad3-0351-4fad-9bf6-ee46e2f8da75",
+      "pid": 48432
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "8292475e-894d-4cf0-81e9-ddc7f0f7f707",
+    "timestamp": "2026-04-08T16:42:08.916449",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 593a2ad3-0351-4fad-9bf6-ee46e2f8da75",
+    "details": {
+      "draft_id": "593a2ad3-0351-4fad-9bf6-ee46e2f8da75",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "e06ede36-91bc-4951-bce1-8822d936176f",
+    "timestamp": "2026-04-08T16:53:17.743755",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 007fc757-e4f2-4ef7-a63f-50a49a4fae2a for test",
+    "details": {
+      "draft_id": "007fc757-e4f2-4ef7-a63f-50a49a4fae2a",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "a2a309a7-ac60-4de3-b4af-be4009b8241f",
+    "timestamp": "2026-04-08T16:59:24.327929",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 007fc757-e4f2-4ef7-a63f-50a49a4fae2a",
+    "details": {
+      "draft_id": "007fc757-e4f2-4ef7-a63f-50a49a4fae2a",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "a0994128-8c5b-4979-8b4e-88d0cf177d0d",
+    "timestamp": "2026-04-08T16:59:28.216723",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft a0fc4696-78f8-48c8-b9aa-45b3ada62642 for quote",
+    "details": {
+      "draft_id": "a0fc4696-78f8-48c8-b9aa-45b3ada62642",
+      "workflow_name": "quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "c3ee8572-3b25-4f32-bf15-c0a8e044daed",
+    "timestamp": "2026-04-08T16:59:31.973426",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft a0fc4696-78f8-48c8-b9aa-45b3ada62642 (PID 43680)",
+    "details": {
+      "draft_id": "a0fc4696-78f8-48c8-b9aa-45b3ada62642",
+      "pid": 43680
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "fc01c061-7e9d-4310-baf9-29828b386e65",
+    "timestamp": "2026-04-08T17:05:02.522786",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft a0fc4696-78f8-48c8-b9aa-45b3ada62642",
+    "details": {
+      "draft_id": "a0fc4696-78f8-48c8-b9aa-45b3ada62642",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "64905b46-51f9-490f-87c8-f7d83f3aab65",
+    "timestamp": "2026-04-08T17:05:07.213663",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 20c06d8f-c925-4a77-99ee-eef4d73a7e3a for quote",
+    "details": {
+      "draft_id": "20c06d8f-c925-4a77-99ee-eef4d73a7e3a",
+      "workflow_name": "quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "e3dfadf6-c4da-4ac6-ac72-6e5cbef58494",
+    "timestamp": "2026-04-08T17:05:09.907830",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 20c06d8f-c925-4a77-99ee-eef4d73a7e3a (PID 37884)",
+    "details": {
+      "draft_id": "20c06d8f-c925-4a77-99ee-eef4d73a7e3a",
+      "pid": 37884
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "f75ae506-3262-4999-91c1-cffbd152334f",
+    "timestamp": "2026-04-08T17:13:03.865384",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 20c06d8f-c925-4a77-99ee-eef4d73a7e3a",
+    "details": {
+      "draft_id": "20c06d8f-c925-4a77-99ee-eef4d73a7e3a",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "8bb2a269-fe3c-4ade-b524-bf1fcaf5d91e",
+    "timestamp": "2026-04-08T17:13:19.176650",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 30ee5d05-cc21-4435-823b-21588eb36897 for quote",
+    "details": {
+      "draft_id": "30ee5d05-cc21-4435-823b-21588eb36897",
+      "workflow_name": "quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "11f38fe5-942a-4914-9223-043a8795e3fa",
+    "timestamp": "2026-04-08T17:13:31.304865",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 30ee5d05-cc21-4435-823b-21588eb36897 (PID 2800)",
+    "details": {
+      "draft_id": "30ee5d05-cc21-4435-823b-21588eb36897",
+      "pid": 2800
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "b0ac337c-102a-4697-bf0d-f3c08f5c4838",
+    "timestamp": "2026-04-08T17:18:52.009707",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 30ee5d05-cc21-4435-823b-21588eb36897",
+    "details": {
+      "draft_id": "30ee5d05-cc21-4435-823b-21588eb36897",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "ff36241c-7ce8-4e2c-b812-3e156c6419b4",
+    "timestamp": "2026-04-08T17:19:40.818019",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 10802dad-449d-4dbb-800c-61e239069041 for quote",
+    "details": {
+      "draft_id": "10802dad-449d-4dbb-800c-61e239069041",
+      "workflow_name": "quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "0228a492-8403-4331-98a3-09f7068af251",
+    "timestamp": "2026-04-08T17:19:47.590910",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 10802dad-449d-4dbb-800c-61e239069041 (PID 22684)",
+    "details": {
+      "draft_id": "10802dad-449d-4dbb-800c-61e239069041",
+      "pid": 22684
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "09144eb0-dbdb-4d47-bc8a-9e29b88b2c6e",
+    "timestamp": "2026-04-08T17:27:28.154700",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 10802dad-449d-4dbb-800c-61e239069041",
+    "details": {
+      "draft_id": "10802dad-449d-4dbb-800c-61e239069041",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "f734352b-7398-4320-8a9e-f28fd3d4e9dc",
+    "timestamp": "2026-04-08T17:27:30.511140",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft d5d8ebd8-f2c9-429b-ba03-bd627074374b for quote",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "c53e8f38-c3b0-4fef-b76e-04fde7aa6c97",
+    "timestamp": "2026-04-08T17:27:34.542672",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft d5d8ebd8-f2c9-429b-ba03-bd627074374b (PID 47756)",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "pid": 47756
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "d4280670-303e-4f74-a0b1-996fc9e796b0",
+    "timestamp": "2026-04-08T17:29:21.152905",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 1 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 1
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "677df0a1-b9e8-4e70-80ce-69b117ad394c",
+    "timestamp": "2026-04-08T17:29:55.208860",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 2 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 2
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "52319e4f-1c8e-41e4-b185-3949e3c35471",
+    "timestamp": "2026-04-08T17:30:02.763093",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 3 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 3
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "3d9334cb-7ed2-4760-8ea8-98956c10d8b9",
+    "timestamp": "2026-04-08T17:30:05.995208",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 4 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 4
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "596085da-c5ab-448a-9079-421f81258f39",
+    "timestamp": "2026-04-08T17:30:09.953209",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 5 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 5
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "64c5ebeb-1675-48cd-b8c9-d59002840c6d",
+    "timestamp": "2026-04-08T17:30:14.739407",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 6 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 6
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "1894da81-6aaa-4fda-b713-c3807cc462d5",
+    "timestamp": "2026-04-08T17:30:23.055678",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 7 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 7
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "d8a0b5b4-dca1-40ec-99fd-00af3223c781",
+    "timestamp": "2026-04-08T17:30:26.785366",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 8 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 8
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "3fce221e-3f76-4efd-b457-bb5624717d73",
+    "timestamp": "2026-04-08T17:30:29.536640",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 9 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 9
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "3e64ff80-0243-4e6f-aac4-7b910fed36ea",
+    "timestamp": "2026-04-08T17:30:32.980024",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 10 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 10
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "d019e45f-ef82-4737-8f6c-61f0092c240d",
+    "timestamp": "2026-04-08T17:30:39.550339",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 11 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 11
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "de3643a0-fbe8-4828-834d-d068aa90d17b",
+    "timestamp": "2026-04-08T17:30:45.683897",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 12 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 12
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "44a1acd9-e332-49ec-9422-621997f18688",
+    "timestamp": "2026-04-08T17:30:48.887265",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 13 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 13
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "18e8bb6a-52be-47a2-9c2e-7e53441ce62a",
+    "timestamp": "2026-04-08T17:30:50.621658",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 14 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 14
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "c5910d43-1c96-415f-922c-7d04ffec2493",
+    "timestamp": "2026-04-08T17:30:51.968313",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 15 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 15
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "9674a3e5-da25-4b8b-a55f-d66eff6c90de",
+    "timestamp": "2026-04-08T17:30:53.246759",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 16 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 16
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "639f8c8d-08ac-4d87-a8e9-98c5ded761a1",
+    "timestamp": "2026-04-08T17:30:55.426759",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 17 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 17
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "84e4b11f-8678-4389-931c-4254e3d49e41",
+    "timestamp": "2026-04-08T17:30:56.830329",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 18 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 18
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "fc4462db-f1da-4307-9831-07b738c816b5",
+    "timestamp": "2026-04-08T17:30:57.917555",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 19 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 19
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "345c6429-5db8-4f8a-822d-bfb07004b795",
+    "timestamp": "2026-04-08T17:30:59.397585",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 20 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 20
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "fa91571d-c496-4abf-a3f0-d99c54ed6745",
+    "timestamp": "2026-04-08T17:31:01.186689",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 21 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 21
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "fa646d3b-ce66-4b02-bd81-0bf4e4b2eb8d",
+    "timestamp": "2026-04-08T17:31:03.971486",
+    "kind": "workflow_teaching_step_answered",
+    "summary": "Teaching answers applied to step 22 of draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "step_order": 22
+    },
+    "tags": [
+      "workflow_learning",
+      "teaching"
+    ]
+  },
+  {
+    "id": "d1d91144-5aaf-4052-a781-ac9557fa2538",
+    "timestamp": "2026-04-08T17:31:35.958261",
+    "kind": "workflow_learning_draft_structure_updated",
+    "summary": "Updated structured learning details for draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "structure"
+    ]
+  },
+  {
+    "id": "9add1960-d586-4e57-a1d8-9e49b371bb49",
+    "timestamp": "2026-04-08T17:31:40.669090",
+    "kind": "workflow_learning_draft_published",
+    "summary": "Published learned workflow quote from draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "published",
+      "review_required"
+    ]
+  },
+  {
+    "id": "94f22337-5550-4958-a72d-0bf50ffb2123",
+    "timestamp": "2026-04-08T17:32:05.924265",
+    "kind": "workflow_learning_draft_structure_updated",
+    "summary": "Updated structured learning details for draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "structure"
+    ]
+  },
+  {
+    "id": "cb65c028-dda9-4c9a-b0cf-27ccc8c797d1",
+    "timestamp": "2026-04-08T17:32:11.292963",
+    "kind": "workflow_learning_draft_published",
+    "summary": "Published learned workflow quote from draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "published",
+      "review_required"
+    ]
+  },
+  {
+    "id": "f1d4d1b7-75cb-4c0b-802b-77b1550d003c",
+    "timestamp": "2026-04-08T17:35:25.404094",
+    "kind": "brain_command",
+    "summary": "Intent=known_workflow command='run smart sherpa sync'",
+    "details": {
+      "command": "run smart sherpa sync",
+      "recognized_intent": "known_workflow",
+      "selected_workflow": "smart_sherpa_sync",
+      "selected_worker": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "queued_task_id": null,
+      "retry_recommended": false
+    },
+    "tags": [
+      "brain",
+      "known_workflow"
+    ]
+  },
+  {
+    "id": "c7c22407-2103-40a2-aa57-52042580694c",
+    "timestamp": "2026-04-08T17:36:56.712037",
+    "kind": "brain_command",
+    "summary": "Intent=known_workflow command='run marketplace workflow'",
+    "details": {
+      "command": "run marketplace workflow",
+      "recognized_intent": "known_workflow",
+      "selected_workflow": "marketplace_workflow",
+      "selected_worker": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "queued_task_id": "617fa385-8e06-4aaf-a88d-d982d225b5af",
+      "retry_recommended": false
+    },
+    "tags": [
+      "brain",
+      "known_workflow"
+    ]
+  },
+  {
+    "id": "0cf0bb20-e689-4a28-9139-0470c7ccadc4",
+    "timestamp": "2026-04-08T17:37:04.893064",
+    "kind": "task_success",
+    "summary": "Task 617fa385-8e06-4aaf-a88d-d982d225b5af completed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "617fa385-8e06-4aaf-a88d-d982d225b5af",
+      "task_type": "browser_workflow",
+      "workflow_name": "browser_workflow",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": null,
+      "reflection_id": "72c79e05-0670-40a5-92a8-81825fa38465"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "9bf9e6be-9cd0-4247-b1d9-85acf4c17fe9",
+    "timestamp": "2026-04-08T17:37:25.365542",
+    "kind": "brain_command",
+    "summary": "Intent=known_workflow command='run workflow quote'",
+    "details": {
+      "command": "run workflow quote",
+      "recognized_intent": "known_workflow",
+      "selected_workflow": "smart_sherpa_sync",
+      "selected_worker": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "queued_task_id": null,
+      "retry_recommended": false
+    },
+    "tags": [
+      "brain",
+      "known_workflow"
+    ]
+  },
+  {
+    "id": "339daad5-0935-4896-9c4d-b16ac1bf7a75",
+    "timestamp": "2026-04-08T17:37:42.432523",
+    "kind": "brain_command",
+    "summary": "Intent=known_workflow command='run workflow quote'",
+    "details": {
+      "command": "run workflow quote",
+      "recognized_intent": "known_workflow",
+      "selected_workflow": "smart_sherpa_sync",
+      "selected_worker": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "queued_task_id": null,
+      "retry_recommended": false
+    },
+    "tags": [
+      "brain",
+      "known_workflow"
+    ]
+  },
+  {
+    "id": "a3077286-8709-4746-ad0e-69aca968d5b0",
+    "timestamp": "2026-04-08T17:40:38.988004",
+    "kind": "brain_command",
+    "summary": "Intent=known_workflow command='run workflow quote'",
+    "details": {
+      "command": "run workflow quote",
+      "recognized_intent": "known_workflow",
+      "selected_workflow": "smart_sherpa_sync",
+      "selected_worker": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "queued_task_id": null,
+      "retry_recommended": false
+    },
+    "tags": [
+      "brain",
+      "known_workflow"
+    ]
+  },
+  {
+    "id": "39a42b81-b885-400d-aed7-b171f50228fe",
+    "timestamp": "2026-04-08T17:50:00.610496",
+    "kind": "task_failure",
+    "summary": "Task 1303ad7e-ef01-42e9-acd6-fb0c2f5c63d6 failed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "1303ad7e-ef01-42e9-acd6-fb0c2f5c63d6",
+      "task_type": "browser_workflow",
+      "workflow_name": "browser_workflow",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": "browser_workflow failed: Page.click: Timeout 20000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Continue\\\")\")\n    - locator resolved to 2 elements. Proceeding with the first one: <button type=\"button\" class=\"ds-c-button ds-c-button--solid ds-u-padding-x--6 qa-continue-btn\">Continue</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    38 \u00d7 waiting for element to be visible, enabled and stable\n       - element is not visible\n     - retrying click action\n       - waiting 500ms\n",
+      "reflection_id": "9c4dc960-9ff4-4978-85dd-30a1f07ece87"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "ed4b5d4f-7111-4907-a95a-3ab26b32aa13",
+    "timestamp": "2026-04-08T17:54:11.195098",
+    "kind": "task_failure",
+    "summary": "Task 19b4fab2-ee26-4b41-9b2a-fe30c189dcc7 failed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "19b4fab2-ee26-4b41-9b2a-fe30c189dcc7",
+      "task_type": "browser_workflow",
+      "workflow_name": "browser_workflow",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": "browser_workflow failed: Page.click: Timeout 20000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Continue\\\")\")\n    - locator resolved to 2 elements. Proceeding with the first one: <button type=\"button\" class=\"ds-c-button ds-c-button--solid ds-u-padding-x--6 qa-continue-btn\">Continue</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    38 \u00d7 waiting for element to be visible, enabled and stable\n       - element is not visible\n     - retrying click action\n       - waiting 500ms\n",
+      "reflection_id": "0f1b6fef-47b9-4d47-8bf4-5fe9211601d2"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "b0ed1c60-88d5-47ff-9708-ab147acc4ea1",
+    "timestamp": "2026-04-08T17:54:48.333538",
+    "kind": "task_failure",
+    "summary": "Task ca253ad4-abd1-451e-9432-b13383613ba9 failed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "ca253ad4-abd1-451e-9432-b13383613ba9",
+      "task_type": "browser_workflow",
+      "workflow_name": "browser_workflow",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": "browser_workflow failed: Page.click: Timeout 20000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Continue\\\")\")\n    - locator resolved to 2 elements. Proceeding with the first one: <button type=\"button\" class=\"ds-c-button ds-c-button--solid ds-u-padding-x--6 qa-continue-btn\">Continue</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    38 \u00d7 waiting for element to be visible, enabled and stable\n       - element is not visible\n     - retrying click action\n       - waiting 500ms\n",
+      "reflection_id": "5eb4660d-5e9c-4d11-8020-bda766ab4e7b"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "037df8f9-a038-4fc2-8a7b-3bc15945d82f",
+    "timestamp": "2026-04-08T17:54:48.335889",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 2 adaptive proposal(s) for workflow=browser_workflow",
+    "details": {
+      "workflow_name": "browser_workflow",
+      "proposal_ids": [
+        "75e450fb-3ef6-48a5-add6-d9713c2efbfe",
+        "841d4063-67e9-4439-93ed-54a161f0f599"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "22c20419-3213-4bc2-9dce-c8218b46aa5f",
+    "timestamp": "2026-04-08T17:55:27.412836",
+    "kind": "task_failure",
+    "summary": "Task 874da5fd-868b-47a3-aadb-fa270f2abf4a failed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "874da5fd-868b-47a3-aadb-fa270f2abf4a",
+      "task_type": "browser_workflow",
+      "workflow_name": "browser_workflow",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": "browser_workflow failed: Page.click: Target page, context or browser has been closed\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Continue\\\")\")\n    - locator resolved to 2 elements. Proceeding with the first one: <button type=\"button\" class=\"ds-c-button ds-c-button--solid ds-u-padding-x--6 qa-continue-btn\">Continue</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    33 \u00d7 waiting for element to be visible, enabled and stable\n       - element is not visible\n     - retrying click action\n       - waiting 500ms\n",
+      "reflection_id": "a29131cf-c34b-4dc2-a4e4-4a7265cd01a8"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "588b8f62-60ba-4b49-b935-4748820b9b66",
+    "timestamp": "2026-04-08T17:56:04.071033",
+    "kind": "task_failure",
+    "summary": "Task 013c25ad-4e7e-4b8c-ab4e-6104a97324ca failed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "013c25ad-4e7e-4b8c-ab4e-6104a97324ca",
+      "task_type": "browser_workflow",
+      "workflow_name": "browser_workflow",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": "browser_workflow failed: Page.click: Timeout 20000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Continue\\\")\")\n    - locator resolved to 2 elements. Proceeding with the first one: <button type=\"button\" class=\"ds-c-button ds-c-button--solid ds-u-padding-x--6 qa-continue-btn\">Continue</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    38 \u00d7 waiting for element to be visible, enabled and stable\n       - element is not visible\n     - retrying click action\n       - waiting 500ms\n",
+      "reflection_id": "b18e6142-e9af-472c-8020-1284491ef880"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "1401d41d-4b23-42a7-aafc-8bde7b2696d3",
+    "timestamp": "2026-04-08T17:56:26.599893",
+    "kind": "brain_command",
+    "summary": "Intent=failure_explanation command='What failed last?'",
+    "details": {
+      "command": "What failed last?",
+      "recognized_intent": "failure_explanation",
+      "selected_workflow": null,
+      "selected_worker": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "queued_task_id": null,
+      "retry_recommended": true
+    },
+    "tags": [
+      "brain",
+      "failure_explanation"
+    ]
+  },
+  {
+    "id": "1143f03f-6d2e-4e41-80a7-39feed524f2f",
+    "timestamp": "2026-04-08T17:57:39.768081",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 4b61cbe7-8f7d-465a-a18b-2c3339d6fb07 for you_tube",
+    "details": {
+      "draft_id": "4b61cbe7-8f7d-465a-a18b-2c3339d6fb07",
+      "workflow_name": "you_tube",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "10dc2464-e8c5-4e38-b7b2-87c9350d6129",
+    "timestamp": "2026-04-08T17:58:01.824720",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 4b61cbe7-8f7d-465a-a18b-2c3339d6fb07 (PID 33216)",
+    "details": {
+      "draft_id": "4b61cbe7-8f7d-465a-a18b-2c3339d6fb07",
+      "pid": 33216
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "bc44cef3-a160-4a7c-b609-e10b48107eba",
+    "timestamp": "2026-04-08T17:58:30.474074",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 4b61cbe7-8f7d-465a-a18b-2c3339d6fb07",
+    "details": {
+      "draft_id": "4b61cbe7-8f7d-465a-a18b-2c3339d6fb07",
+      "workflow_name": "you_tube"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "00e090e1-a7aa-477d-9db2-f3bd8aacbbc1",
+    "timestamp": "2026-04-08T17:59:08.991526",
+    "kind": "task_failure",
+    "summary": "Task fba3b132-ff07-4637-9753-7d3898f57038 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "fba3b132-ff07-4637-9753-7d3898f57038",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "Page regression recovery failed (expected>=25, got=1)",
+      "reflection_id": "c6f0689d-8738-4769-8a78-a8993ca71ed8"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "f62252b6-806e-4ecf-a2a9-20f1cde9041e",
+    "timestamp": "2026-04-08T18:01:54.657787",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 77a48616-2a0b-46b2-8cf3-e4d21e881fcc for you_tube",
+    "details": {
+      "draft_id": "77a48616-2a0b-46b2-8cf3-e4d21e881fcc",
+      "workflow_name": "you_tube",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "84318177-745f-496e-be73-a0d3787a16cf",
+    "timestamp": "2026-04-08T18:02:04.360980",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 77a48616-2a0b-46b2-8cf3-e4d21e881fcc (PID 46964)",
+    "details": {
+      "draft_id": "77a48616-2a0b-46b2-8cf3-e4d21e881fcc",
+      "pid": 46964
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "e522544a-576d-45cd-a262-31758b6d9505",
+    "timestamp": "2026-04-08T18:02:21.347460",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 77a48616-2a0b-46b2-8cf3-e4d21e881fcc",
+    "details": {
+      "draft_id": "77a48616-2a0b-46b2-8cf3-e4d21e881fcc",
+      "workflow_name": "you_tube"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "d5f4bef5-02f1-4535-ba50-7314d4fe0afe",
+    "timestamp": "2026-04-08T18:06:21.445955",
+    "kind": "workflow_learning_draft_structure_updated",
+    "summary": "Updated structured learning details for draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "structure"
+    ]
+  },
+  {
+    "id": "f4c9498c-9ffa-417c-a851-939d08df7098",
+    "timestamp": "2026-04-08T18:06:23.808488",
+    "kind": "workflow_learning_draft_published",
+    "summary": "Published learned workflow quote from draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "published",
+      "review_required"
+    ]
+  },
+  {
+    "id": "07478d68-6f19-43f1-a964-d9fb1b12a4a1",
+    "timestamp": "2026-04-08T18:06:43.684424",
+    "kind": "task_failure",
+    "summary": "Task e00cda3d-2b07-413d-b1d0-726cd7bffe76 failed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "e00cda3d-2b07-413d-b1d0-726cd7bffe76",
+      "task_type": "browser_workflow",
+      "workflow_name": "browser_workflow",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": "browser_workflow failed: Page.click: Target page, context or browser has been closed\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Continue\\\")\")\n    - locator resolved to 2 elements. Proceeding with the first one: <button type=\"button\" class=\"ds-c-button ds-c-button--solid ds-u-padding-x--6 qa-continue-btn\">Continue</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    5 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 500ms\n",
+      "reflection_id": "9c7fc728-4286-424d-9657-5f1ad6caedb0"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "21764225-1847-49de-9ba5-94d8bc8f37f6",
+    "timestamp": "2026-04-08T18:07:54.895265",
+    "kind": "workflow_learning_draft_structure_updated",
+    "summary": "Updated structured learning details for draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "structure"
+    ]
+  },
+  {
+    "id": "7c86a29e-4cfb-42f1-98c8-05fd5334430c",
+    "timestamp": "2026-04-08T18:07:57.542434",
+    "kind": "workflow_learning_draft_published",
+    "summary": "Published learned workflow quote from draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "published",
+      "review_required"
+    ]
+  },
+  {
+    "id": "154eb7b6-87ef-4995-a6c2-104d9aa589a0",
+    "timestamp": "2026-04-08T18:08:19.126045",
+    "kind": "task_failure",
+    "summary": "Task 19c96ad7-7d0a-4903-8d85-3e68ef0d4a0f failed on worker effdf7b9-61db-48ed-b914-cb7930775d9f",
+    "details": {
+      "task_id": "19c96ad7-7d0a-4903-8d85-3e68ef0d4a0f",
+      "task_type": "browser_workflow",
+      "workflow_name": "browser_workflow",
+      "machine_uuid": "effdf7b9-61db-48ed-b914-cb7930775d9f",
+      "worker_name": "SBHMIHQ19",
+      "error": "browser_workflow failed: Page.click: Target page, context or browser has been closed\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Continue\\\")\")\n    - locator resolved to 2 elements. Proceeding with the first one: <button type=\"button\" class=\"ds-c-button ds-c-button--solid ds-u-padding-x--6 qa-continue-btn\">Continue</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 500ms\n",
+      "reflection_id": "24c7486b-d78f-4fd2-b482-d74a5d1e5fea"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "207a7a3f-97a8-444b-a83c-6bd4284554a2",
+    "timestamp": "2026-04-08T18:08:19.128861",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 1 adaptive proposal(s) for workflow=browser_workflow",
+    "details": {
+      "workflow_name": "browser_workflow",
+      "proposal_ids": [
+        "24078f05-8ae4-4d4f-a288-eda1430e7468"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "c809b304-1420-4c14-9123-fed9770df322",
+    "timestamp": "2026-04-08T18:59:08.694770",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 0d36116c-3426-490e-94d0-afab303991ab for test",
+    "details": {
+      "draft_id": "0d36116c-3426-490e-94d0-afab303991ab",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "7aa530e4-03c2-4e5c-a597-6548f363fdda",
+    "timestamp": "2026-04-09T21:21:06.640993",
+    "kind": "task_success",
+    "summary": "Task 09848ac9-8db1-452d-90ad-ddf8ca901723 completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "09848ac9-8db1-452d-90ad-ddf8ca901723",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "9915dc66-f90b-4a42-a6f1-ecd55735e322"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "d18a9d2c-25dd-4b0a-b981-37c86a586bf6",
+    "timestamp": "2026-04-12T18:43:27.693556",
+    "kind": "task_success",
+    "summary": "Task e9e878fc-680c-4e6b-9cef-2d892de591fd completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "e9e878fc-680c-4e6b-9cef-2d892de591fd",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "f625b605-3d52-42f2-80ed-8aaed7972dc9"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "00c01319-5169-4dac-ad95-352c47d365ca",
+    "timestamp": "2026-04-12T20:25:17.368904",
+    "kind": "task_failure",
+    "summary": "Task 276c4fcd-8885-481c-aa99-f80d42f4d0f8 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "276c4fcd-8885-481c-aa99-f80d42f4d0f8",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "Fail-fast: anchored row-scoped selectors found no rows after recovery attempts",
+      "reflection_id": "dd714d7c-62ff-4c68-873f-56b794cae3e3"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "selector"
+    ]
+  },
+  {
+    "id": "aa5dce71-d782-47e8-bcce-3da62e9ee83d",
+    "timestamp": "2026-04-13T09:16:07.522016",
+    "kind": "task_failure",
+    "summary": "Task ffcfd118-1ac8-401c-8c70-9319bccb8f71 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "ffcfd118-1ac8-401c-8c70-9319bccb8f71",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "Worker is not on HealthSherpa clients list and automatic recovery failed",
+      "reflection_id": "793e99cd-6083-4df1-b331-6f381264d983"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "7142508d-bc28-4fa4-a2e7-e7b5832f8b64",
+    "timestamp": "2026-04-13T13:10:08.076608",
+    "kind": "task_success",
+    "summary": "Task c2d86417-af2e-4626-8bd3-8bc9902374fd completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "c2d86417-af2e-4626-8bd3-8bc9902374fd",
+      "task_type": "smart_sherpa_sync",
+      "workflow_name": "smart_sherpa_sync",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "d7505251-aa14-4675-bd91-4ee881036c17"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "e9467a33-3508-4c8c-9ea1-5bd45f7aca1d",
+    "timestamp": "2026-04-14T14:10:14.273435",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 2f88d344-866e-4cf5-821a-b57cf2c2fc8d for test",
+    "details": {
+      "draft_id": "2f88d344-866e-4cf5-821a-b57cf2c2fc8d",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "d5a2fb49-06db-4d78-8bba-b6d850dff5f3",
+    "timestamp": "2026-04-14T14:10:38.011487",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 2f88d344-866e-4cf5-821a-b57cf2c2fc8d (PID 60280)",
+    "details": {
+      "draft_id": "2f88d344-866e-4cf5-821a-b57cf2c2fc8d",
+      "pid": 60280
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "7010f98d-b6b9-44a1-9813-3354bd55add1",
+    "timestamp": "2026-04-14T14:10:52.125675",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 2f88d344-866e-4cf5-821a-b57cf2c2fc8d (PID 68828)",
+    "details": {
+      "draft_id": "2f88d344-866e-4cf5-821a-b57cf2c2fc8d",
+      "pid": 68828
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "79af7ee6-3c7b-42f1-86ac-8c66a45c6171",
+    "timestamp": "2026-04-14T14:11:38.709992",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 2f88d344-866e-4cf5-821a-b57cf2c2fc8d (PID 91240)",
+    "details": {
+      "draft_id": "2f88d344-866e-4cf5-821a-b57cf2c2fc8d",
+      "pid": 91240
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "114e92be-688f-45f0-b0d0-ea3213ab530b",
+    "timestamp": "2026-04-14T14:14:03.339509",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 2f88d344-866e-4cf5-821a-b57cf2c2fc8d",
+    "details": {
+      "draft_id": "2f88d344-866e-4cf5-821a-b57cf2c2fc8d",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "ef94fc68-6989-4e2b-8b21-c1f313e966ad",
+    "timestamp": "2026-04-14T14:14:15.466152",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 6585b1de-894b-4efd-9c82-2029e7adff95 for test",
+    "details": {
+      "draft_id": "6585b1de-894b-4efd-9c82-2029e7adff95",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "228e5c73-ea65-4c74-b602-66b75588454f",
+    "timestamp": "2026-04-14T14:17:46.487418",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 6585b1de-894b-4efd-9c82-2029e7adff95 (PID 98112)",
+    "details": {
+      "draft_id": "6585b1de-894b-4efd-9c82-2029e7adff95",
+      "pid": 98112
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "ac009319-bfe7-4627-a5ba-59567ef9be6d",
+    "timestamp": "2026-04-14T14:18:23.290089",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 6585b1de-894b-4efd-9c82-2029e7adff95 (PID 40060)",
+    "details": {
+      "draft_id": "6585b1de-894b-4efd-9c82-2029e7adff95",
+      "pid": 40060
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "8ec3dc28-a28e-41c7-af7f-7e6b59c20668",
+    "timestamp": "2026-04-14T14:18:31.049444",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 6585b1de-894b-4efd-9c82-2029e7adff95",
+    "details": {
+      "draft_id": "6585b1de-894b-4efd-9c82-2029e7adff95",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "c2e6c447-0e9f-40bb-a269-5992708a30ac",
+    "timestamp": "2026-04-14T14:18:33.349732",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 0d36116c-3426-490e-94d0-afab303991ab",
+    "details": {
+      "draft_id": "0d36116c-3426-490e-94d0-afab303991ab",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "e6324628-031d-4dfe-93cb-a0ea94fa1689",
+    "timestamp": "2026-04-14T14:18:36.048975",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+    "details": {
+      "draft_id": "d5d8ebd8-f2c9-429b-ba03-bd627074374b",
+      "workflow_name": "quote"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "b93c120c-51b4-4e05-9c4b-ab0f7c026c48",
+    "timestamp": "2026-04-14T14:22:55.665959",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft be69489e-bd3f-434f-a25c-ede1b55d73b8 for test",
+    "details": {
+      "draft_id": "be69489e-bd3f-434f-a25c-ede1b55d73b8",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "8b552fee-ddfc-4128-b045-d14fc315adb8",
+    "timestamp": "2026-04-14T14:22:58.268906",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft be69489e-bd3f-434f-a25c-ede1b55d73b8 (PID 68040)",
+    "details": {
+      "draft_id": "be69489e-bd3f-434f-a25c-ede1b55d73b8",
+      "pid": 68040
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "65705a52-7100-4e2a-a172-65e7d4894c07",
+    "timestamp": "2026-04-14T14:23:29.832053",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft be69489e-bd3f-434f-a25c-ede1b55d73b8",
+    "details": {
+      "draft_id": "be69489e-bd3f-434f-a25c-ede1b55d73b8",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "548f8fc6-3884-4124-a944-18823d67ae7f",
+    "timestamp": "2026-04-14T14:28:27.076004",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 48a5e52d-eaeb-4fda-8635-f524352ffdbf for test",
+    "details": {
+      "draft_id": "48a5e52d-eaeb-4fda-8635-f524352ffdbf",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "c97f6245-c226-4921-8dc0-826170fd03f6",
+    "timestamp": "2026-04-14T14:28:33.995771",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 48a5e52d-eaeb-4fda-8635-f524352ffdbf (PID 91364)",
+    "details": {
+      "draft_id": "48a5e52d-eaeb-4fda-8635-f524352ffdbf",
+      "pid": 91364
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "e0b04dcb-5edf-485c-b4f6-5e3177c741d2",
+    "timestamp": "2026-04-14T14:28:57.283369",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 48a5e52d-eaeb-4fda-8635-f524352ffdbf",
+    "details": {
+      "draft_id": "48a5e52d-eaeb-4fda-8635-f524352ffdbf",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "67ecb760-c14f-416e-a2fe-e9bb6dd218d9",
+    "timestamp": "2026-04-14T14:29:20.200827",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft b22a0fd8-97ae-45a7-841d-b72fceba4083 for test",
+    "details": {
+      "draft_id": "b22a0fd8-97ae-45a7-841d-b72fceba4083",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "0335dc22-0189-442c-a6fd-0d03306a9307",
+    "timestamp": "2026-04-14T14:29:31.823473",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft b22a0fd8-97ae-45a7-841d-b72fceba4083 (PID 48568)",
+    "details": {
+      "draft_id": "b22a0fd8-97ae-45a7-841d-b72fceba4083",
+      "pid": 48568
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "c943cce7-1a97-40de-ba29-5f3d688e0919",
+    "timestamp": "2026-04-14T14:29:59.243045",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft b22a0fd8-97ae-45a7-841d-b72fceba4083",
+    "details": {
+      "draft_id": "b22a0fd8-97ae-45a7-841d-b72fceba4083",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "0e592f3b-1782-4c09-9a6a-596ebb80c28e",
+    "timestamp": "2026-04-14T14:37:25.047801",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 26a8fd65-1049-4fe7-a4de-c506a80f134a for observation_test",
+    "details": {
+      "draft_id": "26a8fd65-1049-4fe7-a4de-c506a80f134a",
+      "workflow_name": "observation_test",
+      "path": "plain_english"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "8aac949a-6636-4883-b590-01e4fbd8df2a",
+    "timestamp": "2026-04-14T14:37:25.075369",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 26a8fd65-1049-4fe7-a4de-c506a80f134a (PID 82204)",
+    "details": {
+      "draft_id": "26a8fd65-1049-4fe7-a4de-c506a80f134a",
+      "pid": 82204,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_26a8fd65-1049-4fe7-a4de-c506a80f134a_20260414_143725.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "c39be61d-a105-4e75-977e-5616f8e86292",
+    "timestamp": "2026-04-14T14:40:45.260278",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 26a8fd65-1049-4fe7-a4de-c506a80f134a (PID 51304)",
+    "details": {
+      "draft_id": "26a8fd65-1049-4fe7-a4de-c506a80f134a",
+      "pid": 51304,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_26a8fd65-1049-4fe7-a4de-c506a80f134a_20260414_144045.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "c8684477-e288-4a24-b18e-88a1417a0f6a",
+    "timestamp": "2026-04-14T14:41:32.832809",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 3a6432dc-6a4b-4e1c-8732-3afebeb87b7f for test",
+    "details": {
+      "draft_id": "3a6432dc-6a4b-4e1c-8732-3afebeb87b7f",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "c78c1d16-5c38-4640-a502-971531ddb12c",
+    "timestamp": "2026-04-14T14:41:36.935666",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 3a6432dc-6a4b-4e1c-8732-3afebeb87b7f (PID 2620)",
+    "details": {
+      "draft_id": "3a6432dc-6a4b-4e1c-8732-3afebeb87b7f",
+      "pid": 2620,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_3a6432dc-6a4b-4e1c-8732-3afebeb87b7f_20260414_144136.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "95ae67b3-63be-4a1d-9291-7227104090a2",
+    "timestamp": "2026-04-14T14:41:41.477078",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 3a6432dc-6a4b-4e1c-8732-3afebeb87b7f (PID 12680)",
+    "details": {
+      "draft_id": "3a6432dc-6a4b-4e1c-8732-3afebeb87b7f",
+      "pid": 12680,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_3a6432dc-6a4b-4e1c-8732-3afebeb87b7f_20260414_144141.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "3b29c2d7-606b-4e99-83fa-b468f6ebed92",
+    "timestamp": "2026-04-14T14:41:50.369682",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 3a6432dc-6a4b-4e1c-8732-3afebeb87b7f",
+    "details": {
+      "draft_id": "3a6432dc-6a4b-4e1c-8732-3afebeb87b7f",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "13de294a-9de1-401f-966f-82f00da33b0e",
+    "timestamp": "2026-04-14T14:41:52.283636",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 26a8fd65-1049-4fe7-a4de-c506a80f134a",
+    "details": {
+      "draft_id": "26a8fd65-1049-4fe7-a4de-c506a80f134a",
+      "workflow_name": "observation_test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "3fddd822-5a48-46f8-b432-656dd8698067",
+    "timestamp": "2026-04-15T15:04:00.105696",
+    "kind": "task_success",
+    "summary": "Task 72e455e4-947a-4786-8752-2836e64aa7bb completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "72e455e4-947a-4786-8752-2836e64aa7bb",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "b71029f0-938e-41bc-ad55-b03a9975aa44"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "8526ea68-57f4-476d-b359-b81251eeea17",
+    "timestamp": "2026-04-15T15:05:06.363654",
+    "kind": "task_success",
+    "summary": "Task e89afc3d-4c73-4858-9434-c692633afde9 completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "e89afc3d-4c73-4858-9434-c692633afde9",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "7988ab35-734b-44f4-ac0d-6fee4318d39b"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "aa20e17e-2e63-4ea7-8d58-6c7123c9b2e8",
+    "timestamp": "2026-04-15T15:05:15.907587",
+    "kind": "task_failure",
+    "summary": "Task c06ced9d-9e93-4a6a-88fa-55801a49c0f9 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "c06ced9d-9e93-4a6a-88fa-55801a49c0f9",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "browser_workflow failed: Unsupported workflow action: reload_page",
+      "reflection_id": "7ed31539-f71d-4da2-95a9-48eda4447f1f"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "cee8d9d0-b49c-44f3-bbf4-17dbf32f4402",
+    "timestamp": "2026-04-15T15:06:50.033306",
+    "kind": "task_success",
+    "summary": "Task bc8cbaaa-6269-418f-9f57-57abaebd779c completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "bc8cbaaa-6269-418f-9f57-57abaebd779c",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "11beb796-e5cc-442c-91ca-8cb64320685c"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "f5ae57dc-29ee-4d0a-8939-c4c126698df4",
+    "timestamp": "2026-04-15T15:06:50.035149",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 1 adaptive proposal(s) for workflow=marketplace_workflow",
+    "details": {
+      "workflow_name": "marketplace_workflow",
+      "proposal_ids": [
+        "c46a8da4-d01c-41a6-8066-5cfb356bfb2e"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "e5916560-65b6-431a-9870-f328b0d4e531",
+    "timestamp": "2026-04-15T15:07:21.394232",
+    "kind": "task_failure",
+    "summary": "Task 72e455e4-947a-4786-8752-2836e64aa7bb failed on worker test-uuid-001",
+    "details": {
+      "task_id": "72e455e4-947a-4786-8752-2836e64aa7bb",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "test-uuid-001",
+      "worker_name": "test-timeout-worker",
+      "error": "Timeout 20000ms exceeded waitingForSelector",
+      "reflection_id": "f3203ca8-3eb1-465a-a98c-0d946540338e"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "1322d146-15a4-4e15-a0fe-fc60d04ba126",
+    "timestamp": "2026-04-15T15:07:21.395870",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 1 adaptive proposal(s) for workflow=marketplace_workflow",
+    "details": {
+      "workflow_name": "marketplace_workflow",
+      "proposal_ids": [
+        "3c5cbeb6-082d-46b4-9404-41d48b8383ec"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "b9b3d056-3707-4d93-bdf0-b2a4bec63943",
+    "timestamp": "2026-04-15T15:07:21.423299",
+    "kind": "task_failure",
+    "summary": "Task 72e455e4-947a-4786-8752-2836e64aa7bb failed on worker test-uuid-001",
+    "details": {
+      "task_id": "72e455e4-947a-4786-8752-2836e64aa7bb",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "test-uuid-001",
+      "worker_name": "test-timeout-worker",
+      "error": "Timeout 20000ms exceeded waitingForSelector",
+      "reflection_id": "3bb3da8c-c50d-4324-b0a5-1340e130c0f0"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "340c69dc-118b-4686-8e06-9bdebe946aa0",
+    "timestamp": "2026-04-15T15:07:21.451136",
+    "kind": "task_failure",
+    "summary": "Task 72e455e4-947a-4786-8752-2836e64aa7bb failed on worker test-uuid-001",
+    "details": {
+      "task_id": "72e455e4-947a-4786-8752-2836e64aa7bb",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "test-uuid-001",
+      "worker_name": "test-timeout-worker",
+      "error": "Timeout 20000ms exceeded waitingForSelector",
+      "reflection_id": "4c35ebd4-07e3-4d8f-bfd0-0ec5dedb60b5"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "664abc11-ebf8-4ccb-a6b0-bf56c620100b",
+    "timestamp": "2026-04-15T15:07:29.567138",
+    "kind": "task_failure",
+    "summary": "Task 72e455e4-947a-4786-8752-2836e64aa7bb failed on worker test-uuid-001",
+    "details": {
+      "task_id": "72e455e4-947a-4786-8752-2836e64aa7bb",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "test-uuid-001",
+      "worker_name": "test-timeout-worker",
+      "error": "Timeout 20000ms exceeded waitingForSelector",
+      "reflection_id": "942b8f94-8d75-413a-ba2c-6ac38bb0faa1"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "157245f4-e327-4f35-83dc-4ac1fed29c9d",
+    "timestamp": "2026-04-15T15:07:42.581560",
+    "kind": "task_failure",
+    "summary": "Task 72e455e4-947a-4786-8752-2836e64aa7bb failed on worker test-uuid-001",
+    "details": {
+      "task_id": "72e455e4-947a-4786-8752-2836e64aa7bb",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "test-uuid-001",
+      "worker_name": "test-timeout-worker",
+      "error": "Timeout 20000ms exceeded waitingForSelector",
+      "reflection_id": "1d86818d-2194-426e-98e5-8cb60e1cbf8f"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "3002bff8-0482-4ea1-884a-dcd9826ae6fa",
+    "timestamp": "2026-04-15T15:32:00.625124",
+    "kind": "task_failure",
+    "summary": "Task 09456e34-3ee9-4618-82e1-f0a6765ad232 failed on worker t-uuid-1",
+    "details": {
+      "task_id": "09456e34-3ee9-4618-82e1-f0a6765ad232",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "t-uuid-1",
+      "worker_name": "test-w",
+      "error": "Timeout 20000ms exceeded waitingForSelector marketolace-btn",
+      "reflection_id": "0f499b1a-6e60-4e96-84ba-98b77b9249b1"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "18b1810d-290b-4958-b59d-3c4a0035ae64",
+    "timestamp": "2026-04-15T15:32:00.627474",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 3 adaptive proposal(s) for workflow=marketplace_workflow",
+    "details": {
+      "workflow_name": "marketplace_workflow",
+      "proposal_ids": [
+        "7a950452-8463-4eda-be2e-72c45b4feca7",
+        "d5c8ae91-f479-4887-bea8-e6c2728ca939",
+        "e5d155e4-02f5-4c22-8fde-b498fde7cdc4"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "2e9c0907-2b07-4bfa-971f-2586e02917a3",
+    "timestamp": "2026-04-15T15:32:04.208375",
+    "kind": "task_success",
+    "summary": "Task 6514aa88-9ff6-4ee9-9664-77a9a24dd476 completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "6514aa88-9ff6-4ee9-9664-77a9a24dd476",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "78f648f8-1574-4ecf-bd7e-134a015d6839"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "891101e7-4776-4202-a2ed-9067620b8ab8",
+    "timestamp": "2026-04-15T15:32:04.210405",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 1 adaptive proposal(s) for workflow=marketplace_workflow",
+    "details": {
+      "workflow_name": "marketplace_workflow",
+      "proposal_ids": [
+        "eb4b1808-c69e-4dd5-9501-e3d745d4b135"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "181e2270-6956-41fb-bb23-c0e55dfcf07e",
+    "timestamp": "2026-04-15T15:32:08.607562",
+    "kind": "task_failure",
+    "summary": "Task b4bf81b8-fde1-4ad3-8885-bf01836bc231 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "b4bf81b8-fde1-4ad3-8885-bf01836bc231",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "browser_workflow failed: Unsupported workflow action: reload_page",
+      "reflection_id": "3b2fa843-ea7b-468d-92b0-c73794d37e75"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "f2f3cc02-a958-4d55-82ce-c3d3cd08741c",
+    "timestamp": "2026-04-15T15:32:14.894339",
+    "kind": "task_success",
+    "summary": "Task 9d90567b-d0ca-440e-ae78-46e2e140277d completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "9d90567b-d0ca-440e-ae78-46e2e140277d",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "d12089b8-9334-4802-9b81-2e44b54fa085"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "881302c5-c850-4f42-9478-a0d5a8852d78",
+    "timestamp": "2026-04-15T15:32:14.896233",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 1 adaptive proposal(s) for workflow=marketplace_workflow",
+    "details": {
+      "workflow_name": "marketplace_workflow",
+      "proposal_ids": [
+        "922ee186-1da9-4450-91ce-50765c42f8f5"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "04d49fa7-567c-4945-80bf-2eced15706aa",
+    "timestamp": "2026-04-15T15:32:30.530148",
+    "kind": "task_success",
+    "summary": "Task 293d58f4-09d0-486a-92b5-69240bf15164 completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "293d58f4-09d0-486a-92b5-69240bf15164",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "e5a8d2d9-9ab2-4a2c-93b8-b0393ab9dbfd"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "ec0b6474-9d54-4705-ae37-a3369e8fff24",
+    "timestamp": "2026-04-15T15:33:06.848442",
+    "kind": "task_failure",
+    "summary": "Task 293d58f4-09d0-486a-92b5-69240bf15164 failed on worker t-uuid-1",
+    "details": {
+      "task_id": "293d58f4-09d0-486a-92b5-69240bf15164",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "t-uuid-1",
+      "worker_name": "test-w",
+      "error": "Timeout 20000ms exceeded waitingForSelector marketplace-btn",
+      "reflection_id": "9f433e24-c7ea-4de1-81b9-7f5ce6f2c742"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "cd2a2a7b-e5a5-4118-9b9e-1543feb8ba43",
+    "timestamp": "2026-04-15T15:33:11.996797",
+    "kind": "task_success",
+    "summary": "Task 2971ff31-ef9c-49e5-8935-b9498d43f04f completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "2971ff31-ef9c-49e5-8935-b9498d43f04f",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "ba57abf9-0eb6-497c-9b7b-64eca443aa6a"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "031b47e1-51b8-4241-98a1-ff7068bd0ebd",
+    "timestamp": "2026-04-15T15:33:14.332366",
+    "kind": "task_failure",
+    "summary": "Task 293d58f4-09d0-486a-92b5-69240bf15164 failed on worker t-uuid-1",
+    "details": {
+      "task_id": "293d58f4-09d0-486a-92b5-69240bf15164",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "t-uuid-1",
+      "worker_name": "test-w",
+      "error": "Timeout 20000ms exceeded waitingForSelector marketplace-btn",
+      "reflection_id": "0bdfa512-5947-4aa0-bdf7-b119862e30b3"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "91ec28dc-294b-4c5d-8689-c357f9664af6",
+    "timestamp": "2026-04-15T15:33:16.376630",
+    "kind": "task_failure",
+    "summary": "Task 239ec6f2-a5b5-428f-a59e-8c401d7892c2 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "239ec6f2-a5b5-428f-a59e-8c401d7892c2",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "browser_workflow failed: Unsupported workflow action: reload_page",
+      "reflection_id": "5308d0e0-1c5c-43b9-8927-8d1022e478d7"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "1ea1321c-71fd-4400-b30c-83d25a1f1457",
+    "timestamp": "2026-04-15T15:33:16.378300",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 1 adaptive proposal(s) for workflow=marketplace_workflow",
+    "details": {
+      "workflow_name": "marketplace_workflow",
+      "proposal_ids": [
+        "9b4991cb-40a9-465c-a515-56aa51d2b7e1"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "a44a018e-6f96-489e-989e-e60d0a81e137",
+    "timestamp": "2026-04-15T15:33:22.627331",
+    "kind": "task_success",
+    "summary": "Task 5f8c3b2c-4acd-497a-b685-fb0a54f41b91 completed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "5f8c3b2c-4acd-497a-b685-fb0a54f41b91",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": null,
+      "reflection_id": "ed5d4cbe-12b4-46f3-b927-222aca9e9d75"
+    },
+    "tags": [
+      "task",
+      "success"
+    ]
+  },
+  {
+    "id": "b9df4240-9e90-4b24-8344-37b17005e0a1",
+    "timestamp": "2026-04-15T15:33:22.629060",
+    "kind": "adaptive_proposals_generated",
+    "summary": "Generated 1 adaptive proposal(s) for workflow=marketplace_workflow",
+    "details": {
+      "workflow_name": "marketplace_workflow",
+      "proposal_ids": [
+        "73f0437c-4030-4bb8-8cf0-6bdd29683290"
+      ]
+    },
+    "tags": [
+      "phase3",
+      "proposal",
+      "review_required"
+    ]
+  },
+  {
+    "id": "27b921be-7605-4b80-a2ef-a4d1af3e9070",
+    "timestamp": "2026-04-15T16:00:19.963305",
+    "kind": "task_failure",
+    "summary": "Task 37cbda90-e8ae-4ab8-b3ee-1692aaff8166 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "37cbda90-e8ae-4ab8-b3ee-1692aaff8166",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "browser_workflow requires a non-empty 'steps' list",
+      "reflection_id": "d949a694-3f81-412e-ac31-9461e57fa8f2"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "9feb019c-6513-491f-a28b-41eaf1a3c413",
+    "timestamp": "2026-04-15T16:00:51.400032",
+    "kind": "task_failure",
+    "summary": "Task cf5ade78-6b3e-43f4-868a-b2fa182dccff failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "cf5ade78-6b3e-43f4-868a-b2fa182dccff",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "browser_workflow requires a non-empty 'steps' list",
+      "reflection_id": "d203de22-8272-43ef-85a9-27c9418ce3e0"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "60530dfe-2e64-4c70-b5ba-08e082eb4390",
+    "timestamp": "2026-04-15T16:01:23.156709",
+    "kind": "task_failure",
+    "summary": "Task 3b5a3d8f-b9fd-4886-9b3b-529957a1c804 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "3b5a3d8f-b9fd-4886-9b3b-529957a1c804",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "browser_workflow requires a non-empty 'steps' list",
+      "reflection_id": "894f4cce-4b4b-4373-b4fa-a7b4e1dc833b"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "981224fe-50e5-42aa-b2a8-9f78419bb747",
+    "timestamp": "2026-04-15T16:01:49.397987",
+    "kind": "task_failure",
+    "summary": "Task e0410d02-6488-4c78-bf98-f6cf0a71d09f failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "e0410d02-6488-4c78-bf98-f6cf0a71d09f",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "browser_workflow requires a non-empty 'steps' list",
+      "reflection_id": "43b081fe-fa8b-4793-8488-cd43120250c0"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "031d855c-54fd-462e-b6c4-40cb000d77d8",
+    "timestamp": "2026-04-15T16:02:20.785013",
+    "kind": "task_failure",
+    "summary": "Task 46f5e8c7-ec0c-4c5a-81e5-0d269c6dbe18 failed on worker a394786c-0be3-46cd-b9aa-77f36c347024",
+    "details": {
+      "task_id": "46f5e8c7-ec0c-4c5a-81e5-0d269c6dbe18",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "a394786c-0be3-46cd-b9aa-77f36c347024",
+      "worker_name": "SBHMIHQ16",
+      "error": "browser_workflow requires a non-empty 'steps' list",
+      "reflection_id": "c3eab638-fac6-4c86-8c8b-e2ef48276bcb"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "unknown"
+    ]
+  },
+  {
+    "id": "3c236c30-c3af-40ac-93c4-f878cd91a4f6",
+    "timestamp": "2026-04-15T16:09:29.798994",
+    "kind": "task_failure",
+    "summary": "Task ce9f1797-7445-4dfb-b3ed-f3941265ced7 failed on worker t-uuid-3",
+    "details": {
+      "task_id": "ce9f1797-7445-4dfb-b3ed-f3941265ced7",
+      "task_type": "browser_workflow",
+      "workflow_name": "marketplace_workflow",
+      "machine_uuid": "t-uuid-3",
+      "worker_name": "test-worker",
+      "error": "Timeout 20000ms exceeded waitingForSelector marketplace-btn",
+      "reflection_id": "81d71f1f-334d-4dcb-83ee-bfc0435f081a"
+    },
+    "tags": [
+      "task",
+      "failure",
+      "timeout"
+    ]
+  },
+  {
+    "id": "fb2db152-93e5-45ed-84d9-a7aa92a9c648",
+    "timestamp": "2026-04-16T17:11:52.771515",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 7cfd3685-3042-4b78-bf02-1a57345109ec for sherpa_takeover",
+    "details": {
+      "draft_id": "7cfd3685-3042-4b78-bf02-1a57345109ec",
+      "workflow_name": "sherpa_takeover",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "8aefa7ff-ca6a-43ae-99c4-0c8884edd083",
+    "timestamp": "2026-04-16T17:12:19.935915",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 7cfd3685-3042-4b78-bf02-1a57345109ec (PID 45296)",
+    "details": {
+      "draft_id": "7cfd3685-3042-4b78-bf02-1a57345109ec",
+      "pid": 45296,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_7cfd3685-3042-4b78-bf02-1a57345109ec_20260416_171219.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "3a2a9e3d-ac2f-4e32-a0c5-352826cf3a14",
+    "timestamp": "2026-04-16T17:12:30.828246",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 0f334d27-72ac-4659-b2f0-e1b0206e8670 for sherpa_takeover",
+    "details": {
+      "draft_id": "0f334d27-72ac-4659-b2f0-e1b0206e8670",
+      "workflow_name": "sherpa_takeover",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "874c1a68-ffa8-4035-8e5c-fa36ac7987ef",
+    "timestamp": "2026-04-16T17:12:33.065470",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 0f334d27-72ac-4659-b2f0-e1b0206e8670 (PID 76008)",
+    "details": {
+      "draft_id": "0f334d27-72ac-4659-b2f0-e1b0206e8670",
+      "pid": 76008,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_0f334d27-72ac-4659-b2f0-e1b0206e8670_20260416_171233.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "c28074e0-2556-4edd-968a-131f907d7b89",
+    "timestamp": "2026-04-16T17:12:59.703629",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 0f334d27-72ac-4659-b2f0-e1b0206e8670 (PID 67144)",
+    "details": {
+      "draft_id": "0f334d27-72ac-4659-b2f0-e1b0206e8670",
+      "pid": 67144,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_0f334d27-72ac-4659-b2f0-e1b0206e8670_20260416_171259.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "59444d78-52ce-4230-bafb-d10a3930a9c1",
+    "timestamp": "2026-04-16T17:13:15.111150",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 0f334d27-72ac-4659-b2f0-e1b0206e8670",
+    "details": {
+      "draft_id": "0f334d27-72ac-4659-b2f0-e1b0206e8670",
+      "workflow_name": "sherpa_takeover"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "09d4f8a3-1d2d-4343-9e96-9fc05c20bd28",
+    "timestamp": "2026-04-16T17:13:18.921523",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 6d02ff19-d4ed-4e64-9677-b1eda2546e75 for sherpa_takeover",
+    "details": {
+      "draft_id": "6d02ff19-d4ed-4e64-9677-b1eda2546e75",
+      "workflow_name": "sherpa_takeover",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "5e3e6752-1e06-43ac-8418-02e08f6c1a10",
+    "timestamp": "2026-04-16T17:13:21.737712",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 6d02ff19-d4ed-4e64-9677-b1eda2546e75 (PID 60944)",
+    "details": {
+      "draft_id": "6d02ff19-d4ed-4e64-9677-b1eda2546e75",
+      "pid": 60944,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_6d02ff19-d4ed-4e64-9677-b1eda2546e75_20260416_171321.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "208f51c9-e89c-4014-a14b-1786d22b5cb4",
+    "timestamp": "2026-04-16T17:13:36.306957",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 6d02ff19-d4ed-4e64-9677-b1eda2546e75",
+    "details": {
+      "draft_id": "6d02ff19-d4ed-4e64-9677-b1eda2546e75",
+      "workflow_name": "sherpa_takeover"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "f18fca1a-ed4b-4379-9a82-f3e7ef772ec7",
+    "timestamp": "2026-04-16T18:58:53.718924",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 73c93866-d19b-4c66-907b-f28066bab590 for test",
+    "details": {
+      "draft_id": "73c93866-d19b-4c66-907b-f28066bab590",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "1b513ec4-0b6a-44b9-918f-da11791d4bad",
+    "timestamp": "2026-04-16T18:58:56.403040",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 73c93866-d19b-4c66-907b-f28066bab590 (PID 85688)",
+    "details": {
+      "draft_id": "73c93866-d19b-4c66-907b-f28066bab590",
+      "pid": 85688,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_73c93866-d19b-4c66-907b-f28066bab590_20260416_185856.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "250834bc-3f61-4743-b6df-45362efa2416",
+    "timestamp": "2026-04-16T18:59:07.692254",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 73c93866-d19b-4c66-907b-f28066bab590",
+    "details": {
+      "draft_id": "73c93866-d19b-4c66-907b-f28066bab590",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  },
+  {
+    "id": "0a5d99eb-ebb5-4d27-9726-6abd8ea6335b",
+    "timestamp": "2026-04-16T19:00:06.425564",
+    "kind": "workflow_learning_draft_created",
+    "summary": "Created workflow learning draft 5620bd4c-7ecf-49ea-8d8f-afd6ac958f87 for test",
+    "details": {
+      "draft_id": "5620bd4c-7ecf-49ea-8d8f-afd6ac958f87",
+      "workflow_name": "test",
+      "path": "demonstration"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft"
+    ]
+  },
+  {
+    "id": "cb1113d7-14a6-443c-af24-acfc4e18f8be",
+    "timestamp": "2026-04-16T19:00:21.351186",
+    "kind": "teach_session_started",
+    "summary": "Playwright teach session started for draft 5620bd4c-7ecf-49ea-8d8f-afd6ac958f87 (PID 53564)",
+    "details": {
+      "draft_id": "5620bd4c-7ecf-49ea-8d8f-afd6ac958f87",
+      "pid": 53564,
+      "log_file": "C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\apps\\bill-core\\teach-session-logs\\teach_session_5620bd4c-7ecf-49ea-8d8f-afd6ac958f87_20260416_190021.log"
+    },
+    "tags": [
+      "workflow_learning",
+      "teach_session"
+    ]
+  },
+  {
+    "id": "0337b103-1976-4ccd-863a-85027254e9a0",
+    "timestamp": "2026-04-16T19:00:33.568354",
+    "kind": "workflow_learning_draft_deleted",
+    "summary": "Deleted workflow learning draft 5620bd4c-7ecf-49ea-8d8f-afd6ac958f87",
+    "details": {
+      "draft_id": "5620bd4c-7ecf-49ea-8d8f-afd6ac958f87",
+      "workflow_name": "test"
+    },
+    "tags": [
+      "workflow_learning",
+      "draft",
+      "delete"
+    ]
+  }
+]

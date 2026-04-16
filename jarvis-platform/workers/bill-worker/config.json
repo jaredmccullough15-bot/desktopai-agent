@@ -1,0 +1,7 @@
+{
+  "core_url": "https://api.bill-core.com",
+  "worker_name": "local-bill-worker",
+  "visible_mode": true,
+  "poll_interval_seconds": 5,
+  "log_level": "INFO"
+}

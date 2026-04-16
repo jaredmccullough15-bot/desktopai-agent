@@ -1,0 +1,35 @@
+2026-04-08 15:03:48 [INFO] Starting Bill Worker...
+2026-04-08 15:03:48 [INFO] App root: C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker
+2026-04-08 15:03:48 [INFO] Startup log: C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\logs\startup_20260408_150348.log
+2026-04-08 15:03:48 [INFO] Worker version: 0.3.21
+2026-04-08 15:03:48 [INFO] Worker name: local-bill-worker
+2026-04-08 15:03:48 [INFO] Core URL: http://127.0.0.1:8010
+2026-04-08 15:03:48 [INFO] Visible mode: True
+2026-04-08 15:03:48 [INFO] Auto update enabled: True
+2026-04-08 15:03:48 [INFO] Default mode: interactive_visible
+2026-04-08 15:03:48 [INFO] Log level: INFO
+2026-04-08 15:03:48 [INFO] Screenshots path: C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\screenshots
+2026-04-08 15:03:48 [INFO] Downloads path: C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\downloads
+2026-04-08 15:03:48 [INFO] Heartbeat interval: 5.0s
+2026-04-08 15:03:48 [INFO] Polling interval: 5.0s
+2026-04-08 15:03:48 [INFO] Update check interval: 120.0s
+2026-04-08 15:03:48 [INFO] Connection mode: API_BASE=http://127.0.0.1:8010 default_mode=interactive_visible
+2026-04-08 15:03:48 [INFO] Worker API endpoints: register=http://127.0.0.1:8010/worker/register heartbeat=http://127.0.0.1:8010/worker/heartbeat poll=http://127.0.0.1:8010/worker/tasks/next
+2026-04-08 15:03:48 [INFO] Startup sequence step 1/3: register
+2026-04-08 15:03:48 [INFO] HTTP register request: url=http://127.0.0.1:8010/worker/register timeout=10s
+2026-04-08 15:03:48 [INFO] HTTP register payload: machine_uuid=0e10e1bb-162a-4996-acf9-2589ea05fd96 machine_name=local-bill-worker worker_version=0.3.21 execution_mode=interactive_visible
+2026-04-08 15:03:48 [INFO] HTTP register response: url=http://127.0.0.1:8010/worker/register status=200 body='{"token":"eeaeb9de-8296-47f6-9b9a-68b9438e328d","machine_uuid":"0e10e1bb-162a-4996-acf9-2589ea05fd96","connection_confirmed":true,"update":{"update_available":false,"force_update":false,"current_version":"0.3.21","latest_version":"0.3.21","package_url":"https://api.bill-core.com/worker/update/package","package_sha256":null,"message":"Worker is up to date"}}'
+2026-04-08 15:03:48 [INFO] Registration succeeded. url=http://127.0.0.1:8010/worker/register status=200 token=eeaeb9de-8296-47f6-9b9a-68b9438e328d connection_confirmed=True force_update=False
+2026-04-08 15:03:48 [INFO] Auto-update check skipped (non-frozen/dev worker runtime).
+2026-04-08 15:03:48 [INFO] HTTP update-check request: url=http://127.0.0.1:8010/worker/update/check timeout=20s params={'machine_uuid': '0e10e1bb-162a-4996-acf9-2589ea05fd96', 'current_version': '0.3.21'}
+2026-04-08 15:03:48 [INFO] Auto-update check result: update_available=False latest_version=0.3.21
+2026-04-08 15:03:48 [INFO] Auto-update check skipped (non-frozen/dev worker runtime).
+2026-04-08 15:03:48 [INFO] Startup sequence step 2/3: heartbeat
+2026-04-08 15:03:48 [INFO] HTTP heartbeat request: url=http://127.0.0.1:8010/worker/heartbeat timeout=10s
+2026-04-08 15:03:48 [INFO] Heartbeat sent. url=http://127.0.0.1:8010/worker/heartbeat status=200 status=idle mode=interactive_visible task=None step=None
+2026-04-08 15:03:48 [INFO] Startup sequence step 3/3: task poll
+2026-04-08 15:03:48 [INFO] HTTP task-poll request: url=http://127.0.0.1:8010/worker/tasks/next timeout=10s params={'machine_uuid': '0e10e1bb-162a-4996-acf9-2589ea05fd96'}
+2026-04-08 15:03:48 [INFO] Task poll response: url=http://127.0.0.1:8010/worker/tasks/next status=200 has_task=False
+2026-04-08 15:03:48 [INFO] HTTP update-check request: url=http://127.0.0.1:8010/worker/update/check timeout=20s params={'machine_uuid': '0e10e1bb-162a-4996-acf9-2589ea05fd96', 'current_version': '0.3.21'}
+2026-04-08 15:03:48 [INFO] Auto-update check result: update_available=False latest_version=0.3.21
+2026-04-08 15:03:48 [INFO] Auto-update check skipped (non-frozen/dev worker runtime).

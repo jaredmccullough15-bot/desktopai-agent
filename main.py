@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import threading
 import time
 import difflib
@@ -40,14 +41,30 @@ from modules.data_store import (
     lookup_writing_agent,
     extract_agent_fields,
 )
-import sys
+from modules.integrations import (
+    list_integrations,
+    get_integration,
+    add_or_update_integration,
+    remove_integration,
+    send_webhook,
+    call_api,
+    mask_secret,
+)
 from tkinter import filedialog, Listbox, END, simpledialog, messagebox
 from docx import Document
 from pptx import Presentation
 from openai import OpenAI
-import sounddevice as sd
-import soundfile as sf
+from modules.app_logger import append_agent_log
+try:
+    import sounddevice as sd
+    import soundfile as sf
+except Exception:
+    sd = None
+    sf = None
 import io
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 try:
     import pytesseract
@@ -59,7 +76,6 @@ try:
 except Exception:
     mss = None
     Image = None
-print(sys.path)
 
 # --- 1. SETTINGS & STYLES ---
 ctk.set_appearance_mode("dark")
@@ -77,6 +93,8 @@ def speak(text):
         return
     if tts_client is None:
         return
+    if sd is None or sf is None:
+        return
     try:
         resp = tts_client.audio.speech.create(
             model=TTS_MODEL,
@@ -92,23 +110,96 @@ def speak(text):
 
 def log_line(message: str) -> None:
     try:
-        os.makedirs("data", exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open("data/agent.log", "a", encoding="utf-8") as f:
-            f.write(f"[{ts}] {message}\n")
+        append_agent_log(message, category="System")
     except Exception:
         pass
+
+def get_app_version():
+    """Read version from VERSION.txt file"""
+    try:
+        version_file = os.path.join(os.path.dirname(__file__), 'VERSION.txt')
+        if os.path.exists(version_file):
+            with open(version_file, 'r') as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return "1.0.0"
 
 # --- 2. GLOBAL MEMORY ---
 # This list persists as long as the program is open
 agent_memory = [] 
 
 class SmartAgentHUD(ctk.CTk):
+    def open_google_in_selenium(self):
+        """Open Google in a Selenium-controlled browser window attached to debug Chrome."""
+        import threading
+        def _open():
+            try:
+                from selenium import webdriver
+                from selenium.webdriver.chrome.options import Options
+                chrome_options = Options()
+                chrome_options.add_experimental_option("detach", True)
+                # Attach to Chrome debug instance
+                chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+                driver = webdriver.Chrome(options=chrome_options)
+                driver.get("https://www.google.com")
+            except Exception as e:
+                from tkinter import messagebox
+                messagebox.showerror("Selenium Error", f"Could not open Google in Selenium debug browser:\n{str(e)}")
+        threading.Thread(target=_open, daemon=True).start()
+
+    def _add_selenium_button(self):
+        self.selenium_button = ctk.CTkButton(
+            self.chat_frame,
+            text="Open Google (Selenium)",
+            command=self.open_google_in_selenium,
+            height=32
+        )
+        self.selenium_button.pack(pady=5)
+        # Add button for debug mode
+        self.selenium_debug_button = ctk.CTkButton(
+            self.chat_frame,
+            text="Open Google (Debug Selenium)",
+            command=self.open_google_in_selenium,
+            height=32
+        )
+        self.selenium_debug_button.pack(pady=5)
+        # Add button to restart Chrome in debug guest mode
+        self.chrome_debug_button = ctk.CTkButton(
+            self.chat_frame,
+            text="Restart Chrome (Debug Guest)",
+            command=self.restart_chrome_debug_guest,
+            height=32
+        )
+        self.chrome_debug_button.pack(pady=5)
+
+    def restart_chrome_debug_guest(self):
+        """Stops Chrome and relaunches it in guest mode with remote debugging enabled."""
+        try:
+            import subprocess, os
+            # Kill any running Chrome instances
+            try:
+                subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+            # Choose Chrome path
+            chrome_path = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+            if not os.path.exists(chrome_path):
+                alt_path = r"C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
+                chrome_path = alt_path if os.path.exists(alt_path) else chrome_path
+            # Launch Chrome with remote debugging and guest profile
+            cmd = [chrome_path, "--remote-debugging-port=9222", "--guest"]
+            subprocess.Popen(cmd)
+            self.update_chat("System", "Chrome restarted in debug guest mode on port 9222.")
+        except Exception as e:
+            self.update_chat("System", f"Chrome debug restart error: {str(e)}")
+
     def __init__(self):
         super().__init__()
 
         # Window Setup
-        self.title("Gemini 2026 Smart HUD")
+        version = get_app_version()
+        self.title(f"Jarvis - Your AI Assistant v{version}")
         self.geometry("900x520+40+40")
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.95)
@@ -142,16 +233,27 @@ class SmartAgentHUD(ctk.CTk):
         self.menu_links = ctk.CTkButton(self.sidebar, text="Web Links", command=lambda: self._show_frame("links"))
         self.menu_links.pack(pady=5, padx=10, fill="x")
 
+        self.menu_integrations = ctk.CTkButton(self.sidebar, text="Integrations", command=lambda: self._show_frame("integrations"))
+        self.menu_integrations.pack(pady=5, padx=10, fill="x")
+
+        self.menu_downloads = ctk.CTkButton(self.sidebar, text="Downloads", command=lambda: self._show_frame("downloads"))
+        self.menu_downloads.pack(pady=5, padx=10, fill="x")
+
+        self.menu_observe = ctk.CTkButton(self.sidebar, text="Observe & Learn", command=lambda: self._show_frame("observe"))
+        self.menu_observe.pack(pady=5, padx=10, fill="x")
+
+        self.menu_update = ctk.CTkButton(self.sidebar, text="Update App", command=self._trigger_app_update)
+        self.menu_update.pack(pady=5, padx=10, fill="x")
+
         # Chat frame
         self.chat_frame = ctk.CTkFrame(self.main_area)
         self.chat_frame.pack(fill="both", expand=True)
-
-        self.label = ctk.CTkLabel(self.chat_frame, text="🤖 SMART COMPANION", font=("Helvetica", 18, "bold"))
+        self.label = ctk.CTkLabel(self.chat_frame, text="🤖 JARVIS - Your Personal Assistant", font=("Helvetica", 18, "bold"))
         self.label.pack(pady=10)
 
         self.chat_display = ctk.CTkTextbox(self.chat_frame, width=680, height=260)
         self.chat_display.pack(pady=5, padx=10, fill="both", expand=True)
-        self.chat_display.insert("0.0", "System: Connected. Waiting for voice command...\n")
+        self.chat_display.insert("0.0", "Jarvis: Hello! I'm Jarvis, your personal assistant. How may I help you today?\n")
 
         self.input_entry = ctk.CTkEntry(self.chat_frame, width=680, placeholder_text="Type a command...")
         self.input_entry.pack(pady=5, padx=10, fill="x")
@@ -160,24 +262,39 @@ class SmartAgentHUD(ctk.CTk):
         self.send_button = ctk.CTkButton(self.chat_frame, text="Send", command=self._on_send, height=32)
         self.send_button.pack(pady=5)
 
-        self.mic_button = ctk.CTkButton(self.chat_frame, text="🎤 Speak to Agent", command=self.start_voice_thread, height=40)
-        self.mic_button.pack(pady=10)
+        self.voice_buttons_row = ctk.CTkFrame(self.chat_frame)
+        self.voice_buttons_row.pack(pady=10, padx=10, fill="x")
+
+
+        self.mic_button = ctk.CTkButton(
+            self.voice_buttons_row, 
+            text="🎤 Voice Command", 
+            command=self.start_voice_thread, 
+            height=40
+        )
+        self.mic_button.pack(side="left", expand=True, fill="x")
+
+        self.conversation_button = ctk.CTkButton(
+            self.voice_buttons_row,
+            text="💬 Start Conversation",
+            command=self._start_voice_conversation,
+            height=40
+        )
+        self.conversation_button.pack(side="left", expand=True, fill="x")
+
+        self.conv_buttons_row = ctk.CTkFrame(self.chat_frame)
+        self.conv_buttons_row.pack(pady=(0, 10), padx=10, fill="x")
+
+        self.view_history_button = ctk.CTkButton(
+            self.conv_buttons_row,
+            text="📜 View Conversation History",
+            command=self._view_conversation_history,
+            height=28,
+        )
+        self.view_history_button.pack(side="left", padx=(0, 6), expand=True, fill="x")
 
         # Docs frame
         self.docs_frame = ctk.CTkFrame(self.main_area)
-
-        self.docs_label = ctk.CTkLabel(self.docs_frame, text="Process Docs", font=("Helvetica", 16, "bold"))
-        self.docs_label.pack(pady=(10, 5))
-
-        self.upload_button = ctk.CTkButton(self.docs_frame, text="Upload Process Doc", command=self._on_upload_doc, height=32)
-        self.upload_button.pack(pady=5)
-
-        self.docs_list = Listbox(self.docs_frame, width=90, height=10)
-        self.docs_list.pack(pady=8, padx=10, fill="both", expand=True)
-
-        self.docs_refresh = ctk.CTkButton(self.docs_frame, text="Refresh Docs", command=self._refresh_process_docs, height=28)
-        self.docs_refresh.pack(pady=(0, 5))
-
         self.docs_remove = ctk.CTkButton(self.docs_frame, text="Remove Selected Doc", command=self._remove_selected_doc, height=28)
         self.docs_remove.pack(pady=(0, 10))
 
@@ -212,13 +329,46 @@ class SmartAgentHUD(ctk.CTk):
         self.passwords_remove.pack(pady=(0, 10))
 
         # Procedures frame
-        self.procedures_frame = ctk.CTkFrame(self.main_area)
+        self.procedures_frame = ctk.CTkScrollableFrame(self.main_area)
 
         self.procedures_label = ctk.CTkLabel(self.procedures_frame, text="Procedures", font=("Helvetica", 16, "bold"))
         self.procedures_label.pack(pady=(10, 5))
 
         self.proc_name_entry = ctk.CTkEntry(self.procedures_frame, width=680, placeholder_text="Procedure name")
         self.proc_name_entry.pack(pady=4, padx=10, fill="x")
+
+        # Natural Language Procedure Creation
+        self.nl_divider = ctk.CTkLabel(self.procedures_frame, text="━━━━━━ Natural Language Creation ━━━━━━", font=("Helvetica", 10, "bold"))
+        self.nl_divider.pack(pady=(10, 5))
+
+        self.nl_description_label = ctk.CTkLabel(self.procedures_frame, text="Describe what you want the procedure to do:")
+        self.nl_description_label.pack(pady=(0, 4))
+
+        self.nl_description_entry = ctk.CTkTextbox(self.procedures_frame, width=660, height=80)
+        self.nl_description_entry.pack(pady=4, padx=10, fill="x")
+
+        self.nl_buttons_row = ctk.CTkFrame(self.procedures_frame)
+        self.nl_buttons_row.pack(pady=(0, 6), padx=10, fill="x")
+
+        self.nl_preview_button = ctk.CTkButton(
+            self.nl_buttons_row,
+            text="Preview Steps",
+            command=self._preview_nl_procedure,
+            height=28,
+        )
+        self.nl_preview_button.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.nl_create_button = ctk.CTkButton(
+            self.nl_buttons_row,
+            text="✨ Create Procedure",
+            command=self._create_nl_procedure,
+            height=28,
+            fg_color="#0066cc",
+        )
+        self.nl_create_button.pack(side="left", expand=True, fill="x")
+
+        self.nl_divider2 = ctk.CTkLabel(self.procedures_frame, text="━━━━━━ Or Record Manually ━━━━━━", font=("Helvetica", 10, "bold"))
+        self.nl_divider2.pack(pady=(10, 5))
 
         self.proc_monitor_label = ctk.CTkLabel(self.procedures_frame, text="Select monitor")
         self.proc_monitor_label.pack(pady=(6, 2))
@@ -258,8 +408,8 @@ class SmartAgentHUD(ctk.CTk):
         self.proc_live_toggle = ctk.CTkCheckBox(self.procedures_frame, text="Live narration matching", variable=self.proc_live_var)
         self.proc_live_toggle.pack(pady=(0, 4))
 
-        self.procedures_list = Listbox(self.procedures_frame, width=90, height=8, selectmode="extended")
-        self.procedures_list.pack(pady=8, padx=10, fill="both", expand=True)
+        self.procedures_list = Listbox(self.procedures_frame, width=90, height=6, selectmode="extended")
+        self.procedures_list.pack(pady=8, padx=10, fill="x", expand=False)
 
         self.proc_actions_row = ctk.CTkFrame(self.procedures_frame)
         self.proc_actions_row.pack(pady=(0, 6), padx=10, fill="x")
@@ -272,6 +422,72 @@ class SmartAgentHUD(ctk.CTk):
 
         self.proc_remove = ctk.CTkButton(self.proc_actions_row, text="Delete Selected", command=self._remove_selected_procedure, height=28)
         self.proc_remove.pack(side="left", expand=True, fill="x")
+
+        self.worker_divider = ctk.CTkLabel(self.procedures_frame, text="━━━━━━ Worker Dispatch ━━━━━━", font=("Helvetica", 10, "bold"))
+        self.worker_divider.pack(pady=(10, 5))
+
+        self.worker_api_entry = ctk.CTkEntry(self.procedures_frame, width=680, placeholder_text="Hub API URL (e.g., http://192.168.1.50:8787)")
+        self.worker_api_entry.pack(pady=4, padx=10, fill="x")
+        self.worker_api_entry.insert(0, os.getenv("JARVIS_MEMORY_API", "http://127.0.0.1:8787"))
+
+        self.worker_machine_entry = ctk.CTkEntry(self.procedures_frame, width=680, placeholder_text="Worker machine ID (e.g., Mike@OfficePC)")
+        self.worker_machine_entry.pack(pady=4, padx=10, fill="x")
+
+        self.worker_site_entry = ctk.CTkEntry(self.procedures_frame, width=680, placeholder_text="Site key (e.g., healthsherpa.com)")
+        self.worker_site_entry.pack(pady=4, padx=10, fill="x")
+
+        self.worker_start_url_entry = ctk.CTkEntry(self.procedures_frame, width=680, placeholder_text="Start URL (optional; leave blank to use worker's current page)")
+        self.worker_start_url_entry.pack(pady=4, padx=10, fill="x")
+
+        self.worker_task_type_entry = ctk.CTkEntry(self.procedures_frame, width=680, placeholder_text="Task type override (optional; defaults to selected procedure name)")
+        self.worker_task_type_entry.pack(pady=4, padx=10, fill="x")
+
+        self.worker_goal_entry = ctk.CTkEntry(self.procedures_frame, width=680, placeholder_text="Goal note (optional)")
+        self.worker_goal_entry.pack(pady=4, padx=10, fill="x")
+
+        self.worker_buttons_row = ctk.CTkFrame(self.procedures_frame)
+        self.worker_buttons_row.pack(pady=(0, 8), padx=10, fill="x")
+
+        self.worker_send_selected = ctk.CTkButton(
+            self.worker_buttons_row,
+            text="Send Selected To Worker",
+            command=self._send_selected_procedure_to_worker,
+            height=28,
+        )
+        self.worker_send_selected.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.worker_send_queue = ctk.CTkButton(
+            self.worker_buttons_row,
+            text="Send Queue To Worker",
+            command=self._send_queue_to_worker,
+            height=28,
+        )
+        self.worker_send_queue.pack(side="left", expand=True, fill="x")
+
+        self.worker_status_row = ctk.CTkFrame(self.procedures_frame)
+        self.worker_status_row.pack(pady=(0, 6), padx=10, fill="x")
+
+        self.worker_status_refresh = ctk.CTkButton(
+            self.worker_status_row,
+            text="Refresh Worker Status",
+            command=self._refresh_worker_status,
+            height=28,
+        )
+        self.worker_status_refresh.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.worker_status_all = ctk.CTkButton(
+            self.worker_status_row,
+            text="Show All Workers",
+            command=lambda: self._refresh_worker_status(show_all=True),
+            height=28,
+        )
+        self.worker_status_all.pack(side="left", expand=True, fill="x")
+
+        self.worker_status_label = ctk.CTkLabel(self.procedures_frame, text="Worker Status: (not loaded)")
+        self.worker_status_label.pack(pady=(0, 4))
+
+        self.worker_status_list = Listbox(self.procedures_frame, width=90, height=5)
+        self.worker_status_list.pack(pady=(0, 8), padx=10, fill="x", expand=False)
 
         self.proc_queue_label = ctk.CTkLabel(self.procedures_frame, text="Run Order")
         self.proc_queue_label.pack(pady=(6, 2))
@@ -396,6 +612,373 @@ class SmartAgentHUD(ctk.CTk):
         self.links_remove = ctk.CTkButton(self.links_frame, text="Remove Selected", command=self._remove_selected_web_link, height=28)
         self.links_remove.pack(pady=(0, 10))
 
+        # Integrations frame
+        self.integrations_frame = ctk.CTkFrame(self.main_area)
+
+        self.integrations_label = ctk.CTkLabel(self.integrations_frame, text="Integrations", font=("Helvetica", 16, "bold"))
+        self.integrations_label.pack(pady=(10, 5))
+
+        self.integration_name_entry = ctk.CTkEntry(self.integrations_frame, width=680, placeholder_text="Integration name (e.g., Slack Alerts)")
+        self.integration_name_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_kind_var = ctk.StringVar(value="webhook")
+        self.integration_kind_menu = ctk.CTkOptionMenu(self.integrations_frame, values=["webhook", "api"], variable=self.integration_kind_var)
+        self.integration_kind_menu.pack(pady=4, padx=10, fill="x")
+
+        self.integration_base_url_entry = ctk.CTkEntry(self.integrations_frame, width=680, placeholder_text="Base API URL (for API integrations)")
+        self.integration_base_url_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_webhook_url_entry = ctk.CTkEntry(self.integrations_frame, width=680, placeholder_text="Webhook URL (for webhook integrations)")
+        self.integration_webhook_url_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_api_key_entry = ctk.CTkEntry(self.integrations_frame, width=680, placeholder_text="API Key / Token", show="*")
+        self.integration_api_key_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_auth_type_var = ctk.StringVar(value="bearer")
+        self.integration_auth_type_menu = ctk.CTkOptionMenu(
+            self.integrations_frame,
+            values=["bearer", "oauth2_refresh", "api_key_header", "none"],
+            variable=self.integration_auth_type_var,
+        )
+        self.integration_auth_type_menu.pack(pady=4, padx=10, fill="x")
+
+        self.integration_api_key_header_name_entry = ctk.CTkEntry(
+            self.integrations_frame,
+            width=680,
+            placeholder_text="API key header name (for api_key_header auth, default X-API-Key)",
+        )
+        self.integration_api_key_header_name_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_keap_defaults_button = ctk.CTkButton(
+            self.integrations_frame,
+            text="Use Keap OAuth Defaults",
+            command=self._apply_keap_defaults,
+            height=28,
+        )
+        self.integration_keap_defaults_button.pack(pady=(0, 4), padx=10, fill="x")
+
+        self.integration_oauth_token_url_entry = ctk.CTkEntry(
+            self.integrations_frame,
+            width=680,
+            placeholder_text="OAuth token URL (optional for Keap, default https://api.infusionsoft.com/token)",
+        )
+        self.integration_oauth_token_url_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_oauth_client_id_entry = ctk.CTkEntry(
+            self.integrations_frame,
+            width=680,
+            placeholder_text="OAuth client_id (for oauth2_refresh)",
+        )
+        self.integration_oauth_client_id_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_oauth_client_secret_entry = ctk.CTkEntry(
+            self.integrations_frame,
+            width=680,
+            placeholder_text="OAuth client_secret (for oauth2_refresh)",
+            show="*",
+        )
+        self.integration_oauth_client_secret_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_oauth_refresh_token_entry = ctk.CTkEntry(
+            self.integrations_frame,
+            width=680,
+            placeholder_text="OAuth refresh_token (for oauth2_refresh)",
+            show="*",
+        )
+        self.integration_oauth_refresh_token_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_headers_entry = ctk.CTkEntry(self.integrations_frame, width=680, placeholder_text='Headers JSON (optional, e.g., {"X-App":"Jarvis"})')
+        self.integration_headers_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_test_path_entry = ctk.CTkEntry(self.integrations_frame, width=680, placeholder_text="API test path (optional, e.g., /v1/health)")
+        self.integration_test_path_entry.pack(pady=4, padx=10, fill="x")
+
+        self.integration_api_method_var = ctk.StringVar(value="GET")
+        self.integration_api_method_menu = ctk.CTkOptionMenu(
+            self.integrations_frame,
+            values=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            variable=self.integration_api_method_var,
+        )
+        self.integration_api_method_menu.pack(pady=4, padx=10, fill="x")
+
+        self.integration_payload_box = ctk.CTkTextbox(self.integrations_frame, width=680, height=90)
+        self.integration_payload_box.pack(pady=6, padx=10, fill="x")
+        self.integration_payload_box.insert("0.0", "")
+
+        self.integration_buttons_row = ctk.CTkFrame(self.integrations_frame)
+        self.integration_buttons_row.pack(pady=(0, 6), padx=10, fill="x")
+
+        self.integration_save_button = ctk.CTkButton(self.integration_buttons_row, text="Save Integration", command=self._save_integration, height=30)
+        self.integration_save_button.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.integration_refresh_button = ctk.CTkButton(self.integration_buttons_row, text="Refresh", command=self._refresh_integrations, height=30)
+        self.integration_refresh_button.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.integration_edit_button = ctk.CTkButton(self.integration_buttons_row, text="Edit Selected", command=self._edit_selected_integration, height=30)
+        self.integration_edit_button.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.integration_remove_button = ctk.CTkButton(self.integration_buttons_row, text="Remove Selected", command=self._remove_selected_integration, height=30)
+        self.integration_remove_button.pack(side="left", expand=True, fill="x")
+
+        self.integration_buttons_row2 = ctk.CTkFrame(self.integrations_frame)
+        self.integration_buttons_row2.pack(pady=(0, 10), padx=10, fill="x")
+
+        self.integration_webhook_test_button = ctk.CTkButton(self.integration_buttons_row2, text="Send Test Webhook", command=self._send_test_webhook, height=30)
+        self.integration_webhook_test_button.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.integration_api_test_button = ctk.CTkButton(self.integration_buttons_row2, text="Call Test API", command=self._call_test_api, height=30)
+        self.integration_api_test_button.pack(side="left", expand=True, fill="x")
+
+        self.integrations_list = Listbox(self.integrations_frame, width=90, height=10)
+        self.integrations_list.pack(pady=6, padx=10, fill="both", expand=True)
+        self.integrations_list.bind("<Double-Button-1>", self._edit_selected_integration)
+
+        # Downloads frame
+        self.downloads_frame = ctk.CTkFrame(self.main_area)
+
+        self.downloads_label = ctk.CTkLabel(self.downloads_frame, text="Downloads", font=("Helvetica", 16, "bold"))
+        self.downloads_label.pack(pady=(10, 5))
+
+        self.downloads_path_label = ctk.CTkLabel(
+            self.downloads_frame,
+            text=f"Folder: {self._get_downloads_dir()}",
+            font=("Helvetica", 11),
+        )
+        self.downloads_path_label.pack(pady=(0, 8), padx=10)
+
+        self.downloads_list = Listbox(self.downloads_frame, width=90, height=14)
+        self.downloads_list.pack(pady=6, padx=10, fill="both", expand=True)
+        self.downloads_list.bind("<Double-Button-1>", self._open_selected_download)
+
+        self.downloads_buttons_row = ctk.CTkFrame(self.downloads_frame)
+        self.downloads_buttons_row.pack(pady=(0, 10), padx=10, fill="x")
+
+        self.downloads_refresh_button = ctk.CTkButton(
+            self.downloads_buttons_row,
+            text="Refresh",
+            command=self._refresh_downloads,
+            height=30,
+        )
+        self.downloads_refresh_button.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.downloads_open_button = ctk.CTkButton(
+            self.downloads_buttons_row,
+            text="Open Selected",
+            command=self._open_selected_download,
+            height=30,
+        )
+        self.downloads_open_button.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.downloads_folder_button = ctk.CTkButton(
+            self.downloads_buttons_row,
+            text="Open Folder",
+            command=self._open_downloads_folder,
+            height=30,
+        )
+        self.downloads_folder_button.pack(side="left", expand=True, fill="x")
+
+        # Teach Bill a Workflow frame
+        self.observe_frame = ctk.CTkFrame(self.main_area)
+        self.observe_label = ctk.CTkLabel(self.observe_frame, text="Teach Bill a Workflow", font=("Helvetica", 18, "bold"))
+        self.observe_label.pack(pady=(10, 4))
+
+        self.observe_info = ctk.CTkLabel(
+            self.observe_frame,
+            text="Train Bill like a human operator: setup, teach, validate, test, and publish with confidence.",
+            font=("Helvetica", 11),
+        )
+        self.observe_info.pack(pady=(0, 8))
+
+        self.observe_status = ctk.CTkLabel(self.observe_frame, text="Status: Idle", font=("Helvetica", 12, "bold"))
+        self.observe_status.pack(pady=(0, 8))
+
+        self.observe_workspace = ctk.CTkFrame(self.observe_frame)
+        self.observe_workspace.pack(padx=10, pady=(0, 8), fill="both", expand=True)
+
+        # Left: workflow setup and controls
+        self.observe_left = ctk.CTkFrame(self.observe_workspace, width=260)
+        self.observe_left.pack(side="left", fill="y", padx=(0, 8))
+        self.observe_left.pack_propagate(False)
+
+        self.teach_setup_label = ctk.CTkLabel(self.observe_left, text="1) Workflow Setup", font=("Helvetica", 13, "bold"))
+        self.teach_setup_label.pack(anchor="w", padx=10, pady=(10, 6))
+
+        self.teach_workflow_name = ctk.CTkEntry(self.observe_left, placeholder_text="Workflow Name")
+        self.teach_workflow_name.pack(fill="x", padx=10, pady=(0, 6))
+
+        self.teach_workflow_goal = ctk.CTkEntry(self.observe_left, placeholder_text="Goal (what outcome should happen?)")
+        self.teach_workflow_goal.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.prereq_login_var = ctk.BooleanVar(value=True)
+        self.prereq_visible_var = ctk.BooleanVar(value=True)
+        self.prereq_unattended_var = ctk.BooleanVar(value=False)
+        self.prereq_manual_var = ctk.BooleanVar(value=False)
+
+        self.prereq_login = ctk.CTkCheckBox(self.observe_left, text="Login required", variable=self.prereq_login_var)
+        self.prereq_login.pack(anchor="w", padx=10)
+        self.prereq_visible = ctk.CTkCheckBox(self.observe_left, text="Visible mode required", variable=self.prereq_visible_var)
+        self.prereq_visible.pack(anchor="w", padx=10)
+        self.prereq_unattended = ctk.CTkCheckBox(self.observe_left, text="Safe for unattended", variable=self.prereq_unattended_var)
+        self.prereq_unattended.pack(anchor="w", padx=10)
+        self.prereq_manual = ctk.CTkCheckBox(self.observe_left, text="Includes manual confirmations", variable=self.prereq_manual_var)
+        self.prereq_manual.pack(anchor="w", padx=10, pady=(0, 6))
+
+        self.manual_steps_label = ctk.CTkLabel(self.observe_left, text="Manual confirmation steps", font=("Helvetica", 11))
+        self.manual_steps_label.pack(anchor="w", padx=10)
+        self.manual_steps_box = ctk.CTkTextbox(self.observe_left, height=70)
+        self.manual_steps_box.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.observe_buttons_row = ctk.CTkFrame(self.observe_left)
+        self.observe_buttons_row.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.observe_start_button = ctk.CTkButton(
+            self.observe_buttons_row,
+            text="Start Teaching Mode",
+            command=self._start_observation,
+            height=34,
+            fg_color="green",
+        )
+        self.observe_start_button.pack(fill="x", pady=(0, 6))
+
+        self.observe_stop_button = ctk.CTkButton(
+            self.observe_buttons_row,
+            text="Stop Teaching Mode",
+            command=self._stop_observation,
+            height=34,
+            fg_color="red",
+        )
+        self.observe_stop_button.pack(fill="x", pady=(0, 6))
+
+        self.observe_replay_button = ctk.CTkButton(
+            self.observe_buttons_row,
+            text="Test Mode: Run Step-by-Step",
+            command=self._replay_latest_observed_workflow,
+            height=34,
+            fg_color="#1f538d",
+        )
+        self.observe_replay_button.pack(fill="x")
+
+        self.publish_buttons_row = ctk.CTkFrame(self.observe_left)
+        self.publish_buttons_row.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.save_draft_button = ctk.CTkButton(
+            self.publish_buttons_row,
+            text="Save as Draft",
+            command=self._save_latest_workflow_as_draft,
+            height=30,
+        )
+        self.save_draft_button.pack(fill="x", pady=(0, 6))
+
+        self.publish_button = ctk.CTkButton(
+            self.publish_buttons_row,
+            text="Approve + Publish",
+            command=self._approve_and_publish_latest_workflow,
+            height=30,
+            fg_color="#0d7f3f",
+        )
+        self.publish_button.pack(fill="x")
+
+        self.workflow_confidence_label = ctk.CTkLabel(self.observe_left, text="Confidence: N/A", font=("Helvetica", 11, "bold"))
+        self.workflow_confidence_label.pack(anchor="w", padx=10, pady=(2, 8))
+
+        self.sync_status_label = ctk.CTkLabel(self.observe_left, text="Sync: checking status...", font=("Helvetica", 10))
+        self.sync_status_label.pack(anchor="w", padx=10, pady=(2, 4))
+
+        self.sync_now_button = ctk.CTkButton(
+            self.observe_left,
+            text="Sync Now",
+            command=self._sync_now,
+            height=28,
+            fg_color="#0066cc",
+        )
+        self.sync_now_button.pack(fill="x", padx=10, pady=(0, 4))
+
+        self.sync_status_button = ctk.CTkButton(
+            self.observe_left,
+            text="Sync Status",
+            command=self._show_sync_status,
+            height=28,
+        )
+        self.sync_status_button.pack(fill="x", padx=10, pady=(0, 4))
+
+        self.sync_update_button = ctk.CTkButton(
+            self.observe_left,
+            text="Update App From Cloud",
+            command=self._trigger_app_update,
+            height=28,
+        )
+        self.sync_update_button.pack(fill="x", padx=10, pady=(0, 10))
+
+        # Center: live teaching preview
+        self.observe_center = ctk.CTkFrame(self.observe_workspace)
+        self.observe_center.pack(side="left", fill="both", expand=True, padx=(0, 8))
+
+        self.observe_log_label = ctk.CTkLabel(self.observe_center, text="2) Teaching Mode - Live Preview", font=("Helvetica", 13, "bold"))
+        self.observe_log_label.pack(anchor="w", padx=10, pady=(10, 6))
+
+        self.observe_log = ctk.CTkTextbox(self.observe_center, height=220)
+        self.observe_log.pack(fill="x", padx=10, pady=(0, 8))
+        self.observe_log.insert("0.0", "Teaching log will appear here...\n")
+
+        self.live_steps_label = ctk.CTkLabel(self.observe_center, text="Live Captured Steps", font=("Helvetica", 12, "bold"))
+        self.live_steps_label.pack(anchor="w", padx=10, pady=(0, 4))
+
+        self.live_steps_list = Listbox(self.observe_center, width=70, height=12)
+        self.live_steps_list.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Right: structured step builder
+        self.observe_right = ctk.CTkFrame(self.observe_workspace, width=360)
+        self.observe_right.pack(side="left", fill="y")
+        self.observe_right.pack_propagate(False)
+
+        self.step_builder_label = ctk.CTkLabel(self.observe_right, text="3) Step Builder", font=("Helvetica", 13, "bold"))
+        self.step_builder_label.pack(anchor="w", padx=10, pady=(10, 6))
+
+        self.observe_patterns_list = Listbox(self.observe_right, width=45, height=10)
+        self.observe_patterns_list.pack(fill="x", padx=10, pady=(0, 8))
+        self.observe_patterns_list.bind("<<ListboxSelect>>", self._on_teaching_step_selected)
+
+        self.step_name_entry = ctk.CTkEntry(self.observe_right, placeholder_text="Step name")
+        self.step_name_entry.pack(fill="x", padx=10, pady=(0, 6))
+        self.step_purpose_entry = ctk.CTkEntry(self.observe_right, placeholder_text="Purpose")
+        self.step_purpose_entry.pack(fill="x", padx=10, pady=(0, 6))
+        self.step_action_entry = ctk.CTkEntry(self.observe_right, placeholder_text="Action (read-only)")
+        self.step_action_entry.pack(fill="x", padx=10, pady=(0, 6))
+        self.step_action_entry.configure(state="disabled")
+
+        self.step_success_entry = ctk.CTkEntry(self.observe_right, placeholder_text="Success condition")
+        self.step_success_entry.pack(fill="x", padx=10, pady=(0, 6))
+        self.step_failure_entry = ctk.CTkEntry(self.observe_right, placeholder_text="Failure condition")
+        self.step_failure_entry.pack(fill="x", padx=10, pady=(0, 6))
+
+        self.step_failure_behavior = ctk.CTkOptionMenu(
+            self.observe_right,
+            values=["retry", "skip", "stop", "ask_for_help"],
+        )
+        self.step_failure_behavior.pack(fill="x", padx=10, pady=(0, 8))
+        self.step_failure_behavior.set("ask_for_help")
+
+        self.step_editor_buttons = ctk.CTkFrame(self.observe_right)
+        self.step_editor_buttons.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.step_apply_button = ctk.CTkButton(self.step_editor_buttons, text="Apply Edits", command=self._apply_teaching_step_edits, height=28)
+        self.step_apply_button.pack(fill="x", pady=(0, 4))
+        self.step_up_button = ctk.CTkButton(self.step_editor_buttons, text="Move Up", command=self._move_teaching_step_up, height=28)
+        self.step_up_button.pack(fill="x", pady=(0, 4))
+        self.step_down_button = ctk.CTkButton(self.step_editor_buttons, text="Move Down", command=self._move_teaching_step_down, height=28)
+        self.step_down_button.pack(fill="x", pady=(0, 4))
+        self.step_delete_button = ctk.CTkButton(self.step_editor_buttons, text="Delete Step", command=self._delete_teaching_step, height=28, fg_color="#9d2b2b")
+        self.step_delete_button.pack(fill="x")
+
+        self.observe_refresh_patterns = ctk.CTkButton(
+            self.observe_right,
+            text="Refresh Learned Patterns",
+            command=self._refresh_learned_patterns,
+            height=28,
+        )
+        self.observe_refresh_patterns.pack(fill="x", padx=10, pady=(0, 10))
+
+
         self._list_microphones()
         self._refresh_process_docs()
         self._refresh_password_entries()
@@ -403,6 +986,8 @@ class SmartAgentHUD(ctk.CTk):
         self._refresh_monitor_choices()
         self._refresh_datasets()
         self._refresh_web_links()
+        self._refresh_integrations()
+        self._refresh_downloads()
         self._procedure_recorder = None
         self.proc_stop_button.configure(state="disabled")
         self.proc_add_checkpoint.configure(state="disabled")
@@ -412,6 +997,19 @@ class SmartAgentHUD(ctk.CTk):
         self._guided_voice_thread = None
         self._procedure_queue_stop = threading.Event()
         self.proc_queue_stop.configure(state="disabled")
+        self._observation_thread = None
+        self._observation_stop = None
+        self._teaching_steps = []
+        self._teaching_workflow_context = {}
+        self._latest_workflow_id = None
+        self._selected_teaching_step_index = None
+        self.observe_stop_button.configure(state="disabled")
+        
+        # Initialize sync status
+        self._update_sync_status()
+        # Start auto-sync (pull from cloud on startup)
+        threading.Thread(target=self._auto_sync_on_startup, daemon=True).start()
+
 
     def _list_microphones(self):
         try:
@@ -433,6 +1031,9 @@ class SmartAgentHUD(ctk.CTk):
         self.procedures_frame.pack_forget()
         self.data_frame.pack_forget()
         self.links_frame.pack_forget()
+        self.integrations_frame.pack_forget()
+        self.downloads_frame.pack_forget()
+        self.observe_frame.pack_forget()
         if name == "docs":
             self.docs_frame.pack(fill="both", expand=True)
         elif name == "passwords":
@@ -446,6 +1047,15 @@ class SmartAgentHUD(ctk.CTk):
         elif name == "links":
             self.links_frame.pack(fill="both", expand=True)
             self._refresh_web_links()
+        elif name == "integrations":
+            self.integrations_frame.pack(fill="both", expand=True)
+            self._refresh_integrations()
+        elif name == "downloads":
+            self.downloads_frame.pack(fill="both", expand=True)
+            self._refresh_downloads()
+        elif name == "observe":
+            self.observe_frame.pack(fill="both", expand=True)
+            self._refresh_learned_patterns()
         else:
             self.chat_frame.pack(fill="both", expand=True)
 
@@ -467,6 +1077,8 @@ class SmartAgentHUD(ctk.CTk):
         )
         if not file_path:
             return
+        # ...existing code...
+        self._add_selenium_button()
         threading.Thread(target=self._ingest_process_doc, args=(file_path,), daemon=True).start()
 
     def _ingest_process_doc(self, file_path: str):
@@ -575,11 +1187,19 @@ class SmartAgentHUD(ctk.CTk):
             self.update_chat("System", f"Monitor list error: {str(e)}")
 
     def _start_procedure_recording(self):
-        name = self.proc_name_entry.get().strip()
-        if not name:
+        raw_name = self.proc_name_entry.get().strip()
+        if not raw_name:
             self.proc_status.configure(text="Status: Enter a procedure name")
             self.update_chat("System", "Enter a procedure name before recording.")
             return
+        # Windows-safe procedure folder name
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1F]', '-', raw_name).strip().rstrip('. ')
+        if not name:
+            self.proc_status.configure(text="Status: Invalid procedure name")
+            self.update_chat("System", "Procedure name contains only invalid filename characters.")
+            return
+        if name != raw_name:
+            self.update_chat("System", f"Using safe procedure name: '{name}'")
         if getattr(self, "_procedure_recorder", None) is not None:
             self.proc_status.configure(text="Status: Recording already active")
             self.update_chat("System", "Recording is already in progress.")
@@ -720,19 +1340,291 @@ class SmartAgentHUD(ctk.CTk):
                 self.update_chat("System", "No procedure selected.")
                 return
             name = self.procedures_list.get(selection[0])
-            threading.Thread(target=self._run_procedure_thread, args=(name,), daemon=True).start()
+            runtime_overrides = self._prompt_runtime_overrides_for_procedure(name)
+            if runtime_overrides is None:
+                self.update_chat("System", f"Run canceled: Excel file is required for '{name}'.")
+                return
+            threading.Thread(target=self._run_procedure_thread, args=(name, runtime_overrides), daemon=True).start()
         except Exception as e:
             self.update_chat("System", f"Run procedure error: {str(e)}")
 
-    def _run_procedure_thread(self, name: str):
+    def _slug_task_type(self, name: str) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", (name or "").strip().lower())
+        return cleaned.strip("_") or "task"
+
+    def _read_worker_dispatch_config(self):
+        api_url = self.worker_api_entry.get().strip() if hasattr(self, "worker_api_entry") else ""
+        machine_id = self.worker_machine_entry.get().strip() if hasattr(self, "worker_machine_entry") else ""
+        site = self.worker_site_entry.get().strip() if hasattr(self, "worker_site_entry") else ""
+        start_url = self.worker_start_url_entry.get().strip() if hasattr(self, "worker_start_url_entry") else ""
+        task_type_override = self.worker_task_type_entry.get().strip() if hasattr(self, "worker_task_type_entry") else ""
+        goal_override = self.worker_goal_entry.get().strip() if hasattr(self, "worker_goal_entry") else ""
+
+        if not api_url:
+            api_url = os.getenv("JARVIS_MEMORY_API", "http://127.0.0.1:8787")
+
+        missing = []
+        if not machine_id:
+            missing.append("worker machine ID")
+        if not site:
+            missing.append("site key")
+
+        if missing:
+            self.update_chat("System", f"Worker dispatch missing: {', '.join(missing)}.")
+            return None
+
+        return {
+            "api_url": api_url,
+            "machine_id": machine_id,
+            "site": site,
+            "start_url": start_url,
+            "task_type_override": task_type_override,
+            "goal_override": goal_override,
+        }
+
+    def _enqueue_worker_task(self, api_url: str, payload: dict) -> dict:
+        url = api_url.rstrip("/") + "/tasks"
+        req = urllib.request.Request(
+            url,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(payload).encode("utf-8"),
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {}
+
+    def _api_get_json(self, api_url: str, path: str, params: dict | None = None) -> dict:
+        query = urllib.parse.urlencode(params or {})
+        url = api_url.rstrip("/") + path
+        if query:
+            url = f"{url}?{query}"
+        with urllib.request.urlopen(url, timeout=20) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {}
+
+    def _worker_workflow_exists(self, api_url: str, site: str, task_type: str, machine_id: str) -> bool:
+        try:
+            payload = self._api_get_json(
+                api_url,
+                "/workflow",
+                {"site": site, "task_type": task_type, "machine_id": machine_id},
+            )
+            steps = payload.get("steps", []) if isinstance(payload, dict) else []
+            return bool(steps)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+            raise
+
+    def _send_selected_procedure_to_worker(self):
+        try:
+            selection = self.procedures_list.curselection()
+            if not selection:
+                self.update_chat("System", "No procedure selected.")
+                return
+            name = self.procedures_list.get(selection[0])
+            cfg = self._read_worker_dispatch_config()
+            if cfg is None:
+                return
+
+            task_type = cfg["task_type_override"] or self._slug_task_type(name)
+            goal = cfg["goal_override"] or f"Run procedure: {name}"
+
+            if not self._worker_workflow_exists(cfg["api_url"], cfg["site"], task_type, cfg["machine_id"]):
+                self.update_chat(
+                    "System",
+                    "Worker dispatch blocked: no workflow steps found for this site/task_type on the hub. "
+                    "Use local 'Run Selected' for recorded desktop procedures, or create a worker workflow first.",
+                )
+                return
+
+            payload = {
+                "machine_id": cfg["machine_id"],
+                "site": cfg["site"],
+                "task_type": task_type,
+                "start_url": cfg["start_url"],
+                "goal": goal,
+                "input_data": {"procedure_name": name},
+            }
+            result = self._enqueue_worker_task(cfg["api_url"], payload)
+            task_id = result.get("task_id")
+            self.update_chat("System", f"Queued worker task for '{name}' (task_id={task_id}).")
+            self._refresh_worker_status()
+        except urllib.error.HTTPError as e:
+            details = ""
+            try:
+                details = e.read().decode("utf-8")
+            except Exception:
+                details = str(e)
+            self.update_chat("System", f"Worker dispatch failed: HTTP {e.code} {details}")
+        except Exception as e:
+            self.update_chat("System", f"Worker dispatch error: {str(e)}")
+
+    def _send_queue_to_worker(self):
+        try:
+            count = self.proc_queue_list.size()
+            if count == 0:
+                self.update_chat("System", "Procedure queue is empty.")
+                return
+
+            cfg = self._read_worker_dispatch_config()
+            if cfg is None:
+                return
+
+            names = list(self.proc_queue_list.get(0, END))
+            sent = 0
+            for name in names:
+                task_type = cfg["task_type_override"] or self._slug_task_type(name)
+                goal = cfg["goal_override"] or f"Run procedure: {name}"
+
+                if not self._worker_workflow_exists(cfg["api_url"], cfg["site"], task_type, cfg["machine_id"]):
+                    self.update_chat(
+                        "System",
+                        f"Skipped '{name}': no workflow steps found on hub for site='{cfg['site']}' task_type='{task_type}'.",
+                    )
+                    continue
+
+                payload = {
+                    "machine_id": cfg["machine_id"],
+                    "site": cfg["site"],
+                    "task_type": task_type,
+                    "start_url": cfg["start_url"],
+                    "goal": goal,
+                    "input_data": {"procedure_name": name},
+                }
+                self._enqueue_worker_task(cfg["api_url"], payload)
+                sent += 1
+
+            self.update_chat("System", f"Queued {sent} worker tasks from procedure queue.")
+            self._refresh_worker_status()
+        except urllib.error.HTTPError as e:
+            details = ""
+            try:
+                details = e.read().decode("utf-8")
+            except Exception:
+                details = str(e)
+            self.update_chat("System", f"Worker queue dispatch failed: HTTP {e.code} {details}")
+        except Exception as e:
+            self.update_chat("System", f"Worker queue dispatch error: {str(e)}")
+
+    def _refresh_worker_status(self, show_all: bool = False):
+        try:
+            api_url = self.worker_api_entry.get().strip() if hasattr(self, "worker_api_entry") else ""
+            if not api_url:
+                api_url = os.getenv("JARVIS_MEMORY_API", "http://127.0.0.1:8787")
+
+            machine_id = ""
+            if not show_all and hasattr(self, "worker_machine_entry"):
+                machine_id = self.worker_machine_entry.get().strip()
+
+            payload = self._api_get_json(api_url, "/tasks/status", {"machine_id": machine_id, "limit": 20})
+            counts = payload.get("counts", {}) if isinstance(payload, dict) else {}
+            queued = int(counts.get("queued", 0))
+            claimed = int(counts.get("claimed", 0))
+            done = int(counts.get("done", 0))
+            failed = int(counts.get("failed", 0))
+
+            scope = machine_id or "all workers"
+            if hasattr(self, "worker_status_label"):
+                self.worker_status_label.configure(
+                    text=f"Worker Status ({scope}): queued={queued} claimed={claimed} done={done} failed={failed}"
+                )
+
+            if hasattr(self, "worker_status_list"):
+                self.worker_status_list.delete(0, END)
+                recent = payload.get("recent", []) if isinstance(payload, dict) else []
+                if not recent:
+                    self.worker_status_list.insert(END, "No recent tasks")
+                else:
+                    for row in recent:
+                        task_id = row.get("task_id")
+                        mid = row.get("machine_id", "")
+                        status = row.get("status", "")
+                        site = row.get("site", "")
+                        task_type = row.get("task_type", "")
+                        self.worker_status_list.insert(
+                            END,
+                            f"#{task_id} | {mid} | {status} | {site} | {task_type}",
+                        )
+
+            self.update_chat("System", f"Worker status refreshed ({scope}).")
+        except urllib.error.HTTPError as e:
+            details = ""
+            try:
+                details = e.read().decode("utf-8")
+            except Exception:
+                details = str(e)
+            self.update_chat("System", f"Worker status failed: HTTP {e.code} {details}")
+        except Exception as e:
+            self.update_chat("System", f"Worker status error: {str(e)}")
+
+    def _run_procedure_thread(self, name: str, runtime_overrides: dict = None):
         handler = None
         if self.proc_pause_var.get():
             handler = lambda note, rect: self._handle_checkpoint(note, rect, name)
-        ok = run_procedure(name, checkpoint_handler=handler)
+        ok = run_procedure(name, checkpoint_handler=handler, runtime_overrides=runtime_overrides)
         if ok:
             self.update_chat("System", f"Procedure completed: {name}.")
         else:
             self.update_chat("System", f"Procedure failed: {name}.")
+
+    def _procedure_has_event(self, name: str, event_type: str) -> bool:
+        try:
+            manifest = os.path.join("data", "procedures", name, "manifest.json")
+            if not os.path.isfile(manifest):
+                return False
+            import json
+            with open(manifest, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            events = data.get("events", []) or []
+            wanted = str(event_type or "").strip().lower()
+            return any(str(ev.get("type", "")).strip().lower() == wanted for ev in events if isinstance(ev, dict))
+        except Exception:
+            return False
+
+    def _prompt_runtime_overrides_for_procedure(self, name: str):
+        if not self._procedure_has_event(name, "smart_search_and_add_clients"):
+            return {}
+
+        was_topmost = False
+        try:
+            was_topmost = bool(self.attributes("-topmost"))
+            self.attributes("-topmost", False)
+            self.update_idletasks()
+        except Exception:
+            was_topmost = False
+
+        try:
+            file_path = filedialog.askopenfilename(
+                title=f"Select Excel file for {name}",
+                filetypes=[("Excel", "*.xlsx *.xls"), ("All files", "*.*")],
+                initialdir=os.path.join(os.getcwd(), "data", "mappings"),
+                parent=self,
+            )
+        finally:
+            try:
+                self.attributes("-topmost", was_topmost)
+                self.lift()
+                self.focus_force()
+            except Exception:
+                pass
+
+        if not file_path:
+            return None
+
+        rel_path = file_path
+        try:
+            rel_path = os.path.relpath(file_path, os.getcwd())
+        except Exception:
+            rel_path = file_path
+
+        self.update_chat("System", f"Using search Excel for '{name}': {rel_path}")
+        return {
+            "smart_search_and_add_clients": {
+                "mapping_excel_path": rel_path,
+            }
+        }
 
     def _add_selected_procedures_to_queue(self):
         try:
@@ -778,11 +1670,21 @@ class SmartAgentHUD(ctk.CTk):
         if self.proc_queue_list.size() == 0:
             self.update_chat("System", "Queue is empty.")
             return
+        names = list(self.proc_queue_list.get(0, END))
+        runtime_overrides_by_name = {}
+        for name in names:
+            if name in runtime_overrides_by_name:
+                continue
+            overrides = self._prompt_runtime_overrides_for_procedure(name)
+            if overrides is None:
+                self.update_chat("System", f"Queue run canceled: Excel file is required for '{name}'.")
+                return
+            runtime_overrides_by_name[name] = overrides
         self._procedure_queue_stop.clear()
         self.proc_queue_stop.configure(state="normal")
-        threading.Thread(target=self._run_procedure_queue_thread, daemon=True).start()
+        threading.Thread(target=self._run_procedure_queue_thread, args=(runtime_overrides_by_name,), daemon=True).start()
 
-    def _run_procedure_queue_thread(self):
+    def _run_procedure_queue_thread(self, runtime_overrides_by_name: dict = None):
         names = list(self.proc_queue_list.get(0, END))
         for name in names:
             if self._procedure_queue_stop.is_set():
@@ -791,7 +1693,10 @@ class SmartAgentHUD(ctk.CTk):
             handler = None
             if self.proc_pause_var.get():
                 handler = lambda note, rect, proc_name=name: self._handle_checkpoint(note, rect, proc_name)
-            ok = run_procedure(name, checkpoint_handler=handler)
+            runtime_overrides = {}
+            if isinstance(runtime_overrides_by_name, dict):
+                runtime_overrides = runtime_overrides_by_name.get(name, {})
+            ok = run_procedure(name, checkpoint_handler=handler, runtime_overrides=runtime_overrides)
             if ok:
                 self.update_chat("System", f"Procedure completed: {name}.")
             else:
@@ -810,6 +1715,10 @@ class SmartAgentHUD(ctk.CTk):
                 self.update_chat("System", "No procedure selected.")
                 return
             name = self.procedures_list.get(selection[0])
+            runtime_overrides = self._prompt_runtime_overrides_for_procedure(name)
+            if runtime_overrides is None:
+                self.update_chat("System", f"Loop run canceled: Excel file is required for '{name}'.")
+                return
             repeat_text = self.proc_repeat_entry.get().strip()
             delay_text = self.proc_delay_entry.get().strip()
             repeat_count = int(repeat_text) if repeat_text.isdigit() else 0
@@ -818,13 +1727,13 @@ class SmartAgentHUD(ctk.CTk):
             self.proc_stop_loop.configure(state="normal")
             threading.Thread(
                 target=self._run_procedure_loop_thread,
-                args=(name, repeat_count, delay_sec),
+                args=(name, repeat_count, delay_sec, runtime_overrides),
                 daemon=True,
             ).start()
         except Exception as e:
             self.update_chat("System", f"Run loop error: {str(e)}")
 
-    def _run_procedure_loop_thread(self, name: str, repeat_count: int, delay_sec: float):
+    def _run_procedure_loop_thread(self, name: str, repeat_count: int, delay_sec: float, runtime_overrides: dict = None):
         handler = None
         if self.proc_pause_var.get():
             handler = lambda note, rect, proc_name=name: self._handle_checkpoint(note, rect, proc_name)
@@ -834,6 +1743,7 @@ class SmartAgentHUD(ctk.CTk):
             delay_sec=delay_sec,
             stop_event=self._procedure_loop_stop,
             checkpoint_handler=handler,
+            runtime_overrides=runtime_overrides,
         )
         self.proc_stop_loop.configure(state="disabled")
         if ok:
@@ -918,6 +1828,67 @@ class SmartAgentHUD(ctk.CTk):
         except Exception as e:
             self.update_chat("System", f"Remove dataset error: {str(e)}")
 
+    def _get_downloads_dir(self) -> str:
+        user_profile = os.environ.get("USERPROFILE", "")
+        downloads_dir = os.path.join(user_profile, "Downloads") if user_profile else ""
+        if downloads_dir and os.path.isdir(downloads_dir):
+            return downloads_dir
+        return os.path.join(os.path.dirname(__file__), "data", "exports")
+
+    def _refresh_downloads(self):
+        try:
+            downloads_dir = self._get_downloads_dir()
+            if hasattr(self, "downloads_path_label"):
+                self.downloads_path_label.configure(text=f"Folder: {downloads_dir}")
+            self.downloads_list.delete(0, END)
+            self._downloads_cache = []
+            if not os.path.isdir(downloads_dir):
+                self.update_chat("System", f"Downloads folder not found: {downloads_dir}")
+                return
+            files = []
+            for name in os.listdir(downloads_dir):
+                full_path = os.path.join(downloads_dir, name)
+                if os.path.isfile(full_path):
+                    files.append((os.path.getmtime(full_path), name, full_path))
+            files.sort(reverse=True)
+            self._downloads_cache = files
+            for _, name, full_path in files:
+                self.downloads_list.insert(END, name)
+                if "ambetter_clients_" in name:
+                    self.update_chat("System", f"Ambetter export available: {full_path}")
+        except Exception as e:
+            self.update_chat("System", f"Downloads list error: {str(e)}")
+
+    def _open_selected_download(self, event=None):
+        try:
+            selection = self.downloads_list.curselection()
+            if not selection:
+                self.update_chat("System", "No download selected.")
+                return
+            cache = getattr(self, "_downloads_cache", [])
+            if selection[0] >= len(cache):
+                self.update_chat("System", "Selected file is no longer available.")
+                return
+            file_path = cache[selection[0]][2]
+            if not os.path.isfile(file_path):
+                self.update_chat("System", f"File not found: {file_path}")
+                self._refresh_downloads()
+                return
+            os.startfile(file_path)
+            self.update_chat("System", f"Opened: {file_path}")
+        except Exception as e:
+            self.update_chat("System", f"Open download error: {str(e)}")
+
+    def _open_downloads_folder(self):
+        try:
+            downloads_dir = self._get_downloads_dir()
+            if not os.path.isdir(downloads_dir):
+                self.update_chat("System", f"Folder not found: {downloads_dir}")
+                return
+            os.startfile(downloads_dir)
+        except Exception as e:
+            self.update_chat("System", f"Open folder error: {str(e)}")
+
     def _save_web_link(self):
         name = self.link_name_entry.get().strip()
         url = self.link_url_entry.get().strip()
@@ -957,6 +1928,261 @@ class SmartAgentHUD(ctk.CTk):
                 self.update_chat("System", "Could not remove web link.")
         except Exception as e:
             self.update_chat("System", f"Remove web link error: {str(e)}")
+
+    def _save_integration(self):
+        name = self.integration_name_entry.get().strip()
+        kind = self.integration_kind_var.get().strip().lower()
+        base_url = self.integration_base_url_entry.get().strip()
+        webhook_url = self.integration_webhook_url_entry.get().strip()
+        api_key = self.integration_api_key_entry.get().strip()
+        auth_type = self.integration_auth_type_var.get().strip().lower()
+        oauth_token_url = self.integration_oauth_token_url_entry.get().strip()
+        oauth_client_id = self.integration_oauth_client_id_entry.get().strip()
+        oauth_client_secret = self.integration_oauth_client_secret_entry.get().strip()
+        oauth_refresh_token = self.integration_oauth_refresh_token_entry.get().strip()
+        api_key_header_name = self.integration_api_key_header_name_entry.get().strip()
+        headers_json = self.integration_headers_entry.get().strip()
+
+        if auth_type == "oauth2_refresh" and not oauth_token_url:
+            lowered_base = base_url.lower()
+            if "infusionsoft.com" in lowered_base or "keap.com" in lowered_base:
+                oauth_token_url = "https://api.infusionsoft.com/token"
+                self.integration_oauth_token_url_entry.insert(0, oauth_token_url)
+
+        ok, msg = add_or_update_integration(
+            name=name,
+            kind=kind,
+            base_url=base_url,
+            webhook_url=webhook_url,
+            api_key=api_key,
+            auth_type=auth_type,
+            oauth_token_url=oauth_token_url,
+            oauth_client_id=oauth_client_id,
+            oauth_client_secret=oauth_client_secret,
+            oauth_refresh_token=oauth_refresh_token,
+            api_key_header_name=api_key_header_name,
+            headers_json=headers_json,
+        )
+        if ok:
+            self.update_chat("System", "Integration saved.")
+            self.integration_name_entry.delete(0, "end")
+            self.integration_base_url_entry.delete(0, "end")
+            self.integration_webhook_url_entry.delete(0, "end")
+            self.integration_api_key_entry.delete(0, "end")
+            self.integration_auth_type_var.set("bearer")
+            self.integration_oauth_token_url_entry.delete(0, "end")
+            self.integration_oauth_client_id_entry.delete(0, "end")
+            self.integration_oauth_client_secret_entry.delete(0, "end")
+            self.integration_oauth_refresh_token_entry.delete(0, "end")
+            self.integration_api_key_header_name_entry.delete(0, "end")
+            self.integration_headers_entry.delete(0, "end")
+            self.integration_test_path_entry.delete(0, "end")
+            self._refresh_integrations()
+        else:
+            self.update_chat("System", f"Integration save error: {msg}")
+
+    def _apply_keap_defaults(self):
+        self.integration_kind_var.set("api")
+
+        self.integration_base_url_entry.delete(0, "end")
+        self.integration_base_url_entry.insert(0, "https://api.infusionsoft.com/crm/rest/v1/")
+
+        self.integration_auth_type_var.set("oauth2_refresh")
+
+        self.integration_oauth_token_url_entry.delete(0, "end")
+        self.integration_oauth_token_url_entry.insert(0, "https://api.infusionsoft.com/token")
+
+        self.integration_api_key_header_name_entry.delete(0, "end")
+
+        self.integration_test_path_entry.delete(0, "end")
+        self.integration_test_path_entry.insert(0, "/contacts?limit=1")
+
+        if not self.integration_name_entry.get().strip():
+            self.integration_name_entry.insert(0, "Keap")
+
+        self.update_chat(
+            "System",
+            "Applied Keap defaults. Enter client_id, client_secret, refresh_token, then Save Integration and Call Test API.",
+        )
+
+    def _refresh_integrations(self):
+        try:
+            self.integrations_list.delete(0, END)
+            self._integrations_cache = list_integrations()
+            for entry in self._integrations_cache:
+                kind = entry.get("kind") or ""
+                name = entry.get("name") or ""
+                base_url = entry.get("base_url") or ""
+                webhook_url = entry.get("webhook_url") or ""
+                auth_type = (entry.get("auth_type") or "bearer").strip().lower()
+                endpoint = webhook_url if kind == "webhook" else base_url
+                token_tail = mask_secret(entry.get("api_key") or "")
+                token_display = f" | key:{token_tail}" if token_tail else ""
+                auth_display = ""
+                if auth_type == "oauth2_refresh":
+                    auth_display = " | oauth2_refresh"
+                elif auth_type == "api_key_header":
+                    header_name = str(entry.get("api_key_header_name") or "X-API-Key")
+                    auth_display = f" | api_key_header:{header_name}"
+                elif auth_type == "none":
+                    auth_display = " | no_auth"
+                self.integrations_list.insert(END, f"{kind} | {name} | {endpoint}{token_display}{auth_display}")
+        except Exception as e:
+            self.update_chat("System", f"Integrations list error: {str(e)}")
+
+    def _remove_selected_integration(self):
+        try:
+            selection = self.integrations_list.curselection()
+            if not selection:
+                self.update_chat("System", "No integration selected.")
+                return
+            entry = getattr(self, "_integrations_cache", [])[selection[0]]
+            name = entry.get("name")
+            if remove_integration(name):
+                self.update_chat("System", "Integration removed.")
+                self._refresh_integrations()
+            else:
+                self.update_chat("System", "Could not remove integration.")
+        except Exception as e:
+            self.update_chat("System", f"Remove integration error: {str(e)}")
+
+    def _edit_selected_integration(self, _event=None):
+        try:
+            selection = self.integrations_list.curselection()
+            if not selection:
+                self.update_chat("System", "No integration selected.")
+                return
+            entry = getattr(self, "_integrations_cache", [])[selection[0]]
+
+            self.integration_name_entry.delete(0, "end")
+            self.integration_name_entry.insert(0, str(entry.get("name") or ""))
+
+            kind = str(entry.get("kind") or "api").strip().lower()
+            if kind not in {"api", "webhook"}:
+                kind = "api"
+            self.integration_kind_var.set(kind)
+
+            self.integration_base_url_entry.delete(0, "end")
+            self.integration_base_url_entry.insert(0, str(entry.get("base_url") or ""))
+
+            self.integration_webhook_url_entry.delete(0, "end")
+            self.integration_webhook_url_entry.insert(0, str(entry.get("webhook_url") or ""))
+
+            self.integration_api_key_entry.delete(0, "end")
+            self.integration_api_key_entry.insert(0, str(entry.get("api_key") or ""))
+
+            auth_type = str(entry.get("auth_type") or "bearer").strip().lower()
+            if auth_type not in {"bearer", "oauth2_refresh", "api_key_header", "none"}:
+                auth_type = "bearer"
+            self.integration_auth_type_var.set(auth_type)
+
+            self.integration_oauth_token_url_entry.delete(0, "end")
+            self.integration_oauth_token_url_entry.insert(0, str(entry.get("oauth_token_url") or ""))
+
+            self.integration_oauth_client_id_entry.delete(0, "end")
+            self.integration_oauth_client_id_entry.insert(0, str(entry.get("oauth_client_id") or ""))
+
+            self.integration_oauth_client_secret_entry.delete(0, "end")
+            self.integration_oauth_client_secret_entry.insert(0, str(entry.get("oauth_client_secret") or ""))
+
+            self.integration_oauth_refresh_token_entry.delete(0, "end")
+            self.integration_oauth_refresh_token_entry.insert(0, str(entry.get("oauth_refresh_token") or ""))
+
+            self.integration_api_key_header_name_entry.delete(0, "end")
+            self.integration_api_key_header_name_entry.insert(0, str(entry.get("api_key_header_name") or ""))
+
+            headers = entry.get("headers") if isinstance(entry.get("headers"), dict) else {}
+            headers_text = json.dumps(headers, ensure_ascii=False)
+            self.integration_headers_entry.delete(0, "end")
+            self.integration_headers_entry.insert(0, headers_text)
+
+            self.update_chat("System", f"Loaded integration '{entry.get('name')}' for editing.")
+        except Exception as e:
+            self.update_chat("System", f"Edit integration error: {str(e)}")
+
+    def _selected_integration_name(self) -> str:
+        selection = self.integrations_list.curselection()
+        if not selection:
+            return ""
+        entry = getattr(self, "_integrations_cache", [])[selection[0]]
+        return str(entry.get("name") or "").strip()
+
+    def _parse_test_payload(self):
+        raw = self.integration_payload_box.get("1.0", "end").strip()
+        if not raw:
+            return None
+        return json.loads(raw)
+
+    def _send_test_webhook(self):
+        try:
+            name = self._selected_integration_name()
+            if not name:
+                self.update_chat("System", "Select an integration first.")
+                return
+            payload = self._parse_test_payload()
+            ok, msg, response_data = send_webhook(name, payload=payload)
+            if ok:
+                self.update_chat("System", f"Webhook success: {msg}")
+            else:
+                self.update_chat("System", f"Webhook failed: {msg}")
+            if response_data is not None:
+                preview = str(response_data)
+                if len(preview) > 300:
+                    preview = preview[:300] + "..."
+                self.update_chat("System", f"Webhook response: {preview}")
+        except Exception as e:
+            self.update_chat("System", f"Webhook test error: {str(e)}")
+
+    def _call_test_api(self):
+        try:
+            name = self._selected_integration_name()
+            if not name:
+                self.update_chat("System", "Select an integration first.")
+                return
+            path = self.integration_test_path_entry.get().strip()
+            selected = get_integration(name) or {}
+            selected_base_url = str(selected.get("base_url") or "").lower()
+            if "airtable.com" in selected_base_url and (not path or path == "/"):
+                path = "tblaSejx38hois2uu?maxRecords=5&view=viwwA5UakAdrpr2VB"
+                self.integration_test_path_entry.delete(0, "end")
+                self.integration_test_path_entry.insert(0, path)
+                self.update_chat("System", "Airtable test path auto-set to table endpoint.")
+            method = self.integration_api_method_var.get().strip().upper() or "GET"
+            payload = self._parse_test_payload()
+            if method in {"GET", "DELETE"}:
+                payload = None
+            self.update_chat("System", f"Testing API: integration={name} method={method} path={path or '/'}")
+            ok, msg, response_data = call_api(name, method=method, path=path, payload=payload)
+            if ok:
+                self.update_chat("System", f"API call success: {msg}")
+            else:
+                self.update_chat("System", f"API call failed: {msg}")
+                path_for_hint = (path or "").strip()
+                if (
+                    "airtable.com" in selected_base_url
+                    and "HTTP 404" in msg
+                    and (not path_for_hint or path_for_hint == "/")
+                ):
+                    self.update_chat("System", "Hint: Airtable path '/' always returns NOT_FOUND.")
+                    self.update_chat("System", "Use API test path: tblaSejx38hois2uu?maxRecords=5&view=viwwA5UakAdrpr2VB")
+                if method in {"POST", "PUT", "PATCH"}:
+                    self.update_chat("System", "Hint: If you are just testing read access, switch method to GET.")
+                if "HTTP 401" in msg:
+                    self.update_chat("System", "Hint: Token invalid/expired. Use 'Use Keap OAuth Defaults', enter client_id/client_secret/refresh_token, and save. Auto-refresh will retry the API call.")
+                if "HTTP 500" in msg:
+                    self.update_chat("System", "Hint: Endpoint or payload is likely wrong for this method. Try GET with path '/contacts?limit=1' and empty payload.")
+            if ok and isinstance(response_data, dict):
+                raw_payload = str(response_data.get("raw") or "")
+                raw_probe = raw_payload.strip().lower()
+                if raw_probe.startswith("<!doctype html") or raw_probe.startswith("<html"):
+                    self.update_chat("System", "Warning: Received HTML page, not JSON API data. This usually means the endpoint is a website/login route. Use the app's API endpoint (often /api/...).")
+            if response_data is not None:
+                preview = str(response_data)
+                if len(preview) > 300:
+                    preview = preview[:300] + "..."
+                self.update_chat("System", f"API response: {preview}")
+        except Exception as e:
+            self.update_chat("System", f"API test error: {str(e)}")
 
     def _handle_checkpoint(self, note: str, monitor_rect: dict, procedure_name: str = "") -> bool:
         note = (note or "").strip()
@@ -1480,6 +2706,20 @@ class SmartAgentHUD(ctk.CTk):
             self.send_button.configure(state="normal")
 
     def listen_and_process(self):
+        # Check for PyAudio availability
+        try:
+            from modules.voice_conversation import check_voice_input_available
+            has_voice_input = check_voice_input_available()
+        except Exception:
+            has_voice_input = False
+
+        if not has_voice_input:
+            self.update_chat("System", "⚠️ PyAudio is required for voice commands but is not installed.")
+            self.update_chat("System", "For Python 3.14: Install Microsoft Visual C++ Build Tools first")
+            self.update_chat("System", "https://visualstudio.microsoft.com/visual-cpp-build-tools/")
+            self.update_chat("System", "Then run: pip install pyaudio")
+            return
+        
         recognizer = sr.Recognizer()
         recognizer.dynamic_energy_threshold = True
         recognizer.pause_threshold = 0.8
@@ -1564,6 +2804,832 @@ class SmartAgentHUD(ctk.CTk):
                 self.update_chat("System", f"Error: {str(e)}")
             finally:
                 self.mic_button.configure(state="normal", fg_color="#1f538d", text="🎤 Speak to Agent")
+
+    def _start_observation(self):
+        if getattr(self, "_observation_thread", None) is not None:
+            self.update_observe_log("System", "Teaching Mode is already running.")
+            return
+
+        workflow_name = self.teach_workflow_name.get().strip()
+        workflow_goal = self.teach_workflow_goal.get().strip()
+        if not workflow_name:
+            workflow_name = f"Workflow-{datetime.now().strftime('%H%M%S')}"
+
+        manual_lines = [line.strip() for line in self.manual_steps_box.get("1.0", "end").splitlines() if line.strip()]
+        self._teaching_workflow_context = {
+            "workflow_name": workflow_name,
+            "workflow_goal": workflow_goal,
+            "prerequisites": {
+                "login_required": bool(self.prereq_login_var.get()),
+                "visible_mode_required": bool(self.prereq_visible_var.get()),
+                "safe_for_unattended": bool(self.prereq_unattended_var.get()),
+                "manual_confirmation_steps": manual_lines,
+                "manual_confirmation_enabled": bool(self.prereq_manual_var.get()),
+            },
+        }
+
+        self._teaching_steps = []
+        self._selected_teaching_step_index = None
+        self._refresh_teaching_step_builder()
+        self.live_steps_list.delete(0, END)
+
+        self._observation_stop = threading.Event()
+        self._observation_thread = threading.Thread(target=self._observation_loop, daemon=True)
+        self._observation_thread.start()
+        self.observe_start_button.configure(state="disabled")
+        self.observe_stop_button.configure(state="normal")
+        self.observe_status.configure(text=f"Status: Teaching '{workflow_name}'", text_color="green")
+        self.update_observe_log("System", f"Teaching Mode started for '{workflow_name}'. Show Bill each step like training an employee.")
+
+    def _stop_observation(self):
+        if getattr(self, "_observation_stop", None) is not None:
+            self._observation_stop.set()
+        self._observation_thread = None
+        self.observe_start_button.configure(state="normal")
+        self.observe_stop_button.configure(state="disabled")
+        self.observe_status.configure(text="Status: Idle", text_color="white")
+        self.update_observe_log("System", "Teaching Mode stopped.")
+
+    def _refresh_learned_patterns(self):
+        try:
+            from modules.memory import get_learning_patterns
+            patterns = get_learning_patterns(min_success=1)[:10]
+            self.update_observe_log("System", f"Loaded {len(patterns)} reusable learned patterns.")
+        except Exception as e:
+            self.update_observe_log("System", f"Pattern refresh error: {str(e)}")
+
+    def update_observe_log(self, sender, message):
+        """Appends text to the observation log."""
+        self.observe_log.insert("end", f"{sender}: {message}\n")
+        self.observe_log.see("end")
+
+    def _auto_sync_on_startup(self):
+        """Pull patterns from cloud on startup."""
+        try:
+            from modules.sync import get_sync_instance
+            sync = get_sync_instance()
+            if sync.enabled:
+                time.sleep(2)  # Wait for app to fully load
+                result = sync.pull_patterns_from_cloud()
+                if result:
+                    self._refresh_learned_patterns()
+                self._update_sync_status()
+        except Exception:
+            pass
+
+    def _update_sync_status(self):
+        """Update the sync status label."""
+        try:
+            from modules.sync import get_sync_status
+            status = get_sync_status()
+            
+            if not status.get("enabled"):
+                self.sync_status_label.configure(
+                    text="❌ Sync disabled - Configure SHARED_DATA_PATH in .env to enable",
+                    text_color="gray"
+                )
+            else:
+                machine_count = status.get("machine_count", 0)
+                shared_patterns = status.get("shared_patterns", 0)
+                local_patterns = status.get("local_patterns", 0)
+                last_sync = status.get("last_sync", "Never")
+                
+                self.sync_status_label.configure(
+                    text=f"✅ Connected • {machine_count} desktop(s) • {shared_patterns} shared patterns • Last sync: {last_sync}",
+                    text_color="#00cc66"
+                )
+        except Exception as e:
+            self.sync_status_label.configure(
+                text=f"⚠️ Sync error: {str(e)}",
+                text_color="orange"
+            )
+
+    def _sync_now(self):
+        """Manually trigger sync."""
+        threading.Thread(target=self._sync_now_thread, daemon=True).start()
+
+    def _sync_now_thread(self):
+        """Background thread for manual sync."""
+        try:
+            from modules.sync import sync_now
+            self.update_observe_log("System", "Starting sync...")
+            
+            result = sync_now()
+            
+            if result.get("pull") and result.get("push"):
+                self.update_observe_log("System", "✅ Sync completed successfully!")
+                self._refresh_learned_patterns()
+                self._update_sync_status()
+            elif not result.get("pull") and not result.get("push"):
+                self.update_observe_log("System", "❌ Sync failed - check SHARED_DATA_PATH configuration")
+            else:
+                self.update_observe_log("System", f"⚠️ Partial sync (pull: {result.get('pull')}, push: {result.get('push')})")
+                self._refresh_learned_patterns()
+                self._update_sync_status()
+        except Exception as e:
+            self.update_observe_log("System", f"Sync error: {str(e)}")
+
+    def _show_sync_status(self):
+        """Show detailed sync status in a popup."""
+        try:
+            from modules.sync import get_sync_status
+            from tkinter import messagebox
+            
+            status = get_sync_status()
+            
+            if not status.get("enabled"):
+                message = (
+                    "Cloud Sync is DISABLED\n\n"
+                    "To enable shared learning across desktops:\n"
+                    "1. Set up a cloud-synced folder (OneDrive, Google Drive, etc.)\n"
+                    "2. Add SHARED_DATA_PATH to your .env file\n"
+                    "3. Restart the application\n\n"
+                    "Example: SHARED_DATA_PATH=C:\\Users\\YourName\\OneDrive\\AIAgentShared"
+                )
+            else:
+                machine_id = status.get("machine_id", "unknown")
+                local_patterns = status.get("local_patterns", 0)
+                shared_patterns = status.get("shared_patterns", 0)
+                machine_count = status.get("machine_count", 0)
+                connected_machines = status.get("connected_machines", [])
+                last_sync = status.get("last_sync", "Never")
+                shared_path = status.get("shared_path", "")
+                
+                message = (
+                    f"Cloud Sync is ENABLED ✅\n\n"
+                    f"This Desktop: {machine_id}\n"
+                    f"Local Patterns: {local_patterns}\n\n"
+                    f"Shared Cloud Storage:\n"
+                    f"  Path: {shared_path}\n"
+                    f"  Total Patterns: {shared_patterns}\n"
+                    f"  Connected Desktops: {machine_count}\n\n"
+                    f"Last Sync: {last_sync}\n\n"
+                    f"Connected Machines:\n"
+                )
+                for machine in connected_machines:
+                    message += f"  • {machine}\n"
+            
+            messagebox.showinfo("Shared Learning Sync Status", message)
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Sync Status Error", f"Could not retrieve sync status:\n{str(e)}")
+
+    def _trigger_app_update(self):
+        """Run full app update from cloud sync and close app to allow file replacement."""
+        try:
+            from tkinter import messagebox
+            confirm = messagebox.askyesno(
+                "Update App",
+                "This will close Jarvis, pull the latest cloud update, and run setup.\n\nContinue?"
+            )
+            if not confirm:
+                return
+
+            self.update_chat("System", "Starting app update from cloud...")
+            self.after(200, self._launch_update_and_exit)
+        except Exception as e:
+            self.update_chat("System", f"Could not start update: {str(e)}")
+
+    def _launch_update_and_exit(self):
+        try:
+            import subprocess
+            repo = os.path.dirname(os.path.abspath(__file__))
+            updater_cmd = os.path.join(repo, "UPDATE_FROM_CLOUD.cmd")
+            updater_ps1 = os.path.join(repo, "sync_update.ps1")
+
+            if os.path.isfile(updater_cmd):
+                os.startfile(updater_cmd)
+            elif os.path.isfile(updater_ps1):
+                subprocess.Popen([
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    updater_ps1,
+                ])
+            else:
+                raise FileNotFoundError("UPDATE_FROM_CLOUD.cmd and sync_update.ps1 not found")
+
+            self.destroy()
+        except Exception as e:
+            try:
+                from tkinter import messagebox
+                messagebox.showerror("Update Error", f"Could not launch updater:\n{str(e)}")
+            except Exception:
+                pass
+            self.update_chat("System", f"Update launch failed: {str(e)}")
+
+    def _observation_loop(self):
+        """Background thread that monitors user activity and learns patterns."""
+        try:
+            from modules.observation import ObservationRecorder
+            recorder = ObservationRecorder(
+                log_callback=self.update_observe_log,
+                step_confirmation_callback=self._confirm_observed_step,
+                workflow_review_callback=self._review_observed_workflow,
+                workflow_context=self._teaching_workflow_context,
+                on_step_captured=self._on_teaching_step_captured,
+                on_workflow_finalized=self._on_teaching_workflow_finalized,
+                snapshot_enabled=True,
+            )
+            recorder.start_observing(self._observation_stop)
+            self._refresh_learned_patterns()
+        except Exception as e:
+            self.update_observe_log("System", f"Observation error: {str(e)}")
+            self._observation_stop.set()
+            self._observation_thread = None
+            self.observe_start_button.configure(state="normal")
+            self.observe_stop_button.configure(state="disabled")
+            self.observe_status.configure(text="Status: Error", text_color="red")
+
+    def _run_ui_prompt_sync(self, prompt_fn):
+        result = {"value": None, "error": None}
+        done = threading.Event()
+
+        def _wrapped():
+            try:
+                result["value"] = prompt_fn()
+            except Exception as e:
+                result["error"] = str(e)
+            finally:
+                done.set()
+
+        self.after(0, _wrapped)
+        done.wait(timeout=120)
+        if result["error"]:
+            raise RuntimeError(result["error"])
+        return result["value"]
+
+    def _confirm_observed_step(self, step: dict) -> dict:
+        from tkinter import messagebox, simpledialog
+
+        def _prompt():
+            intent = str(step.get("intent", "unknown")).strip()
+            action_type = str(step.get("action_type", "unknown"))
+            target = str(step.get("target", ""))[:140]
+            suggested_name = self._suggest_step_name(step)
+            suggested_purpose = self._suggest_step_purpose(step)
+            prompt = (
+                f"Suggested step name: {suggested_name}\n"
+                f"Suggested purpose: {suggested_purpose}\n\n"
+                f"Detected intent: {intent}\n"
+                f"Action type: {action_type}\n"
+                f"Target: {target}\n\n"
+                "Yes = accept\n"
+                "No = rename/edit\n"
+                "Cancel = ignore step"
+            )
+            choice = messagebox.askyesnocancel("Confirm Observed Step", prompt)
+            if choice is None:
+                return {"approved": False}
+            if choice:
+                return {
+                    "approved": True,
+                    "intent": intent,
+                    "step_name": suggested_name,
+                    "purpose": suggested_purpose,
+                    "failure_behavior": "ask_for_help",
+                    "edited": False,
+                }
+
+            edited_name = simpledialog.askstring(
+                "Rename Step",
+                "Step name:",
+                initialvalue=suggested_name,
+                parent=self,
+            )
+            edited = simpledialog.askstring(
+                "Edit Step Intent",
+                "Enter corrected step intent (example: search, open_profile, submit_form):",
+                initialvalue=intent,
+                parent=self,
+            )
+            edited_purpose = simpledialog.askstring(
+                "Edit Step Purpose",
+                "What is the purpose of this step?",
+                initialvalue=suggested_purpose,
+                parent=self,
+            )
+            if edited and edited.strip():
+                return {
+                    "approved": True,
+                    "intent": edited.strip(),
+                    "step_name": (edited_name or suggested_name).strip(),
+                    "purpose": (edited_purpose or suggested_purpose).strip(),
+                    "failure_behavior": "ask_for_help",
+                    "edited": True,
+                }
+            return {"approved": False}
+
+        try:
+            return self._run_ui_prompt_sync(_prompt) or {"approved": False}
+        except Exception as e:
+            self.update_observe_log("System", f"Step confirmation failed: {e}")
+            return {"approved": True, "intent": step.get("intent", "unknown"), "edited": False}
+
+    def _review_observed_workflow(self, workflow: dict) -> dict:
+        from tkinter import messagebox
+
+        def _prompt():
+            steps = workflow.get("steps", []) or []
+            preview = []
+            for idx, step in enumerate(steps[:8], start=1):
+                preview.append(f"{idx}. {step.get('intent', 'unknown')} -> {step.get('success_condition', '')}")
+            if len(steps) > 8:
+                preview.append(f"... and {len(steps) - 8} more step(s)")
+
+            summary = (
+                f"Workflow ID: {workflow.get('workflow_id', 'unknown')}\n"
+                f"Site: {workflow.get('site', 'unknown')}\n"
+                f"Type: {workflow.get('workflow_type', 'generic')}\n"
+                f"Steps: {len(steps)}\n\n"
+                f"Detected steps:\n" + "\n".join(preview)
+            )
+
+            approved = messagebox.askyesno("Review Taught Workflow", summary + "\n\nApprove this workflow draft?")
+            if not approved:
+                return {"approved": False, "publish": False}
+            publish = messagebox.askyesno(
+                "Publish Workflow",
+                "Publish this approved workflow to adaptive memory now?\n"
+                "Choose No to keep as approved-only draft.",
+            )
+            return {"approved": True, "publish": bool(publish)}
+
+        try:
+            return self._run_ui_prompt_sync(_prompt) or {"approved": False, "publish": False}
+        except Exception as e:
+            self.update_observe_log("System", f"Workflow review failed: {e}")
+            return {"approved": False, "publish": False}
+
+    def _replay_latest_observed_workflow(self):
+        threading.Thread(target=self._replay_latest_observed_workflow_thread, daemon=True).start()
+
+    def _replay_latest_observed_workflow_thread(self):
+        try:
+            from modules.observation import replay_workflow
+
+            self.update_observe_log("System", "Starting replay/test for latest observed workflow...")
+            result = replay_workflow(log_callback=self.update_observe_log)
+            if not result.get("ok"):
+                self.update_observe_log("System", f"Replay failed: {result.get('error', 'unknown error')}")
+                return
+            self.update_observe_log(
+                "System",
+                (
+                    f"Replay complete. Workflow={result.get('workflow_id')} "
+                    f"success={result.get('successful_steps')}/{result.get('total_steps')}"
+                ),
+            )
+            self._update_workflow_confidence_from_results(result)
+            self._refresh_learned_patterns()
+        except Exception as e:
+            self.update_observe_log("System", f"Replay error: {str(e)}")
+
+    def _suggest_step_name(self, step: dict) -> str:
+        intent = str(step.get("intent", "perform_action")).replace("_", " ").title()
+        target = str(step.get("target", "")).strip()
+        if target:
+            return f"{intent}: {target[:40]}"
+        return intent
+
+    def _suggest_step_purpose(self, step: dict) -> str:
+        intent = str(step.get("intent", "unknown"))
+        mapping = {
+            "search": "Find the requested target record.",
+            "open_profile": "Open the selected record details.",
+            "submit_form": "Submit information and move to next state.",
+            "navigate_list": "Move through list pages to locate data.",
+            "enter_input": "Enter required data into fields.",
+        }
+        return mapping.get(intent, "Advance the workflow toward the goal.")
+
+    def _on_teaching_step_captured(self, step: dict):
+        self.after(0, lambda: self._append_teaching_step(step))
+
+    def _append_teaching_step(self, step: dict):
+        self._teaching_steps.append(step)
+        idx = len(self._teaching_steps)
+        name = step.get("step_name") or self._suggest_step_name(step)
+        action = step.get("action_type", "unknown")
+        conf = (step.get("confidence", {}) or {}).get("score", "n/a")
+        self.live_steps_list.insert(END, f"{idx:02d}. {name} [{action}] conf={conf}")
+        self._refresh_teaching_step_builder()
+
+    def _refresh_teaching_step_builder(self):
+        self.observe_patterns_list.delete(0, END)
+        for idx, step in enumerate(self._teaching_steps, start=1):
+            name = step.get("step_name") or self._suggest_step_name(step)
+            fail = step.get("failure_behavior", "ask_for_help")
+            self.observe_patterns_list.insert(END, f"{idx:02d}. {name} ({fail})")
+
+    def _on_teaching_step_selected(self, _event=None):
+        sel = self.observe_patterns_list.curselection()
+        if not sel:
+            return
+        self._selected_teaching_step_index = int(sel[0])
+        step = self._teaching_steps[self._selected_teaching_step_index]
+        self.step_name_entry.delete(0, END)
+        self.step_name_entry.insert(0, step.get("step_name") or self._suggest_step_name(step))
+        self.step_purpose_entry.delete(0, END)
+        self.step_purpose_entry.insert(0, step.get("purpose") or self._suggest_step_purpose(step))
+        self.step_action_entry.configure(state="normal")
+        self.step_action_entry.delete(0, END)
+        self.step_action_entry.insert(0, f"{step.get('action_type', '')}: {step.get('target', '')[:70]}")
+        self.step_action_entry.configure(state="disabled")
+        self.step_success_entry.delete(0, END)
+        self.step_success_entry.insert(0, step.get("success_condition", ""))
+        self.step_failure_entry.delete(0, END)
+        self.step_failure_entry.insert(0, step.get("failure_condition", ""))
+        self.step_failure_behavior.set(step.get("failure_behavior", "ask_for_help"))
+
+    def _apply_teaching_step_edits(self):
+        idx = self._selected_teaching_step_index
+        if idx is None or idx >= len(self._teaching_steps):
+            self.update_observe_log("System", "Select a step to edit first.")
+            return
+        step = self._teaching_steps[idx]
+        step["step_name"] = self.step_name_entry.get().strip() or step.get("step_name") or self._suggest_step_name(step)
+        step["purpose"] = self.step_purpose_entry.get().strip() or step.get("purpose") or self._suggest_step_purpose(step)
+        step["success_condition"] = self.step_success_entry.get().strip() or step.get("success_condition", "")
+        step["failure_condition"] = self.step_failure_entry.get().strip() or step.get("failure_condition", "")
+        step["failure_behavior"] = self.step_failure_behavior.get().strip() or "ask_for_help"
+        self._refresh_teaching_step_builder()
+        self.observe_patterns_list.selection_clear(0, END)
+        self.observe_patterns_list.selection_set(idx)
+        self.update_observe_log("System", f"Updated step {idx + 1}.")
+        self._persist_teaching_steps()
+
+    def _move_teaching_step_up(self):
+        idx = self._selected_teaching_step_index
+        if idx is None or idx <= 0:
+            return
+        self._teaching_steps[idx - 1], self._teaching_steps[idx] = self._teaching_steps[idx], self._teaching_steps[idx - 1]
+        self._selected_teaching_step_index = idx - 1
+        self._refresh_teaching_step_builder()
+        self.observe_patterns_list.selection_set(self._selected_teaching_step_index)
+        self._persist_teaching_steps()
+
+    def _move_teaching_step_down(self):
+        idx = self._selected_teaching_step_index
+        if idx is None or idx >= len(self._teaching_steps) - 1:
+            return
+        self._teaching_steps[idx + 1], self._teaching_steps[idx] = self._teaching_steps[idx], self._teaching_steps[idx + 1]
+        self._selected_teaching_step_index = idx + 1
+        self._refresh_teaching_step_builder()
+        self.observe_patterns_list.selection_set(self._selected_teaching_step_index)
+        self._persist_teaching_steps()
+
+    def _delete_teaching_step(self):
+        idx = self._selected_teaching_step_index
+        if idx is None or idx >= len(self._teaching_steps):
+            return
+        del self._teaching_steps[idx]
+        self._selected_teaching_step_index = None
+        self._refresh_teaching_step_builder()
+        self.update_observe_log("System", "Step deleted.")
+        self._persist_teaching_steps()
+
+    def _on_teaching_workflow_finalized(self, workflow: dict):
+        self.after(0, lambda: self._apply_finalized_workflow(workflow))
+
+    def _apply_finalized_workflow(self, workflow: dict):
+        self._latest_workflow_id = workflow.get("workflow_id")
+        self._teaching_steps = list(workflow.get("steps", []) or [])
+        self._refresh_teaching_step_builder()
+        status = workflow.get("status", "draft")
+        self.update_observe_log("System", f"Workflow saved: {self._latest_workflow_id} ({status}).")
+        self._update_workflow_confidence_from_workflow(workflow)
+
+    def _persist_teaching_steps(self):
+        if not self._latest_workflow_id:
+            return
+        try:
+            from modules.observation import update_workflow_steps
+
+            wf = update_workflow_steps(self._latest_workflow_id, self._teaching_steps)
+            if wf is None:
+                self.update_observe_log("System", "Could not persist step edits (workflow not found).")
+        except Exception as e:
+            self.update_observe_log("System", f"Persist step edits failed: {e}")
+
+    def _update_workflow_confidence_from_workflow(self, workflow: dict):
+        steps = list(workflow.get("steps", []) or [])
+        scores = []
+        for s in steps:
+            conf = s.get("confidence", {}) or {}
+            if isinstance(conf.get("score"), (int, float)):
+                scores.append(float(conf.get("score")))
+        if not scores:
+            self.workflow_confidence_label.configure(text="Confidence: N/A")
+            return
+        avg = sum(scores) / len(scores)
+        label = "High" if avg >= 0.8 else "Medium" if avg >= 0.6 else "Low"
+        self.workflow_confidence_label.configure(text=f"Confidence: {label} ({avg:.2f})")
+
+    def _update_workflow_confidence_from_results(self, result: dict):
+        total = int(result.get("total_steps", 0) or 0)
+        ok = int(result.get("successful_steps", 0) or 0)
+        if total <= 0:
+            return
+        score = ok / total
+        label = "High" if score >= 0.8 else "Medium" if score >= 0.6 else "Low"
+        self.workflow_confidence_label.configure(text=f"Confidence: {label} ({score:.2f})")
+
+    def _save_latest_workflow_as_draft(self):
+        if not self._latest_workflow_id:
+            self.update_observe_log("System", "No workflow has been taught yet.")
+            return
+        try:
+            from modules.observation import update_workflow_review
+            wf = update_workflow_review(self._latest_workflow_id, approved=False, publish=False)
+            if wf:
+                self.update_observe_log("System", f"Workflow {self._latest_workflow_id} set to draft.")
+            else:
+                self.update_observe_log("System", "Draft update failed (workflow not found).")
+        except Exception as e:
+            self.update_observe_log("System", f"Draft save error: {e}")
+
+    def _approve_and_publish_latest_workflow(self):
+        if not self._latest_workflow_id:
+            self.update_observe_log("System", "No workflow has been taught yet.")
+            return
+        try:
+            from modules.observation import update_workflow_review
+            wf = update_workflow_review(self._latest_workflow_id, approved=True, publish=True)
+            if wf:
+                self.update_observe_log("System", f"Workflow {self._latest_workflow_id} approved and published.")
+                self._update_workflow_confidence_from_workflow(wf)
+            else:
+                self.update_observe_log("System", "Publish failed (workflow not found).")
+        except Exception as e:
+            self.update_observe_log("System", f"Publish error: {e}")
+
+    def _view_conversation_history(self):
+        """Show conversation history in a popup window."""
+        try:
+            from modules.conversation import get_conversation_memory
+            from tkinter import Toplevel, Text, Scrollbar, BOTH, END, RIGHT, Y, LEFT
+            
+            conv_memory = get_conversation_memory()
+            stats = conv_memory.get_stats()
+            
+            # Create popup window
+            popup = Toplevel(self)
+            popup.title("Conversation History")
+            popup.geometry("700x500")
+            popup.attributes("-topmost", True)
+            
+            # Add scrollbar and text widget
+            scrollbar = Scrollbar(popup)
+            scrollbar.pack(side=RIGHT, fill=Y)
+            
+            text_widget = Text(popup, wrap="word", yscrollcommand=scrollbar.set, font=("Courier", 10))
+            text_widget.pack(side=LEFT, fill=BOTH, expand=True)
+            scrollbar.config(command=text_widget.yview)
+            
+            # Add header with stats
+            header = (
+                f"=== Conversation History ===\n"
+                f"Total Messages: {stats['total_messages']}\n"
+                f"Your Messages: {stats['user_messages']}\n"
+                f"AI Responses: {stats['assistant_messages']}\n"
+                f"{'='*50}\n\n"
+            )
+            text_widget.insert(END, header)
+            
+            # Add conversation messages
+            if conv_memory.conversation_history:
+                for msg in conv_memory.conversation_history:
+                    role = msg["role"].upper()
+                    content = msg["content"]
+                    timestamp = msg.get("timestamp", "")
+                    
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(timestamp)
+                        time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except:
+                        time_str = timestamp
+                    
+                    text_widget.insert(END, f"[{time_str}] {role}:\n{content}\n\n")
+            else:
+                text_widget.insert(END, "No conversation history yet.")
+            
+            text_widget.config(state="disabled")  # Make read-only
+            
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Error", f"Could not load conversation history:\n{str(e)}")
+
+    def _clear_conversation_history(self):
+        """Clear all conversation history after confirmation."""
+        try:
+            from modules.conversation import get_conversation_memory
+            from tkinter import messagebox
+            
+            conv_memory = get_conversation_memory()
+            stats = conv_memory.get_stats()
+            
+            # Confirm before clearing
+            if stats['total_messages'] == 0:
+                messagebox.showinfo("Clear History", "Conversation history is already empty.")
+                return
+            
+            confirm = messagebox.askyesno(
+                "Clear History",
+                f"Are you sure you want to clear all conversation history?\n\n"
+                f"This will delete {stats['total_messages']} messages.\n"
+                f"This action cannot be undone."
+            )
+            
+            if confirm:
+                conv_memory.clear_history()
+                self.update_chat("System", "Conversation history cleared.")
+                messagebox.showinfo("Success", "Conversation history has been cleared.")
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Error", f"Could not clear conversation history:\n{str(e)}")
+
+    def _preview_nl_procedure(self):
+        """Preview steps that would be created from natural language description."""
+        description = self.nl_description_entry.get("1.0", "end-1c").strip()
+        
+        if not description:
+            self.update_chat("System", "Please enter a description of the procedure.")
+            return
+        
+        self.nl_preview_button.configure(state="disabled", text="Analyzing...")
+        
+        def preview_thread():
+            try:
+                from modules.nl_procedures import get_nl_procedure_creator
+                from tkinter import Toplevel, Text, Scrollbar, BOTH, END, RIGHT, Y, LEFT, messagebox
+                
+                creator = get_nl_procedure_creator()
+                success, message, steps = creator.preview_procedure(description)
+                
+                if not success:
+                    messagebox.showerror("Preview Error", message)
+                    return
+                
+                # Create preview window
+                popup = Toplevel(self)
+                popup.title("Procedure Steps Preview")
+                popup.geometry("700x500")
+                popup.attributes("-topmost", True)
+                
+                # Add scrollbar and text widget
+                scrollbar = Scrollbar(popup)
+                scrollbar.pack(side=RIGHT, fill=Y)
+                
+                text_widget = Text(popup, wrap="word", yscrollcommand=scrollbar.set, font=("Courier", 10))
+                text_widget.pack(side=LEFT, fill=BOTH, expand=True)
+                scrollbar.config(command=text_widget.yview)
+                
+                # Add steps
+                text_widget.insert(END, f"Procedure Preview - {len(steps)} steps\n")
+                text_widget.insert(END, "="*60 + "\n\n")
+                
+                for step in steps:
+                    step_num = step.get("step_number", 0)
+                    action_type = step.get("action", "unknown")
+                    step_desc = step.get("description", "")
+                    target = step.get("target", "")
+                    value = step.get("value", "")
+                    
+                    text_widget.insert(END, f"Step {step_num}: {action_type.upper()}\n")
+                    text_widget.insert(END, f"  Description: {step_desc}\n")
+                    if target:
+                        text_widget.insert(END, f"  Target: {target}\n")
+                    if value:
+                        text_widget.insert(END, f"  Value: {value}\n")
+                    text_widget.insert(END, "\n")
+                
+                text_widget.config(state="disabled")  # Make read-only
+                
+            except Exception as e:
+                from tkinter import messagebox
+                messagebox.showerror("Error", f"Preview failed:\n{str(e)}")
+            finally:
+                self.nl_preview_button.configure(state="normal", text="Preview Steps")
+        
+        import threading
+        threading.Thread(target=preview_thread, daemon=True).start()
+
+    def _create_nl_procedure(self):
+        """Create a procedure from natural language description."""
+        name = self.proc_name_entry.get().strip()
+        description = self.nl_description_entry.get("1.0", "end-1c").strip()
+        
+        if not name:
+            self.update_chat("System", "Please enter a procedure name.")
+            return
+        
+        if not description:
+            self.update_chat("System", "Please enter a description of the procedure.")
+            return
+        
+        self.nl_create_button.configure(state="disabled", text="Creating...")
+        
+        def create_thread():
+            try:
+                from modules.nl_procedures import get_nl_procedure_creator
+                from tkinter import messagebox
+                
+                creator = get_nl_procedure_creator()
+                success, message, procedure = creator.create_procedure_from_description(name, description)
+                
+                if success:
+                    self.update_chat("System", message)
+                    messagebox.showinfo("Success", message)
+                    self._refresh_procedures()
+                    
+                    # Clear the inputs
+                    self.proc_name_entry.delete(0, "end")
+                    self.nl_description_entry.delete("1.0", "end")
+                else:
+                    self.update_chat("System", f"Failed to create procedure: {message}")
+                    messagebox.showerror("Error", f"Failed to create procedure:\n{message}")
+                
+            except Exception as e:
+                from tkinter import messagebox
+                self.update_chat("System", f"Procedure creation error: {str(e)}")
+                messagebox.showerror("Error", f"Procedure creation failed:\n{str(e)}")
+            finally:
+                self.nl_create_button.configure(state="normal", text="✨ Create Procedure")
+        
+        import threading
+        threading.Thread(target=create_thread, daemon=True).start()
+
+    def _start_voice_conversation(self):
+        """Start voice conversation mode."""
+        try:
+            from modules.voice_conversation import get_voice_conversation, check_tts_available, check_voice_input_available
+            from modules.brain import process_one_turn
+            
+            # Check for PyAudio availability
+            if not check_voice_input_available():
+                from tkinter import messagebox
+                result = messagebox.showwarning(
+                    "Voice Input Not Available",
+                    "PyAudio is required for voice input but is not installed.\n\n"
+                    "For Python 3.14, you need to install Microsoft Visual C++ Build Tools:\n"
+                    "https://visualstudio.microsoft.com/visual-cpp-build-tools/\n\n"
+                    "Then run: pip install pyaudio\n\n"
+                    "Voice conversation requires microphone access and will not work without PyAudio."
+                )
+                return
+            
+            if not check_tts_available():
+                from tkinter import messagebox
+                messagebox.showwarning(
+                    "TTS Not Available",
+                    "Text-to-speech is not available.\n\n"
+                    "To enable voice responses:\n"
+                    "pip install pyttsx3\n\n"
+                    "Voice conversation will work but responses will be text-only."
+                )
+            
+            if hasattr(self, '_conversation_stop') and not self._conversation_stop.is_set():
+                self.update_chat("System", "Conversation already active")
+                return
+            
+            self._conversation_stop = threading.Event()
+            
+            def process_user_input(user_text: str) -> str:
+                """Process user input and return AI response."""
+                try:
+                    result = process_one_turn(user_text, execute_actions=True)
+                    answer = result.get("model", {}).get("answer", "I'm not sure how to respond.")
+                    return answer
+                except Exception as e:
+                    return f"I encountered an error: {str(e)}"
+            
+            conversation = get_voice_conversation(
+                log_callback=lambda msg: self.update_chat("System", msg)
+            )
+            
+            self.conversation_button.configure(text="🛑 Stop Conversation", command=self._stop_voice_conversation)
+            self.update_chat("System", "Starting voice conversation mode...")
+            
+            def conversation_thread():
+                conversation.start_conversation(process_user_input, self._conversation_stop)
+                self.conversation_button.configure(text="💬 Start Conversation", command=self._start_voice_conversation)
+            
+            threading.Thread(target=conversation_thread, daemon=True).start()
+            
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Error", f"Could not start conversation:\n{str(e)}")
+
+    def _stop_voice_conversation(self):
+        """Stop voice conversation mode."""
+        if hasattr(self, '_conversation_stop'):
+            self._conversation_stop.set()
+            self.update_chat("System", "Stopping conversation...")
+            self.conversation_button.configure(text="💬 Start Conversation", command=self._start_voice_conversation)
 
 if __name__ == "__main__":
     app = SmartAgentHUD()

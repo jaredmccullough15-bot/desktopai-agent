@@ -1,0 +1,22 @@
+# Python env
+.venv/
+__pycache__/
+*.pyc
+
+# Local runtime state
+.worker_state.json
+
+# Local outputs
+screenshots/
+downloads/
+
+# Local secrets (never commit real credentials)
+secrets.local.json
+
+# Packaging output
+package-output/
+*.zip
+
+# OS/editor
+.DS_Store
+Thumbs.db

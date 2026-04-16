@@ -10,500 +10,6 @@
     "notes": [
         {
             "type": "action",
-            "input": "Hello, my name is Jared",
-            "result": {
-                "type": "open_url",
-                "url": "https://www.weather.com/weather/today/l/Fraser+MI?canonicalCityId=3c7b3f8c6a7e4e4b8b4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4"
-            }
-        },
-        {
-            "type": "action",
-            "input": "Check the weather for Fraser Michigan with the zip code 48026",
-            "result": {
-                "type": "open_url",
-                "url": "https://www.weather.com/weather/today/l/Fraser+MI?canonicalCityId=3c7b3f8c6a7e4e4b8b4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4c1b8f4"
-            }
-        },
-        {
-            "type": "action",
-            "input": "follow the process for the word doc i jus tuploaded",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "YouTube"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "YouTube"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "follow the process doc I uploaded",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "follow the process doc I uploaded",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url_and_click_result",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
-                        "match_text": "good beginner fish for salt water tanks"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "follow the process I uploaded",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": false,
-                    "result": null,
-                    "error": "Failed to click matching result."
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run the process I uploaded",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": false,
-                    "result": null,
-                    "error": "Failed to click matching result."
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run the process I uploaded",
-            "result": [
-                {
-                    "executed": false,
-                    "result": null,
-                    "error": "Failed to click matching result."
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run the process I uploaded",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://www.youtube.com"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url_and_click_result",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
-                        "match_text": "good beginner fish for salt water tanks"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run the process I uploaded",
-            "result": [
-                {
-                    "executed": false,
-                    "result": null,
-                    "error": "Failed to click matching result."
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run the process I uploaded",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url_and_click_result",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
-                        "match_text": "good beginner fish for salt water tanks"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run the process again",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url_and_click_result",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
-                        "match_text": "good beginner fish for salt water tanks"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run it again",
-            "result": {
-                "type": "open_url_and_click_result",
-                "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
-                "match_text": "good beginner fish for salt water tanks"
-            }
-        },
-        {
-            "type": "action",
-            "input": "run the process again and when it is done I want you to open solitaire",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url_and_click_result",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
-                        "match_text": "good beginner fish for salt water tanks"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_app_and_type",
-                        "app_name": "Solitaire"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run the process again and than open solitaire",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url_and_click_result",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
-                        "match_text": "good beginner fish for salt water tanks"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_app_and_type",
-                        "app_name": "Solitaire"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run the process again and than open solitaire",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url_and_click_result",
-                        "url": "https://www.youtube.com/results?search_query=good+beginner+fish+for+salt+water+tanks",
-                        "match_text": "good beginner fish for salt water tanks"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_app_and_type",
-                        "app_name": "Solitaire"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "follow the process I just uploaded labeled PH log in",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "I just updated the PH log in word doc. please follow the new process",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "I just uploaded a new process. please follow that process. its calls Updated PH log in",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "password_entry",
-            "label": "Quincy Priority Health",
-            "url": "https://agent.priorityhealth.com/agents/s/login/?ec=302&startURL=%2Fagents%2Fs%2F",
-            "username": "quincy@mihealthquotes.com",
-            "password": "Summer2026health!"
-        },
-        {
-            "type": "process_doc",
-            "source": "C:/Users/Jared/Desktop/Updated PH log in.docx",
-            "content": "Go to the web address that is listed under the \u201cQuincy priority Health\u201d password log\nLocated the field labeled \u201cEmail\u201d and enter quincy@mihealthquotes.com\nLocated the field labeled \u201cpassword\u201d and enter Summer2026health!"
-        },
-        {
-            "type": "action",
-            "input": "use the Updated PH log in process",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "focus_app_and_type",
-                        "app_name": "Browser"
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
-            "input": "run the process I uploaded",
-            "result": [
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "open_url",
-                        "url": "https://agent.priorityhealth.com/agents/s/login/?_gl=1*1erdrqc*_ga*MTIyNDIxNDY1OC4xNjY1MDY2NTIz*_ga_14FS8YZQHX*MTY2NTE2NjYwNS41LjAuMTY2NTE2NjYwNS4wLjAuMA..*_ga_BEYDW8D93K*MTY2NTE2NjYwNi41LjAuMTY2NTE2NjYwNi4wLjAuMA.."
-                    },
-                    "error": null
-                },
-                {
-                    "executed": true,
-                    "result": {
-                        "type": "fill_login_from_passwords",
-                        "label": "Quincy Priority Health",
-                        "url": "https://agent.priorityhealth.com/agents/s/login/?ec=302&startURL=%2Fagents%2Fs%2F",
-                        "submit": true
-                    },
-                    "error": null
-                }
-            ]
-        },
-        {
-            "type": "action",
             "input": "Run the process I uploaded",
             "result": [
                 {
@@ -1006,6 +512,1193 @@
                     "error": null
                 }
             ]
+        },
+        {
+            "type": "action",
+            "input": "For each client in the list: click view to open their tab, wait for the page to load, verify the page shows 'Sync Complete' with today's date, then close that tab and move to the next client.\"",
+            "result": [
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Failed to click matching result."
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Page load timed out or failed."
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Search failed."
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "close_current_tab"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "For each client in the list: click view to open their tab, wait for the page to load, verify the page shows 'Sync Complete' with today's date, then close that tab and move to the next client.",
+            "result": [
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Page load timed out or failed."
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Search failed."
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "close_current_tab"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "on my current chrome browser, locate the first Client and click the view button associated with that client",
+            "result": [
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Search failed."
+                },
+                {
+                    "executed": false,
+                    "result": null,
+                    "error": "Page load timed out or failed."
+                }
+            ]
+        },
+        {
+            "type": "process_doc",
+            "source": "C:/Users/Jared/Desktop/AI.docx",
+            "content": "Step 1: Locate the \u201cPlan Year\u201d Field\nStep 2: from the drop down, select \u201c2026\u201d\nStep 3: Locate the Client list, each client row will have a clickable button labeled as \u201cView\u201d Click it to open a new tab.\nStep 4. In the new tab, wait 20 seconds or until data populates in the top right corner of the client profile that says \u201c Sync Complete\u201d\nStep 5. Close that tab, to return to the original tab and select the next clients \u201cView\u201d button. Continue until you reach the bottom of the page, and click the arrow to move to the next page to continue until all pages have been completed."
+        },
+        {
+            "type": "action",
+            "input": "can you open the start menu on my windows desktop please",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_app_and_type",
+                        "app_name": "Windows"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "in the already opened chrome window open a new tab and go to you tube and search videos by toby keith for me please",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "open_url",
+                        "url": "https://www.youtube.com/results?search_query=toby+keith"
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Jarvis, check the AI Submits integration and tell me if there are any new items in the dashboard",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "call_integration_api",
+                        "integration_name": "MIHQ AI Submits",
+                        "method": "GET",
+                        "path": "",
+                        "status": "HTTP 200",
+                        "response": {
+                            "raw": "<!DOCTYPE html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, maximum-scale=1\" />\n\n    <meta property=\"og:title\" content=\"MIHQ SS\" />\n    <meta property=\"og:description\" content=\"Advanced lead management spreadsheet with automated queues.\" />\n    <meta property=\"og:type\" content=\"website\" />\n    <meta property=\"og:image\" content=\"https://mihq-ss--jaredmccullough.replit.app/opengraph.jpg\" />\n    <meta name=\"twitter:card\" content=\"summary_large_image\" />\n    <meta name=\"twitter:site\" content=\"@replit\" />\n    <meta name=\"twitter:title\" content=\"MIHQ SS\" />\n    <meta name=\"twitter:description\" content=\"Advanced lead management spreadsheet with automated queues.\" />\n    <meta name=\"twitter:image\" content=\"https://mihq-ss--jaredmccullough.replit.app/opengraph.jpg\" />\n\n    <link rel=\"icon\" type=\"image/png\" href=\"/favicon.png\" />\n    <link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n    <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n    <link href=\"https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap\" rel=\"stylesheet\">\n    <script type=\"module\" crossorigin src=\"/assets/index-CSTDNWfa.js\"></script>\n    <link rel=\"stylesheet\" crossorigin href=\"/assets/index-CZ_1OGgY.css\">\n  </head>\n  <body>\n    <div id=\"root\"></div>\n  </body>\n</html>"
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Jarvis, check the AI Submits integration and tell me if there are any new items.",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "call_integration_api",
+                        "integration_name": "MIHQ AI Submits",
+                        "method": "GET",
+                        "path": "/api/external/ai-submits",
+                        "status": "HTTP 200",
+                        "response": {
+                            "leads": [
+                                {
+                                    "id": 6155,
+                                    "name": "Mathew Hartrick",
+                                    "company": "",
+                                    "email": "",
+                                    "phone": "",
+                                    "saleDate": "02/20/2026",
+                                    "businessType": "",
+                                    "sellingAgent": "",
+                                    "writingAgent": "Mat",
+                                    "verBy": "Alyssa",
+                                    "state": "",
+                                    "planName": "",
+                                    "type": "New",
+                                    "status": "New",
+                                    "submitter": "",
+                                    "submitDate": "",
+                                    "income": "",
+                                    "csr": "No CSR",
+                                    "disposition": "AI Submit",
+                                    "dispositionCode": "",
+                                    "pendingStatus": "",
+                                    "subType": "",
+                                    "docs": "",
+                                    "infsLink": "https://gk313.infusionsoft.com/Contact/manageContact.jsp?view=edit&ID=86835&searchResult=86835"
+                                }
+                            ],
+                            "total": 1,
+                            "page": 1,
+                            "totalPages": 1
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "how do I get the API for airtable",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "call_integration_api",
+                        "integration_name": "MIHQ AI Submits",
+                        "method": "GET",
+                        "path": "/api/external/ai-submits",
+                        "status": "HTTP 200",
+                        "response": {
+                            "leads": [
+                                {
+                                    "id": 6155,
+                                    "name": "Mathew Hartrick",
+                                    "company": "",
+                                    "email": "",
+                                    "phone": "",
+                                    "saleDate": "02/20/2026",
+                                    "businessType": "",
+                                    "sellingAgent": "",
+                                    "writingAgent": "Mat",
+                                    "verBy": "Alyssa",
+                                    "state": "",
+                                    "planName": "",
+                                    "type": "New",
+                                    "status": "New",
+                                    "submitter": "",
+                                    "submitDate": "",
+                                    "income": "",
+                                    "csr": "No CSR",
+                                    "disposition": "AI Submit",
+                                    "dispositionCode": "",
+                                    "pendingStatus": "",
+                                    "subType": "",
+                                    "docs": "",
+                                    "infsLink": "https://gk313.infusionsoft.com/Contact/manageContact.jsp?view=edit&ID=86835&searchResult=86835"
+                                }
+                            ],
+                            "total": 1,
+                            "page": 1,
+                            "totalPages": 1
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "jarvis, tell me if there is a client in airtable by the name of Basim Yasi",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "wait_for_page_load",
+                        "timeout_sec": 5.0
+                    },
+                    "error": null,
+                    "recovered": true,
+                    "original_error": "HTTP 403: {\"error\":{\"type\":\"INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND\",\"message\":\"Invalid permissions, or the requested model was not found. Check that both your user and your token have the required permissions, and that the model names and/or ids are correct.\"}}",
+                    "recovery_strategy": "wait_for_page_load"
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Jarvis, check airtable for a client named Nancy Brothers",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "wait_for_page_load",
+                        "timeout_sec": 5.0
+                    },
+                    "error": null,
+                    "recovered": true,
+                    "original_error": "HTTP 403: {\"error\":{\"type\":\"INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND\",\"message\":\"Invalid permissions, or the requested model was not found. Check that both your user and your token have the required permissions, and that the model names and/or ids are correct.\"}}",
+                    "recovery_strategy": "wait_for_page_load"
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "check airtable for a client named Basim Yasi",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "call_integration_api",
+                        "integration_name": "Airtable",
+                        "method": "GET",
+                        "path": "tblaSejx38hois2uu?filterByFormula={Name}='Basim Yasi'",
+                        "status": "HTTP 200",
+                        "response": {
+                            "records": [
+                                {
+                                    "id": "recI06EW0fImolhQ9",
+                                    "createdTime": "2024-10-23T14:24:28.000Z",
+                                    "fields": {
+                                        "Name": "Basim Yasi",
+                                        "Notes": "DOB:   1/31/1960\nPhone #:   (586) 808-0079\nDate of Appointment:  12/4/2024\nEffective Date:    1/1/2025\nApplication:  BCBS - Essential (PPO)\nCost:   $0",
+                                        "Client Type": "Sold Client",
+                                        "Appt Date": "12/4/2024",
+                                        "Appt Time": "9:30am",
+                                        "client notes": "EFFECTIVE DATE 1/1/2025"
+                                    }
+                                },
+                                {
+                                    "id": "rece6AtO9lA4zjqsK",
+                                    "createdTime": "2025-12-15T15:58:06.000Z",
+                                    "fields": {
+                                        "Name": "Basim Yasi",
+                                        "Notes": "DOB:   1/31/1960\nPhone 1:   (586) 808-0079\nPhone 2:\nDate Jeff Contacted Client:   \nDate of Appointment:   12/1/2025\nEffective Date:  1/1/2026\nProduct Sold:   BCBS - Secure (PPO)\nPremium:   $0",
+                                        "Client Type": "Sold Client",
+                                        "Appt Date": "12/1/2025",
+                                        "client notes": "EFFECTIVE DATE 1/1/2026"
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Jarvis search airtable for client Nancy Brothers",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "call_integration_api",
+                        "integration_name": "Airtable",
+                        "method": "GET",
+                        "path": "tblaSejx38hois2uu?filterByFormula={Name}='client Nancy Brothers'",
+                        "status": "HTTP 200",
+                        "response": {
+                            "records": []
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "check airtable for client named Laura Sparks",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "call_integration_api",
+                        "integration_name": "Airtable",
+                        "method": "GET",
+                        "path": "tblaSejx38hois2uu?filterByFormula={Name}='Laura Sparks'",
+                        "status": "HTTP 200",
+                        "response": {
+                            "records": [
+                                {
+                                    "id": "rec5fIx5je1odnSRx",
+                                    "createdTime": "2025-11-25T15:56:48.000Z",
+                                    "fields": {
+                                        "Name": "Laura Sparks",
+                                        "Notes": "DOB:   02/28/1956\nPhone 1:   (586) 779-9525\nPhone 2:\nDate Jeff Contacted Client:   \nDate of Appointment:   11/22/2025\nSale ?:   Effective Date: 1/1/2026\nProduct Sold:   BCBS - Secure (PPO)\nPremium:   $0",
+                                        "Client Type": "Sold Client",
+                                        "Appt Date": "11/22/2025",
+                                        "client notes": "EFFECTIVE DATE 1/1/2026"
+                                    }
+                                },
+                                {
+                                    "id": "rec7PYuS91pQRzwrb",
+                                    "createdTime": "2021-12-01T16:33:16.000Z",
+                                    "fields": {
+                                        "Name": "Laura Sparks",
+                                        "Notes": "DOB:  02/28/1956\nPhone 1:   (586) 779-9525\nPhone 2:\nDate Jeff Contacted Client:\nDate of Appointment:  12/2/2021\nSale ?:  Effective Date 01/01/2022\nProduct Sold:  HAP - Senior Plus (PPO)\nPremium:  $0",
+                                        "Client Type": "Sold Client",
+                                        "Appt Date": "12/02/2021"
+                                    }
+                                },
+                                {
+                                    "id": "recQq1Xt2wt7AqH7j",
+                                    "createdTime": "2020-11-10T18:03:47.000Z",
+                                    "fields": {
+                                        "Name": "Laura Sparks",
+                                        "Notes": "DOB:   02/28/1956\nPhone 1:   (586) 405-1812\nPhone 2:\nDate Jeff Contacted Client:   \nDate of Appointment:   01/06/2021\nSale ?:   Effective Date 02/01/2021\nProduct Sold:   Priority Health - Edge\nPremium:   $0",
+                                        "Client Type": "Sold Client",
+                                        "Appt Date": "1/6/2021",
+                                        "Appt Time": "10am",
+                                        "client notes": "Turns 65 in Feb. 2021. Not taking SS.  Did apply in Dec 2020"
+                                    }
+                                },
+                                {
+                                    "id": "recylJMD1SpjUdS13",
+                                    "createdTime": "2024-11-05T18:43:24.000Z",
+                                    "fields": {
+                                        "Name": "Laura Sparks",
+                                        "Notes": "DOB:   02/28/1956\nPhone 1:   (586) 405-1812\nPhone 2:\nDate Jeff Contacted Client:   \nDate of Appointment:   11/1/2024\nSale ?:   Effective Date: 1/1/2025\nProduct Sold:   BCBS - Essential\nPremium:   $0",
+                                        "Client Type": "Sold Client",
+                                        "Appt Date": "11/5/2024",
+                                        "Appt Time": "1:00pm",
+                                        "client notes": "EFFECTIVE DATE 1/1/2025"
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "check you AI submit dashboard for clients",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "call_integration_api",
+                        "integration_name": "MIHQ AI Submits",
+                        "method": "GET",
+                        "path": "/api/external/ai-submits",
+                        "status": "HTTP 200",
+                        "response": {
+                            "leads": [
+                                {
+                                    "id": 6155,
+                                    "name": "Mathew Hartrick",
+                                    "company": "",
+                                    "email": "",
+                                    "phone": "",
+                                    "saleDate": "02/20/2026",
+                                    "businessType": "",
+                                    "sellingAgent": "",
+                                    "writingAgent": "Mat",
+                                    "verBy": "Alyssa",
+                                    "state": "",
+                                    "planName": "",
+                                    "type": "New",
+                                    "status": "New",
+                                    "submitter": "",
+                                    "submitDate": "",
+                                    "income": "",
+                                    "csr": "No CSR",
+                                    "disposition": "AI Submit",
+                                    "dispositionCode": "",
+                                    "pendingStatus": "",
+                                    "subType": "",
+                                    "docs": "",
+                                    "infsLink": "https://gk313.infusionsoft.com/Contact/manageContact.jsp?view=edit&ID=86835&searchResult=86835"
+                                }
+                            ],
+                            "total": 1,
+                            "page": 1,
+                            "totalPages": 1
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "check airtable for a client named Denis Thomas",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "call_integration_api",
+                        "integration_name": "Airtable",
+                        "method": "GET",
+                        "path": "tblaSejx38hois2uu?filterByFormula={Name}='a client named Denis Thomas'",
+                        "status": "HTTP 200",
+                        "response": {
+                            "records": []
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "check airtable for client named Denise Thomas",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "call_integration_api",
+                        "integration_name": "Airtable",
+                        "method": "GET",
+                        "path": "tblaSejx38hois2uu?filterByFormula={Name}='Denise Thomas'",
+                        "status": "HTTP 200",
+                        "response": {
+                            "records": [
+                                {
+                                    "id": "rec10JEq41jns0a2Z",
+                                    "createdTime": "2024-10-23T14:24:27.000Z",
+                                    "fields": {
+                                        "Name": "Denise Thomas",
+                                        "Notes": "DOB:   2/24/1959 \nPhone #:   (810) 488-0502\nDate of Appointment:  10/25/2024\nEffective Date:    1/1/2025\nApplication:  Priority Health - Thrive\nCost:   $0",
+                                        "Client Type": "Sold Client",
+                                        "Appt Date": "10/25/2024",
+                                        "Appt Time": "12:30pm",
+                                        "client notes": "EFFECTIVE DATE 1/1/2025"
+                                    }
+                                },
+                                {
+                                    "id": "recsg83XclPzuSjtO",
+                                    "createdTime": "2024-01-04T17:29:50.000Z",
+                                    "fields": {
+                                        "Name": "Denise Thomas",
+                                        "Notes": "DOB:   2/24/1959 \nPhone #:   (810) 488-0502\nDate of Appointment:  1/4/2024\nEffective Date:    2/1/2024\nApplication:  Priority Health - Edge\nCost:   $0",
+                                        "Client Type": "Sold Client",
+                                        "Appt Date": "1/24/2024",
+                                        "Appt Time": "3:00pm",
+                                        "client notes": "EFFECTIVE DATE 2/1/2024"
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "take the most recent download from ambetter and sort the excel file by the paid through date column and put anyone with a paid through date of anything before 3/31/2026 into a new excel sheet",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "work_excel_file",
+                        "instruction": "take the most recent download from ambetter and sort the excel file by the paid through date column and put anyone with a paid through date of anything before 3/31/2026 into a new excel sheet",
+                        "file_path": "",
+                        "sheet_name": "",
+                        "response": {
+                            "success": true,
+                            "file_path": "C:\\Users\\Jared\\Downloads\\_tmp_policies_20260310114935_processed_20260310_135136.csv",
+                            "source_file_path": "C:\\Users\\Jared\\Downloads\\_tmp_policies_20260310114935.csv",
+                            "rows_before": 1323,
+                            "rows_after": 1323,
+                            "notes": [],
+                            "columns": [
+                                "Broker Name",
+                                "Broker NPN",
+                                "Policy Number",
+                                "Plan Name",
+                                "Insured First Name",
+                                "Insured Last Name",
+                                "Broker Effective Date",
+                                "Broker Term Date",
+                                "Policy Effective Date",
+                                "Policy Term Date",
+                                "Paid Through Date",
+                                "Member Responsibility",
+                                "Monthly Premium Amount",
+                                "County",
+                                "State",
+                                "On/Off Exchange",
+                                "Exchange Subscriber ID",
+                                "Member Phone Number",
+                                "Member Email",
+                                "Member Date Of Birth",
+                                "Autopay",
+                                "Eligible for Commission",
+                                "Number of Members",
+                                "Payable Agent",
+                                "AR Policy Type",
+                                "ICHRA Indicator",
+                                "Employer Group Name",
+                                "Employer Start Date",
+                                "Employer Subsidy Amount",
+                                "Employer Subsidy Type",
+                                "Targeted Outreach Group",
+                                "Suggested Action"
+                            ],
+                            "source_archive": "C:\\Users\\Jared\\Downloads\\ambetter_clients_20260310_124935.zip",
+                            "source_member": "policies_20260310114935.csv"
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "sort through column K of that excel sheet and cut and paste anyone with a date listed before 3/31/2026 into a different excel sheet",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "work_excel_file",
+                        "instruction": "sort through column K of that excel sheet and cut and paste anyone with a date listed before 3/31/2026 into a different excel sheet",
+                        "file_path": "",
+                        "sheet_name": "",
+                        "response": {
+                            "success": true,
+                            "file_path": "C:\\Users\\Jared\\Downloads\\_tmp_policies_20260310114935_processed_20260310_135136_processed_20260310_135352.csv",
+                            "source_file_path": "C:\\Users\\Jared\\Downloads\\_tmp_policies_20260310114935_processed_20260310_135136.csv",
+                            "rows_before": 1323,
+                            "rows_after": 1323,
+                            "notes": [],
+                            "columns": [
+                                "Broker Name",
+                                "Broker NPN",
+                                "Policy Number",
+                                "Plan Name",
+                                "Insured First Name",
+                                "Insured Last Name",
+                                "Broker Effective Date",
+                                "Broker Term Date",
+                                "Policy Effective Date",
+                                "Policy Term Date",
+                                "Paid Through Date",
+                                "Member Responsibility",
+                                "Monthly Premium Amount",
+                                "County",
+                                "State",
+                                "On/Off Exchange",
+                                "Exchange Subscriber ID",
+                                "Member Phone Number",
+                                "Member Email",
+                                "Member Date Of Birth",
+                                "Autopay",
+                                "Eligible for Commission",
+                                "Number of Members",
+                                "Payable Agent",
+                                "AR Policy Type",
+                                "ICHRA Indicator",
+                                "Employer Group Name",
+                                "Employer Start Date",
+                                "Employer Subsidy Amount",
+                                "Employer Subsidy Type",
+                                "Targeted Outreach Group",
+                                "Suggested Action"
+                            ]
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Sort by column K ascending, then move rows where column K is before 3/31/2026 to a new Excel file named",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "work_excel_file",
+                        "instruction": "Sort by column K ascending, then move rows where column K is before 3/31/2026 to a new Excel file named",
+                        "file_path": "",
+                        "sheet_name": "",
+                        "response": {
+                            "success": true,
+                            "file_path": "C:\\Users\\Jared\\Downloads\\_tmp_policies_20260310114935_processed_20260310_135136_processed_20260310_135352_processed_20260310_135630.csv",
+                            "source_file_path": "C:\\Users\\Jared\\Downloads\\_tmp_policies_20260310114935_processed_20260310_135136_processed_20260310_135352.csv",
+                            "rows_before": 1323,
+                            "rows_after": 1323,
+                            "notes": [
+                                "Filter skipped; column not found: column K",
+                                "Sort skipped; column not found: column K"
+                            ],
+                            "columns": [
+                                "Broker Name",
+                                "Broker NPN",
+                                "Policy Number",
+                                "Plan Name",
+                                "Insured First Name",
+                                "Insured Last Name",
+                                "Broker Effective Date",
+                                "Broker Term Date",
+                                "Policy Effective Date",
+                                "Policy Term Date",
+                                "Paid Through Date",
+                                "Member Responsibility",
+                                "Monthly Premium Amount",
+                                "County",
+                                "State",
+                                "On/Off Exchange",
+                                "Exchange Subscriber ID",
+                                "Member Phone Number",
+                                "Member Email",
+                                "Member Date Of Birth",
+                                "Autopay",
+                                "Eligible for Commission",
+                                "Number of Members",
+                                "Payable Agent",
+                                "AR Policy Type",
+                                "ICHRA Indicator",
+                                "Employer Group Name",
+                                "Employer Start Date",
+                                "Employer Subsidy Amount",
+                                "Employer Subsidy Type",
+                                "Targeted Outreach Group",
+                                "Suggested Action"
+                            ]
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Sort by column K ascending, filter rows where column K is before 3/31/2026, and save as before_03312026.xlsx",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "work_excel_file",
+                        "instruction": "Sort by column K ascending, filter rows where column K is before 3/31/2026, and save as before_03312026.xlsx",
+                        "file_path": "",
+                        "sheet_name": "",
+                        "response": {
+                            "success": true,
+                            "file_path": "C:\\Users\\Jared\\Downloads\\before_03312026.xlsx",
+                            "source_file_path": "C:\\Users\\Jared\\Downloads\\_tmp_policies_20260310114935_processed_20260310_135136_processed_20260310_135352_processed_20260310_135630.csv",
+                            "rows_before": 1323,
+                            "rows_after": 200,
+                            "notes": [
+                                "Filter skipped; column not found: rows where column K",
+                                "Filtered 'Paid Through Date' with < (1323 -> 200).",
+                                "Sort skipped; column not found: filter rows where column K is before 3/31/2026",
+                                "Sorted by 'Paid Through Date' (ascending)."
+                            ],
+                            "columns": [
+                                "Broker Name",
+                                "Broker NPN",
+                                "Policy Number",
+                                "Plan Name",
+                                "Insured First Name",
+                                "Insured Last Name",
+                                "Broker Effective Date",
+                                "Broker Term Date",
+                                "Policy Effective Date",
+                                "Policy Term Date",
+                                "Paid Through Date",
+                                "Member Responsibility",
+                                "Monthly Premium Amount",
+                                "County",
+                                "State",
+                                "On/Off Exchange",
+                                "Exchange Subscriber ID",
+                                "Member Phone Number",
+                                "Member Email",
+                                "Member Date Of Birth",
+                                "Autopay",
+                                "Eligible for Commission",
+                                "Number of Members",
+                                "Payable Agent",
+                                "AR Policy Type",
+                                "ICHRA Indicator",
+                                "Employer Group Name",
+                                "Employer Start Date",
+                                "Employer Subsidy Amount",
+                                "Employer Subsidy Type",
+                                "Targeted Outreach Group",
+                                "Suggested Action"
+                            ]
+                        }
+                    },
+                    "error": null
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "Do it again but give me two seperate sheets, one with the criteria I gave you first and than the second sheet will have people with a good paid through date of 3/3",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "wait_for_page_load",
+                        "timeout_sec": 5.0
+                    },
+                    "error": null,
+                    "recovered": true,
+                    "original_error": "Excel file not found: C:\\Users\\Jared\\Downloads\\initial_criteria_sheet.xlsx",
+                    "recovery_strategy": "wait_for_page_load"
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "wait_for_page_load",
+                        "timeout_sec": 5.0
+                    },
+                    "error": null,
+                    "recovered": true,
+                    "original_error": "Excel file not found: C:\\Users\\Jared\\Downloads\\paid_through_3_3_sheet.xlsx",
+                    "recovery_strategy": "wait_for_page_load"
+                }
+            ]
+        },
+        {
+            "type": "action",
+            "input": "I want that information put into a seperate sheet",
+            "result": [
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "work_excel_file",
+                        "instruction": "Create a new Excel sheet with records where 'Paid Through Date' is before 3/31/2026.",
+                        "file_path": "C:\\Users\\Jared\\Downloads\\before_03312026.xlsx",
+                        "sheet_name": "Before 3/31/2026",
+                        "response": {
+                            "success": true,
+                            "file_path": "C:\\Users\\Jared\\Downloads\\before_03312026_processed_20260310_140817.xlsx",
+                            "source_file_path": "C:\\Users\\Jared\\Downloads\\before_03312026.xlsx",
+                            "sheet_name": "Processed",
+                            "rows_before": 200,
+                            "rows_after": 0,
+                            "notes": [
+                                "Filtered 'Paid Through Date' with eq (200 -> 0)."
+                            ],
+                            "columns": [
+                                "Broker Name",
+                                "Broker NPN",
+                                "Policy Number",
+                                "Plan Name",
+                                "Insured First Name",
+                                "Insured Last Name",
+                                "Broker Effective Date",
+                                "Broker Term Date",
+                                "Policy Effective Date",
+                                "Policy Term Date",
+                                "Paid Through Date",
+                                "Member Responsibility",
+                                "Monthly Premium Amount",
+                                "County",
+                                "State",
+                                "On/Off Exchange",
+                                "Exchange Subscriber ID",
+                                "Member Phone Number",
+                                "Member Email",
+                                "Member Date Of Birth",
+                                "Autopay",
+                                "Eligible for Commission",
+                                "Number of Members",
+                                "Payable Agent",
+                                "AR Policy Type",
+                                "ICHRA Indicator",
+                                "Employer Group Name",
+                                "Employer Start Date",
+                                "Employer Subsidy Amount",
+                                "Employer Subsidy Type",
+                                "Targeted Outreach Group",
+                                "Suggested Action"
+                            ]
+                        }
+                    },
+                    "error": null
+                },
+                {
+                    "executed": true,
+                    "result": {
+                        "type": "wait_for_page_load",
+                        "timeout_sec": 5.0
+                    },
+                    "error": null,
+                    "recovered": true,
+                    "original_error": "Excel file not found: C:\\Users\\Jared\\Downloads\\paid_through_3_3_sheet.xlsx",
+                    "recovery_strategy": "wait_for_page_load"
+                }
+            ]
+        }
+    ],
+    "learning_patterns": [
+        {
+            "pattern_type": "\"client_navigation\"",
+            "context": "\"when agents are managing client lists with filters and pagination\"",
+            "solution": "\"navigate to the client list URL with appropriate query parameters to filter and paginate results\"",
+            "success_count": 1,
+            "learned_at": 1771009322.4607139,
+            "last_used": 1771009322.4607139
+        },
+        {
+            "pattern_type": "\"cookie_preference_management\"",
+            "context": "\"when users want to manage their cookie preferences on a website\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771259945.3670754,
+            "last_used": 1771259945.3670754
+        },
+        {
+            "pattern_type": "\"cookie_consent_management\"",
+            "context": "\"when users need to manage their cookie preferences on a webpage\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 3,
+            "learned_at": 1771259946.1776483,
+            "last_used": 1771260001.569956
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie settings for privacy and personalization on a webpage\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771259949.5502427,
+            "last_used": 1771259949.5502427
+        },
+        {
+            "pattern_type": "\"cookie_preference_management\"",
+            "context": "\"when users need to manage their cookie preferences on a website\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771259956.9288127,
+            "last_used": 1771259956.9288127
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie settings for privacy and personalization on a website\"",
+            "solution": "\"click_cookie_preferences_button_to_access_settings\"",
+            "success_count": 3,
+            "learned_at": 1771259959.5021718,
+            "last_used": 1771259978.6839223
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie consent settings on a website\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771259961.535983,
+            "last_used": 1771259961.535983
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie settings for personalized experiences\"",
+            "solution": "\"click_cookie_preferences_button_to_access_settings\"",
+            "success_count": 1,
+            "learned_at": 1771259968.2327135,
+            "last_used": 1771259968.2327135
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie consent settings on a webpage\"",
+            "solution": "\"click_on_cookie_preferences_button_to_access_settings\"",
+            "success_count": 1,
+            "learned_at": 1771259976.3256476,
+            "last_used": 1771259976.3256476
+        },
+        {
+            "pattern_type": "\"cookie_consent_management\"",
+            "context": "\"when users need to manage their cookie preferences on a website\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 3,
+            "learned_at": 1771259982.7369938,
+            "last_used": 1771260015.8830118
+        },
+        {
+            "pattern_type": "\"cookie_consent_management\"",
+            "context": "\"when users need to manage their cookie preferences on websites\"",
+            "solution": "\"click on the 'Cookie Preferences' button to access and adjust cookie settings\"",
+            "success_count": 1,
+            "learned_at": 1771259987.6081314,
+            "last_used": 1771259987.6081314
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie consent settings on a webpage\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771259990.729813,
+            "last_used": 1771259990.729813
+        },
+        {
+            "pattern_type": "\"cookie_preference_management\"",
+            "context": "\"when users need to manage their cookie settings on a website\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 2,
+            "learned_at": 1771259993.5785496,
+            "last_used": 1771260060.191277
+        },
+        {
+            "pattern_type": "\"cookie_consent_management\"",
+            "context": "\"when users need to manage their cookie preferences on websites\"",
+            "solution": "\"click on the Cookie Preferences button to access and adjust cookie settings\"",
+            "success_count": 1,
+            "learned_at": 1771259997.8609126,
+            "last_used": 1771259997.8609126
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie settings on a website\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771260011.6200538,
+            "last_used": 1771260011.6200538
+        },
+        {
+            "pattern_type": "pagination_navigation",
+            "context": "when navigating multi-page lists with bottom pagination",
+            "solution": "scroll_to_bottom_then_click_next_page_number",
+            "success_count": 2,
+            "learned_at": 1771260022.7104554,
+            "last_used": 1771260047.3194358
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie settings for personalized experiences on a website\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771260025.4523327,
+            "last_used": 1771260025.4523327
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie preferences on a website\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771260028.4023225,
+            "last_used": 1771260028.4023225
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie settings on a webpage\"",
+            "solution": "\"click on the 'Cookie Preferences' button to access and adjust cookie settings\"",
+            "success_count": 1,
+            "learned_at": 1771260042.0370219,
+            "last_used": 1771260042.0370219
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie settings for privacy and personalization\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771260044.9370468,
+            "last_used": 1771260044.9370468
+        },
+        {
+            "pattern_type": "\"cookie_management\"",
+            "context": "\"when users need to adjust their cookie preferences on a website\"",
+            "solution": "\"click_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771260049.4354959,
+            "last_used": 1771260049.4354959
+        },
+        {
+            "pattern_type": "\"cookie_management\"",
+            "context": "\"when users need to adjust their cookie preferences on a webpage\"",
+            "solution": "\"click_on_cookie_preferences_button\"",
+            "success_count": 1,
+            "learned_at": 1771260053.6120265,
+            "last_used": 1771260053.6120265
+        },
+        {
+            "pattern_type": "\"cookie_preferences_management\"",
+            "context": "\"when users need to manage their cookie settings on a website\"",
+            "solution": "\"click_on_cookie_preferences_button_to_adjust_settings\"",
+            "success_count": 1,
+            "learned_at": 1771260063.4224691,
+            "last_used": 1771260063.4224691
+        },
+        {
+            "pattern_type": "paginated_url_navigation",
+            "context": "navigating between pages using URL parameters",
+            "solution": "modify_url_page_parameter",
+            "success_count": 4,
+            "learned_at": 1771260068.565892,
+            "last_used": 1771260392.638378
+        },
+        {
+            "pattern_type": "pagination_navigation",
+            "context": "navigating paginated list with unknown pagination on https://www.healthsherpa.com/agents/rebecca-mccullough/clients?_agent_id=rebecca-mccullough&ffm_applications[agent_archived]=not_archived&ffm_applications[search]=true&term=&renewal=all&desc[]=created_at&agent_id=rebecca-mccullough&page=1&per_page=50&exchange=onEx&include_shared_applications=false&include_all_applications=false",
+            "solution": "identify_pagination_at_unknown_and_click_target_page",
+            "success_count": 3,
+            "learned_at": 1771260320.8947752,
+            "last_used": 1771260323.2386177
+        },
+        {
+            "pattern_type": "button_interaction",
+            "context": "clicking 'Cookie Preferences' button on page",
+            "solution": "locate_and_click_button_with_text",
+            "success_count": 18,
+            "learned_at": 1771260327.6522825,
+            "last_used": 1771260364.6558435
+        },
+        {
+            "pattern_type": "pagination_navigation",
+            "context": "navigating paginated list with unknown pagination on https://www.healthsherpa.com/agents/rebecca-mccullough/clients?_agent_id=rebecca-mccullough&ffm_applications[agent_archived]=not_archived&ffm_applications[plan_year][]=2026&ffm_applications[search]=true&term=&renewal=all&desc[]=created_at&agent_id=rebecca-mccullough&page=2&per_page=50&exchange=onEx&include_shared_applications=false&include_all_applications=false",
+            "solution": "identify_pagination_at_unknown_and_click_target_page",
+            "success_count": 5,
+            "learned_at": 1771260370.4220693,
+            "last_used": 1771260388.561712
+        },
+        {
+            "pattern_type": "pagination_navigation",
+            "context": "navigating paginated list with unknown pagination on https://www.healthsherpa.com/agents/rebecca-mccullough/clients?_agent_id=rebecca-mccullough&ffm_applications[agent_archived]=not_archived&ffm_applications[plan_year][]=2026&ffm_applications[search]=true&term=&renewal=all&desc[]=created_at&agent_id=rebecca-mccullough&page=3&per_page=50&exchange=onEx&include_shared_applications=false&include_all_applications=false",
+            "solution": "identify_pagination_at_unknown_and_click_target_page",
+            "success_count": 5,
+            "learned_at": 1771260395.1842024,
+            "last_used": 1771260415.6064787
+        },
+        {
+            "pattern_type": "pagination_navigation",
+            "context": "Material-UI pagination buttons at bottom of page",
+            "solution": "scroll_to_bottom_and_use_mui_button_selectors",
+            "success_count": 791,
+            "learned_at": 1771260416.7241633,
+            "last_used": 1774332302.4856427,
+            "source_procedure": "Smart Sherpa Sync",
+            "pattern_group": "navigation"
+        },
+        {
+            "pattern_type": "form_filling",
+            "context": "when users need to input sensitive information such as Social Security Numbers in forms",
+            "solution": "prompt users to enter their SSN in the designated input field with proper formatting and validation.",
+            "success_count": 1,
+            "learned_at": 1771471824.794335,
+            "last_used": 1771471824.794335
+        },
+        {
+            "pattern_type": "form_filling",
+            "context": "when entering personal information in forms on websites",
+            "solution": "fill_in_date_of_birth_field_with_format_MM/DD/YYYY",
+            "success_count": 1,
+            "learned_at": 1772040956.0485146,
+            "last_used": 1772040956.0485146
+        },
+        {
+            "pattern_type": "form_filling",
+            "context": "when users need to select or input specific data in a form, particularly in fields with autocomplete functionality",
+            "solution": "provide a dropdown list of suggestions based on user input to facilitate quicker selection",
+            "success_count": 1,
+            "learned_at": 1772040959.9630764,
+            "last_used": 1772040959.9630764
+        },
+        {
+            "pattern_type": "form_filling",
+            "context": "when users need to select an option from a dropdown or autocomplete field in a form",
+            "solution": "click_on_autocomplete_field_then_select_option",
+            "success_count": 1,
+            "learned_at": 1772040961.8217273,
+            "last_used": 1772040961.8217273
+        },
+        {
+            "pattern_type": "form_filling",
+            "context": "when users need to provide consent or permissions through checkboxes in forms",
+            "solution": "check_checkbox(name='permissionAttestation')",
+            "success_count": 1,
+            "learned_at": 1772040964.6019535,
+            "last_used": 1772040964.6019535
+        },
+        {
+            "pattern_type": "gridcell_selection",
+            "context": "when selecting specific items from a grid or table layout on a webpage",
+            "solution": "click_on_gridcell_with_text(\"Plan Year 2026 ID: 7228609345 Last Modified: 2/25/2026\")",
+            "success_count": 1,
+            "learned_at": 1772040967.924301,
+            "last_used": 1772040967.924301
+        },
+        {
+            "pattern_type": "pagination_navigation",
+            "context": "navigating paginated list with unknown pagination on https://www.healthsherpa.com/agents/jared-chapdelaine-mccullough/clients?_agent_id=jared-chapdelaine-mccullough&ffm_applications[agent_archived]=not_archived&ffm_applications[search]=true&term=&renewal=all&desc[]=created_at&agent_id=jared-chapdelaine-mccullough&page=1&per_page=10&exchange=onEx&include_shared_applications=false&include_all_applications=false",
+            "solution": "identify_pagination_at_unknown_and_click_target_page",
+            "success_count": 1,
+            "learned_at": 1772040977.483992,
+            "last_used": 1772040977.483992
+        },
+        {
+            "pattern_type": "healthsherpa_id_button_assist",
+            "context": "healthsherpa expected id visible but action button not auto-bound",
+            "solution": "{\"button_text\": \"view in dash\", \"button_class\": \"muibuttonbase-root muibutton-root muibutton-contained muibutton-containedprimary muibutton-sizesmall muibutton-contained\"}",
+            "success_count": 1,
+            "learned_at": 1772040997.0943165,
+            "last_used": 1772040997.0943165
+        },
+        {
+            "pattern_type": "healthsherpa_id_button_assist",
+            "context": "healthsherpa expected id visible but action button not auto-bound",
+            "solution": "{\"button_class\": \"muibuttonbase-root muibutton-root muibutton-contained muibutton-containedprimary muibutton-sizesmall muibutton-contained\", \"button_tag\": \"button\", \"button_role\": \"\", \"click_x\": 1332, \"click_y\": 473}",
+            "success_count": 3,
+            "learned_at": 1772043623.8926551,
+            "last_used": 1772768105.830442
+        },
+        {
+            "pattern_type": "healthsherpa_ssn_panel_assist",
+            "context": "healthsherpa search by ssn panel not visible; use learned click to open structured search fields",
+            "solution": "{\"button_text\": \"or search by ssn\", \"button_class\": \"muitypography-root muitypography-inherit muilink-root muilink-underlinealways css-12cw6hi\", \"button_tag\": \"a\", \"button_role\": \"\", \"click_x\": 494, \"click_y\": 739}",
+            "success_count": 1,
+            "learned_at": 1772117529.6522024,
+            "last_used": 1772768110.2245271
+        },
+        {
+            "pattern_type": "pagination_navigation",
+            "context": "pagination buttons with aria-label at bottom of page",
+            "solution": "scroll_to_bottom_and_use_button_selectors",
+            "success_count": 2,
+            "learned_at": 1772554336.0653703,
+            "last_used": 1772554613.2525606,
+            "source_procedure": "Smart Sherpa Sync",
+            "pattern_group": "navigation"
+        },
+        {
+            "pattern_type": "pagination_navigation",
+            "context": "next-arrow-only pagination",
+            "solution": "use_single_next_pagination_control",
+            "success_count": 13,
+            "learned_at": 1773753284.5302446,
+            "last_used": 1773754685.8114057,
+            "source_procedure": "Smart Sherpa Sync",
+            "pattern_group": "navigation"
+        },
+        {
+            "pattern_type": "pagination_navigation",
+            "context": "high-page pagination where direct page number is collapsed",
+            "solution": "use_next_pagination_control_when_target_number_missing",
+            "success_count": 1106,
+            "learned_at": 1773755708.2073376,
+            "last_used": 1774332183.0455434,
+            "source_procedure": "Smart Sherpa Sync",
+            "pattern_group": "navigation"
         }
     ]
 }

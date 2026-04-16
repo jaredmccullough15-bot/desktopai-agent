@@ -1,0 +1,27 @@
+2026-04-06 16:08:07 [INFO] Starting Bill Worker...
+2026-04-06 16:08:07 [INFO] App root: C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker
+2026-04-06 16:08:07 [INFO] Startup log: C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\logs\startup_20260406_160807.log
+2026-04-06 16:08:07 [INFO] Migrated legacy config to C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\config.json
+2026-04-06 16:08:07 [ERROR] Startup failure: ValueError("config.json validation failed: 'worker_name' must be non-empty")
+Traceback (most recent call last):
+  File "C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\main.py", line 1737, in <module>
+    main()
+    ~~~~^^
+  File "C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\main.py", line 1574, in main
+    runtime_settings = apply_runtime_config()
+  File "C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\main.py", line 320, in apply_runtime_config
+    config = load_worker_config()
+  File "C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\main.py", line 296, in load_worker_config
+    raise ValueError("config.json validation failed: 'worker_name' must be non-empty")
+ValueError: config.json validation failed: 'worker_name' must be non-empty
+Traceback (most recent call last):
+  File "C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\main.py", line 1737, in <module>
+    main()
+    ~~~~^^
+  File "C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\main.py", line 1574, in main
+    runtime_settings = apply_runtime_config()
+  File "C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\main.py", line 320, in apply_runtime_config
+    config = load_worker_config()
+  File "C:\Ai Agent\desktop-ai-agent\jarvis-platform\workers\bill-worker\main.py", line 296, in load_worker_config
+    raise ValueError("config.json validation failed: 'worker_name' must be non-empty")
+ValueError: config.json validation failed: 'worker_name' must be non-empty

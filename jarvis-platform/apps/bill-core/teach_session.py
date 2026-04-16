@@ -323,7 +323,7 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
                     n = step_num[0]
                 name  = step.get("step_name", "?")
                 action = step.get("action", "?")
-                print(f"  [{n:>3}] {action:<22} {name}")
+                print(f"  [{n:>3}] {action:<22} -> {name}")
             post_queue.task_done()
 
     worker = threading.Thread(target=_post_worker, daemon=True)

@@ -1,0 +1,60 @@
+[
+  {
+    "draft_id": "7cfd3685-3042-4b78-bf02-1a57345109ec",
+    "created_at": "2026-04-16T17:11:52.770462",
+    "updated_at": "2026-04-16T17:12:21.990059",
+    "learning_path": "demonstration",
+    "workflow_name": "sherpa_takeover",
+    "goal": "bring sherpa app to edit screen",
+    "description": "Awaiting observed demonstration capture.",
+    "required_inputs": [],
+    "required_session_state": [
+      "authenticated_session"
+    ],
+    "safe_for_unattended": false,
+    "steps": [
+      {
+        "step_order": 1,
+        "name": "step_1",
+        "step_name": "Navigate \u2192 /queue",
+        "intent": "Navigate to the required page.",
+        "description": "Navigate \u2192 /queue",
+        "purpose": "Navigate to the required page.",
+        "instruction": "Navigate \u2192 /queue",
+        "action": "open_url",
+        "selector": "",
+        "url": "https://mihq-ss--jaredmccullough.replit.app/queue",
+        "value": "",
+        "option": "",
+        "manual_review_required": false,
+        "variable_inputs": [],
+        "field_mappings": [],
+        "validation_rules": [],
+        "success_condition": "The expected page or element state is reached after this step.",
+        "failure_condition": "The page fails to load or loads an unexpected URL.",
+        "recovery_strategy": "Retry once; if still failing, pause and require human review.",
+        "failure_behavior": "Retry once; if still failing, pause and require human review."
+      }
+    ],
+    "variables": [],
+    "teaching_complete": false,
+    "teaching_pending_step": 1,
+    "validation_rules": [
+      "Confirm each step has executable action",
+      "Validate selectors and required values before publish",
+      "Run guided test before approval"
+    ],
+    "fallback_strategies": [
+      "Retry once with explicit selector",
+      "Pause for human verification when manual review is needed"
+    ],
+    "common_failures": [
+      "selector_not_found",
+      "session_not_authenticated",
+      "timeout"
+    ],
+    "review_status": "draft",
+    "reviewer_notes": null,
+    "published_workflow_name": null
+  }
+]

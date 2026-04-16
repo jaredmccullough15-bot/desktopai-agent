@@ -1,0 +1,72 @@
+('C:\\Ai '
+ 'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\build\\BillWorker\\BillWorker.pkg',
+ {'BINARY': True,
+  'DATA': True,
+  'EXECUTABLE': True,
+  'EXTENSION': True,
+  'PYMODULE': True,
+  'PYSOURCE': True,
+  'PYZ': False,
+  'SPLASH': True,
+  'SYMLINK': False},
+ [('pyi-contents-directory _internal', '', 'OPTION'),
+  ('PYZ-00.pyz',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\build\\BillWorker\\PYZ-00.pyz',
+   'PYZ'),
+  ('struct',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\build\\BillWorker\\localpycs\\struct.pyc',
+   'PYMODULE'),
+  ('pyimod01_archive',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\build\\BillWorker\\localpycs\\pyimod01_archive.pyc',
+   'PYMODULE'),
+  ('pyimod02_importers',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\build\\BillWorker\\localpycs\\pyimod02_importers.pyc',
+   'PYMODULE'),
+  ('pyimod03_ctypes',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\build\\BillWorker\\localpycs\\pyimod03_ctypes.pyc',
+   'PYMODULE'),
+  ('pyimod04_pywin32',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\build\\BillWorker\\localpycs\\pyimod04_pywin32.pyc',
+   'PYMODULE'),
+  ('pyiboot01_bootstrap',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\.venv\\Lib\\site-packages\\PyInstaller\\loader\\pyiboot01_bootstrap.py',
+   'PYSOURCE'),
+  ('pyi_rth_inspect',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_inspect.py',
+   'PYSOURCE'),
+  ('pyi_rth_pkgutil',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pkgutil.py',
+   'PYSOURCE'),
+  ('pyi_rth_multiprocessing',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_multiprocessing.py',
+   'PYSOURCE'),
+  ('pyi_rth_setuptools',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_setuptools.py',
+   'PYSOURCE'),
+  ('pyi_rth__tkinter',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth__tkinter.py',
+   'PYSOURCE'),
+  ('main',
+   'C:\\Ai '
+   'Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\main.py',
+   'PYSOURCE')],
+ 'python314.dll',
+ True,
+ False,
+ False,
+ [],
+ None,
+ None,
+ None)

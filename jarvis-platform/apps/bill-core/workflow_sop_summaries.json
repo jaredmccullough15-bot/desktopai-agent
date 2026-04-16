@@ -1,0 +1,119 @@
+[
+  {
+    "workflow_name": "smart_sherpa_sync",
+    "purpose": "Process HealthSherpa client list and wait for sync completion.",
+    "prerequisites": [
+      "Authenticated session must be active before run"
+    ],
+    "normal_flow": [
+      "Select preferred online worker",
+      "Run workflow with memory-aware parameters",
+      "Monitor logs and completion status"
+    ],
+    "common_failures": [
+      "timeout: 2 occurrences",
+      "selector_issue: 1 occurrences"
+    ],
+    "recommended_fixes": [
+      "Increase timeout or reduce page workload, then retry on an idle worker. (seen 2 times)",
+      "Validate selectors against current UI structure before retrying. (seen 1 times)",
+      "Use this run configuration as a baseline and monitor for regressions. (seen 1 times)"
+    ],
+    "best_worker_patterns": [
+      "SBHMIHQ16: success_rate=100.0% total=1 recent_failures=0",
+      "BillWorker-PC: success_rate=0.0% total=1 recent_failures=1",
+      "SBHMIHQ19: success_rate=0.0% total=1 recent_failures=1",
+      "SBHMIHQ18: success_rate=0.0% total=1 recent_failures=1"
+    ],
+    "updated_at": "2026-04-07T13:10:31.866950"
+  },
+  {
+    "workflow_name": "ambetter_export",
+    "purpose": "Operational execution of ambetter_export",
+    "prerequisites": [],
+    "normal_flow": [
+      "Select preferred online worker",
+      "Run workflow with memory-aware parameters",
+      "Monitor logs and completion status"
+    ],
+    "common_failures": [
+      "pagination_issue: 1 occurrences"
+    ],
+    "recommended_fixes": [
+      "Use this run configuration as a baseline and monitor for regressions. (seen 4 times)",
+      "Close any open dialogs on the worker screen and retry. (seen 1 times)"
+    ],
+    "best_worker_patterns": [
+      "SBHMIHQ16: success_rate=100.0% total=4 recent_failures=0",
+      "BillWorker-PC: success_rate=0.0% total=1 recent_failures=1"
+    ],
+    "updated_at": "2026-04-07T13:19:53.755410"
+  },
+  {
+    "workflow_name": "priority_health_search",
+    "purpose": "Operational execution of priority_health_search",
+    "prerequisites": [],
+    "normal_flow": [
+      "Select preferred online worker",
+      "Run workflow with memory-aware parameters",
+      "Monitor logs and completion status"
+    ],
+    "common_failures": [],
+    "recommended_fixes": [
+      "Use this run configuration as a baseline and monitor for regressions. (seen 1 times)"
+    ],
+    "best_worker_patterns": [
+      "SBHMIHQ16: success_rate=100.0% total=1 recent_failures=0"
+    ],
+    "updated_at": "2026-04-07T13:19:58.215006"
+  },
+  {
+    "workflow_name": "browser_workflow",
+    "purpose": "Operational execution of browser_workflow",
+    "prerequisites": [],
+    "normal_flow": [
+      "Select preferred online worker",
+      "Run workflow with memory-aware parameters",
+      "Monitor logs and completion status"
+    ],
+    "common_failures": [
+      "timeout: 4 occurrences",
+      "selector_issue: 3 occurrences"
+    ],
+    "recommended_fixes": [
+      "Increase timeout or reduce page workload, then retry on an idle worker. (seen 4 times)",
+      "Validate selectors against current UI structure before retrying. (seen 3 times)",
+      "Use this run configuration as a baseline and monitor for regressions. (seen 1 times)"
+    ],
+    "best_worker_patterns": [
+      "SBHMIHQ19: success_rate=12.5% total=8 recent_failures=7"
+    ],
+    "updated_at": "2026-04-08T18:08:19.130457"
+  },
+  {
+    "workflow_name": "marketplace_workflow",
+    "purpose": "Open Marketplace and capture a screenshot for readiness verification.",
+    "prerequisites": [],
+    "normal_flow": [
+      "Select preferred online worker",
+      "Run workflow with memory-aware parameters",
+      "Monitor logs and completion status"
+    ],
+    "common_failures": [
+      "timeout: 9 occurrences",
+      "unknown: 8 occurrences"
+    ],
+    "recommended_fixes": [
+      "Automated recovery was exhausted. A human operator must review and intervene. (seen 9 times)",
+      "Inspect worker logs for stack trace details and retry with tighter scope. (seen 8 times)",
+      "Use this run configuration as a baseline and monitor for regressions. (seen 8 times)"
+    ],
+    "best_worker_patterns": [
+      "test-worker: success_rate=0.0% total=1 recent_failures=1",
+      "SBHMIHQ16: success_rate=50.0% total=16 recent_failures=8",
+      "test-w: success_rate=0.0% total=3 recent_failures=3",
+      "test-timeout-worker: success_rate=0.0% total=5 recent_failures=5"
+    ],
+    "updated_at": "2026-04-15T16:09:29.800491"
+  }
+]
