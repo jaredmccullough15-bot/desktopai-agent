@@ -2458,6 +2458,22 @@ export default function Home() {
               </div>
 
               <label className="mt-3 block text-xs text-slate-400">
+                Worker (which computer opens the browser)
+                <select
+                  value={teachingTargetWorkerUuid}
+                  onChange={(e) => setTeachingTargetWorkerUuid(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
+                >
+                  <option value="">— Opens browser on this computer —</option>
+                  {machines.filter((m) => m.online).map((m) => (
+                    <option key={m.machine_uuid} value={m.machine_uuid}>
+                      {m.machine_name} {m.status === "busy" ? "(busy)" : "(idle)"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="mt-3 block text-xs text-slate-400">
                 Goal
                 <input
                   type="text"
