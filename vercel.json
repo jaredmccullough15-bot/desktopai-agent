@@ -1,0 +1,6 @@
+{
+  "framework": "nextjs",
+  "installCommand": "cd jarvis-platform/apps/bill-web && npm install",
+  "buildCommand": "cd jarvis-platform/apps/bill-web && npm run build",
+  "outputDirectory": "jarvis-platform/apps/bill-web/.next"
+}
