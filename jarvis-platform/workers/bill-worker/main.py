@@ -1078,6 +1078,45 @@ def send_heartbeat(machine_name: str, machine_uuid: str, runtime_state: RuntimeS
         _log_http_failure("heartbeat", heartbeat_url, error)
 
 
+def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, Any]:
+    """Run teach_session.py on this worker machine so the Playwright browser
+    opens locally (on the employee's computer, not the bill-core server)."""
+    import subprocess
+    import sys as _sys
+
+    draft_id = str(payload.get("draft_id") or "")
+    api_base = str(payload.get("api_base") or API_BASE).strip().rstrip("/")
+    start_url = str(payload.get("start_url") or "").strip()
+
+    # Locate teach_session.py — bundled alongside this main.py
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teach_session.py")
+    if not os.path.isfile(script_path):
+        return {"status": "error", "error": f"teach_session.py not found at {script_path}"}
+
+    cmd = [_sys.executable, script_path, "--draft-id", draft_id, "--api-base", api_base]
+    if start_url:
+        cmd.extend(["--start-url", start_url])
+
+    update_step("launching teach session browser")
+    print(f"[worker] launching teach session: draft_id={draft_id} api_base={api_base}")
+
+    launch_env = dict(os.environ)
+    launch_env["PYTHONIOENCODING"] = "utf-8"
+    launch_env["PYTHONUTF8"] = "1"
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=os.path.dirname(script_path),
+            env=launch_env,
+        )
+        # Wait for the session to finish (browser closed by the trainer)
+        proc.wait()
+        return {"status": "completed", "draft_id": draft_id, "return_code": proc.returncode}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
 def poll_next_task(machine_uuid: str, state: dict[str, Any], runtime_state: RuntimeState) -> None:
     poll_url = f"{API_BASE}/worker/tasks/next"
     try:
@@ -1323,6 +1362,8 @@ def process_task(machine_uuid: str, task: dict, state: dict[str, Any], runtime_s
                         progress_callback=update_step,
                         default_mode=execution_mode,
                     )
+                elif task_type == "teach_session":
+                    result_json = _run_teach_session(payload, update_step)
                 else:
                     print(f"[worker] unsupported or test task type '{task_type}', marking complete")
                     result_json = {"task_type": task_type or "unknown", "status": "completed_noop"}

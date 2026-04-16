@@ -390,6 +390,7 @@ export default function Home() {
   const [teachingCurrentQuestion, setTeachingCurrentQuestion] = useState<TeachingSessionQuestion | null>(null);
   const [teachingAnswers, setTeachingAnswers] = useState<Record<string, string>>({});
   const [teachingStartUrl, setTeachingStartUrl] = useState<string>("");
+  const [teachingTargetWorkerUuid, setTeachingTargetWorkerUuid] = useState<string>("");
   const [teachingLaunchStatus, setTeachingLaunchStatus] = useState<null | "launching" | "running" | "error">(null);
   const [teachingLaunchPid, setTeachingLaunchPid] = useState<number | null>(null);
   const prevTeachingStepCountRef = useRef<number>(0);
@@ -1788,7 +1789,7 @@ export default function Home() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ start_url: teachingStartUrl.trim(), api_base: apiBase }),
+          body: JSON.stringify({ start_url: teachingStartUrl.trim(), api_base: apiBase, target_machine_uuid: teachingTargetWorkerUuid.trim() }),
         },
       );
       const data = (await res.json()) as { pid?: number; status?: string; detail?: string };
@@ -3253,6 +3254,21 @@ export default function Home() {
                     </span>
                   )}
                 </div>
+                {/* Worker selector */}
+                <select
+                  value={teachingTargetWorkerUuid}
+                  onChange={(e) => setTeachingTargetWorkerUuid(e.target.value)}
+                  className="mb-2 w-full rounded-lg border border-slate-700 bg-slate-900/80 px-2.5 py-1.5 text-xs text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-1 focus:ring-cyan-500/30"
+                >
+                  <option value="">— Select worker (opens browser here) —</option>
+                  {machines
+                    .filter((m) => m.online)
+                    .map((m) => (
+                      <option key={m.machine_uuid} value={m.machine_uuid}>
+                        {m.machine_name} {m.status === "busy" ? "(busy)" : "(idle)"}
+                      </option>
+                    ))}
+                </select>
                 <input
                   type="text"
                   value={teachingStartUrl}
@@ -3263,13 +3279,13 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => void launchTeachBrowser()}
-                  disabled={teachingLaunchStatus === "launching"}
+                  disabled={teachingLaunchStatus === "launching" || !teachingTargetWorkerUuid}
                   className="mt-2 w-full rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {teachingLaunchStatus === "launching" ? "Launching\u2026" : "Launch Observation Browser"}
                 </button>
                 <p className="mt-1.5 text-[10px] text-slate-500">
-                  Opens a Playwright browser that records clicks, text, and navigation as draft steps.
+                  Select the worker whose computer will open the browser. Steps are captured and sent back to this draft.
                 </p>
               </div>
 

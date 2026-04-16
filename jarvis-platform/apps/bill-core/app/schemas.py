@@ -447,6 +447,7 @@ class TeachSessionStartRequest(BaseModel):
     """Request body to launch a Playwright teach session from the dashboard."""
     start_url: str = ""
     api_base: str = ""
+    target_machine_uuid: str = ""  # When set, queues task to that worker instead of spawning locally
 
 
 class TaskCompleteRequest(BaseModel):

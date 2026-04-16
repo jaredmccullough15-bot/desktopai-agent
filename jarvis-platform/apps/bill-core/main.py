@@ -3762,18 +3762,57 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
 
 @app.post("/api/brain/workflow-learning/drafts/{draft_id}/teach-session/start")
 def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dict[str, Any]:
-    """Launch a Playwright observation browser attached to this draft."""
+    """Launch a Playwright observation browser attached to this draft.
+
+    If target_machine_uuid is provided, the session is queued as a task and
+    the worker on that machine will open the browser locally (correct behaviour
+    when teaching from the web UI on a different computer).
+
+    If no target_machine_uuid is given the legacy behaviour is preserved:
+    spawn teach_session.py as a subprocess on this server (useful for local dev).
+    """
     idx, draft = _find_workflow_draft(draft_id)
     if draft is None or idx is None:
         raise HTTPException(status_code=404, detail="Workflow draft not found")
 
+    api_base = str(payload.api_base or "http://127.0.0.1:8010").strip().rstrip("/")
+    target_machine_uuid = str(payload.target_machine_uuid or "").strip()
+
+    if payload.start_url.strip():
+        start_url = payload.start_url.strip()
+        if not start_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="start_url must begin with http:// or https://")
+    else:
+        start_url = ""
+
+    # ── Route to worker machine ──────────────────────────────────────────────
+    if target_machine_uuid:
+        with _workers_lock:
+            if target_machine_uuid not in registered_workers:
+                raise HTTPException(status_code=400, detail=f"Worker {target_machine_uuid} is not registered")
+
+        task_payload: dict[str, Any] = {
+            "task_type": "teach_session",
+            "draft_id": draft_id,
+            "api_base": api_base,
+            "start_url": start_url,
+            "target_machine_uuid": target_machine_uuid,
+        }
+        result = _create_task_record(task_payload)
+        _record_operational_memory(
+            "teach_session_queued",
+            f"Teach session task queued for draft {draft_id} on worker {target_machine_uuid}",
+            details={"draft_id": draft_id, "task_id": result.id, "machine_uuid": target_machine_uuid},
+            tags=["workflow_learning", "teach_session"],
+        )
+        return {"status": "queued", "task_id": result.id, "draft_id": draft_id, "target_machine_uuid": target_machine_uuid}
+
+    # ── Legacy: spawn locally on the server ─────────────────────────────────
     script_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "teach_session.py"
     )
     if not os.path.isfile(script_path):
         raise HTTPException(status_code=500, detail="teach_session.py not found on server")
-
-    api_base = str(payload.api_base or "http://127.0.0.1:8010").strip().rstrip("/")
 
     missing_modules: list[str] = []
     if importlib.util.find_spec("requests") is None:
@@ -3792,11 +3831,7 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
         )
 
     cmd = [sys.executable, script_path, "--draft-id", draft_id, "--api-base", api_base]
-
-    if payload.start_url.strip():
-        start_url = payload.start_url.strip()
-        if not start_url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="start_url must begin with http:// or https://")
+    if start_url:
         cmd.extend(["--start-url", start_url])
 
     try:
@@ -3813,7 +3848,6 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
 
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
-            # Keep web-launch clean; write process output to log file instead.
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
         proc = subprocess.Popen(
             cmd,
