@@ -13,9 +13,9 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from app.error_explainer import (
     classify_error,
@@ -293,12 +293,9 @@ def _build_worker_update_instruction(current_version: str, machine_uuid: str) ->
         latest_version = active_release.get("version", "").strip()
         package_url_base = (os.getenv("BILL_WORKER_PACKAGE_PUBLIC_URL") or "").strip().rstrip("/")
         if not package_url_base:
-            # auto-derive package URL from the release record
-            package_url_base = ""
-        package_url = f"{package_url_base}/{active_release.get('id', '')}" if package_url_base else ""
-        # fall back if we cannot build a URL — use the old env-var endpoint
-        if not package_url:
-            package_url = "/worker/update/package"
+            # auto-derive from the API's own public URL
+            package_url_base = (os.getenv("BILL_CORE_PUBLIC_URL") or "https://api.bill-core.com").strip().rstrip("/")
+        package_url = f"{package_url_base}/worker/update/package/{active_release.get('id', '')}"
         package_sha256 = active_release.get("package_sha256") or None
         channel = active_release.get("channel", "optional")
 
@@ -340,6 +337,9 @@ def _build_worker_update_instruction(current_version: str, machine_uuid: str) ->
         machine_uuid, current_version, latest_version, update_available, force_update,
     )
 
+    public_url = (os.getenv("BILL_CORE_PUBLIC_URL") or "https://api.bill-core.com").strip().rstrip("/")
+    updater_script_url = f"{public_url}/worker/updater-script"
+
     return WorkerUpdateInstruction(
         update_available=update_available,
         force_update=force_update,
@@ -347,8 +347,178 @@ def _build_worker_update_instruction(current_version: str, machine_uuid: str) ->
         latest_version=latest_version,
         package_url=package_url,
         package_sha256=package_sha256,
+        updater_script_url=updater_script_url,
         message=("Forced update required" if force_update else ("Update available" if update_available else "Worker is up to date")),
     )
+
+
+@app.get("/worker/updater-script")
+def download_worker_updater_script() -> PlainTextResponse:
+    """Serve the canonical Windows PS1 updater script so workers always use the latest logic."""
+    script = r"""param(
+  [Parameter(Mandatory=$true)][string]$PackagePath,
+  [Parameter(Mandatory=$true)][string]$InstallDir,
+  [Parameter(Mandatory=$true)][string]$ExePath,
+  [Parameter(Mandatory=$true)][int]$WorkerPid
+)
+$ErrorActionPreference = 'Stop'
+$logPath = Join-Path ([IO.Path]::GetDirectoryName($PackagePath)) 'last_update.log'
+function Write-UpdateLog([string]$Message) {
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Add-Content -Path $logPath -Value "[$timestamp] $Message" -ErrorAction SilentlyContinue
+}
+function Invoke-RobocopySafe([string]$Source, [string]$Destination, [string[]]$ExtraArgs, [int]$FailThreshold = 8) {
+    $roboArgs = @(
+        $Source,
+        $Destination,
+        '/E',
+        '/R:2',
+        '/W:1',
+        '/NFL',
+        '/NDL',
+        '/NP'
+    ) + $ExtraArgs
+    $robo = Start-Process -FilePath 'robocopy.exe' -ArgumentList $roboArgs -NoNewWindow -Wait -PassThru
+    $code = [int]($robo.ExitCode)
+    Write-UpdateLog "Robocopy [$Source -> $Destination] exit code: $code"
+    if ($code -ge $FailThreshold) {
+        throw "Robocopy failed with exit code $code"
+    }
+}
+Write-UpdateLog "Updater started. pid=$WorkerPid package=$PackagePath install=$InstallDir exe=$ExePath"
+
+$extractRoot = $null
+$backupRoot = $null
+
+for ($i = 0; $i -lt 120; $i++) {
+    $proc = Get-Process -Id $WorkerPid -ErrorAction SilentlyContinue
+    if (-not $proc) { break }
+    Start-Sleep -Milliseconds 500
+}
+
+$stillRunning = Get-Process -Id $WorkerPid -ErrorAction SilentlyContinue
+if ($stillRunning) {
+    Write-UpdateLog "Worker process still running after wait window. Continuing update copy anyway."
+} else {
+    Write-UpdateLog "Worker process has exited; proceeding with update copy."
+}
+
+try {
+    $extractRoot = Join-Path ([IO.Path]::GetDirectoryName($PackagePath)) ("bill_worker_update_" + [guid]::NewGuid().ToString("N"))
+    Expand-Archive -Path $PackagePath -DestinationPath $extractRoot -Force
+    $children = Get-ChildItem -LiteralPath $extractRoot -Force
+    $sourceRoot = $extractRoot
+    if ($children.Count -eq 1 -and $children[0].PSIsContainer) {
+      $sourceRoot = $children[0].FullName
+    }
+
+    $sourceExe = Join-Path $sourceRoot 'BillWorker.exe'
+    if (-not (Test-Path $sourceExe)) {
+        throw "Updated package does not contain BillWorker.exe at $sourceExe"
+    }
+    Write-UpdateLog "Extracted update package to: $sourceRoot"
+
+    $backupRoot = Join-Path ([IO.Path]::GetDirectoryName($PackagePath)) ("bill_worker_backup_" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+    Write-UpdateLog "Creating rollback backup at: $backupRoot"
+    # FailThreshold 16 = fatal errors only; locked Chrome/browser files in Desktop installs are tolerated
+    Invoke-RobocopySafe -Source $InstallDir -Destination $backupRoot -FailThreshold 16 -ExtraArgs @(
+        '/XF',
+        'config.json',
+        'worker-config.json',
+        'secrets.local.json',
+        '.worker_state.json',
+        '/XD',
+        'logs',
+        'screenshots',
+        'downloads',
+        'updates'
+    )
+
+    Write-UpdateLog "Applying update files from $sourceRoot to $InstallDir"
+    Invoke-RobocopySafe -Source $sourceRoot -Destination $InstallDir -ExtraArgs @(
+        '/XF',
+        'config.json',
+        'worker-config.json',
+        'secrets.local.json',
+        '.worker_state.json',
+        '/XD',
+        'logs',
+        'screenshots',
+        'downloads'
+    )
+
+    $destExe = Join-Path $InstallDir 'BillWorker.exe'
+    if (-not (Test-Path $destExe)) {
+        throw "BillWorker.exe missing after copy at $destExe"
+    }
+
+    Start-Sleep -Seconds 1
+
+    $newExePath = Join-Path $InstallDir 'BillWorker.exe'
+    $started = $false
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Start-Process -FilePath $newExePath -WorkingDirectory $InstallDir
+            Write-UpdateLog "Relaunch requested via BillWorker.exe at $newExePath (attempt $attempt)."
+            $started = $true
+            break
+        } catch {
+            Write-UpdateLog "Relaunch attempt $attempt failed: $($_.Exception.Message)"
+            Start-Sleep -Seconds 2
+        }
+    }
+
+    if (-not $started) {
+        Write-UpdateLog "WARNING: All relaunch attempts failed. Update files are in place; please restart BillWorker manually."
+    } else {
+        $up = $false
+        for ($i = 0; $i -lt 30; $i++) {
+            $running = Get-Process -Name 'BillWorker' -ErrorAction SilentlyContinue
+            if ($running) { $up = $true; break }
+            Start-Sleep -Seconds 1
+        }
+        if (-not $up) {
+            Write-UpdateLog "WARNING: BillWorker process not detected within 30s. Update files are in place; please restart BillWorker manually."
+        } else {
+            Write-UpdateLog "BillWorker process confirmed running after update."
+        }
+    }
+
+    Write-UpdateLog "Updater completed successfully."
+} catch {
+    Write-UpdateLog "Update failed: $($_.Exception.Message)"
+    if ($backupRoot -and (Test-Path $backupRoot) -and (-not (Test-Path (Join-Path $InstallDir 'BillWorker.exe')))) {
+        try {
+            Write-UpdateLog "Attempting rollback from backup: $backupRoot"
+            Invoke-RobocopySafe -Source $backupRoot -Destination $InstallDir -ExtraArgs @(
+                '/XF',
+                'config.json',
+                'worker-config.json',
+                'secrets.local.json',
+                '.worker_state.json',
+                '/XD',
+                'logs',
+                'screenshots',
+                'downloads',
+                'updates'
+            )
+            Write-UpdateLog "Rollback completed successfully."
+        } catch {
+            Write-UpdateLog "Rollback failed: $($_.Exception.Message)"
+        }
+    }
+    throw
+} finally {
+    if ($extractRoot -and (Test-Path $extractRoot)) {
+        try { Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    if ($backupRoot -and (Test-Path $backupRoot)) {
+        try { Remove-Item -LiteralPath $backupRoot -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+    }
+}
+"""
+    return PlainTextResponse(content=script, media_type="text/plain")
 
 
 @app.get("/worker/update/package")
@@ -559,8 +729,10 @@ def register_worker(payload: WorkerRegisterRequest) -> WorkerRegisterResponse:
         existing_worker = registered_workers.get(payload.machine_uuid)
         existing = existing_worker is not None
         token = str((existing_worker or {}).get("token") or uuid4())
+        # Preserve any manually-set name; only use worker-reported name on first registration
+        preserved_name = (existing_worker or {}).get("machine_name") or payload.machine_name
         registered_workers[payload.machine_uuid] = {
-            "machine_name": payload.machine_name,
+            "machine_name": preserved_name,
             "token": token,
             "last_seen": now_iso,
             "status": (existing_worker or {}).get("status") or "idle",
@@ -631,7 +803,9 @@ def worker_heartbeat(payload: WorkerHeartbeatRequest) -> dict[str, str]:
 
         old_status = worker.get("status")
         old_last_seen = worker.get("last_seen")
-        worker["machine_name"] = payload.machine_name
+        # Only update machine_name from heartbeat if no name has been set manually
+        if not worker.get("machine_name"):
+            worker["machine_name"] = payload.machine_name
         worker["status"] = payload.status
         worker["last_seen"] = datetime.utcnow().isoformat()
         worker["updated_at"] = datetime.utcnow().isoformat()
@@ -4696,6 +4870,31 @@ def list_machines() -> list[MachineRecord]:
 
     logger.info("number of workers returned to UI: %s", len(machines))
     return machines
+
+
+@app.patch("/api/machines/{machine_uuid}/name")
+def rename_machine(machine_uuid: str, payload: dict = Body(...)) -> dict:
+    new_name = (payload.get("machine_name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=422, detail="machine_name is required")
+    with _workers_lock:
+        if machine_uuid not in registered_workers:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        registered_workers[machine_uuid]["machine_name"] = new_name
+        _save_workers_store()
+    logger.info("machine %s renamed to %r", machine_uuid, new_name)
+    return {"machine_uuid": machine_uuid, "machine_name": new_name}
+
+
+@app.delete("/api/machines/{machine_uuid}")
+def delete_machine(machine_uuid: str) -> dict:
+    with _workers_lock:
+        if machine_uuid not in registered_workers:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        del registered_workers[machine_uuid]
+        _save_workers_store()
+    logger.info("machine %s removed from registry", machine_uuid)
+    return {"deleted": machine_uuid}
 
 
 @app.get("/worker/debug/list")

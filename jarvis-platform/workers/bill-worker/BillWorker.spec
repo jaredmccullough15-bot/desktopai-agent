@@ -9,7 +9,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['main.py'],
+    ['C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\main.py',
+     'C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker\\teach_session.py'],
     pathex=['C:\\Ai Agent\\desktop-ai-agent\\jarvis-platform\\workers\\bill-worker'],
     binaries=binaries,
     datas=datas,

@@ -19,6 +19,7 @@ class WorkerUpdateInstruction(BaseModel):
     latest_version: str | None = None
     package_url: str | None = None
     package_sha256: str | None = None
+    updater_script_url: str | None = None
     message: str | None = None
 
 

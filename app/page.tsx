@@ -394,6 +394,9 @@ export default function Home() {
   const [teachingLaunchStatus, setTeachingLaunchStatus] = useState<null | "launching" | "running" | "error">(null);
   const [teachingLaunchPid, setTeachingLaunchPid] = useState<number | null>(null);
   const prevTeachingStepCountRef = useRef<number>(0);
+  // Worker rename state
+  const [renamingMachineUuid, setRenamingMachineUuid] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState<string>("");
   const [chatHistory, setChatHistory] = useState<ChatEntry[]>([
     {
       role: "assistant",
@@ -1032,6 +1035,35 @@ export default function Home() {
       setFeedback(setReleasesFeedback, "error", err instanceof Error ? err.message : "Delete failed");
     } finally {
       setReleaseBusyKey(null);
+    }
+  };
+
+  const renameWorker = async (machineUuid: string, newName: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase || !newName.trim()) return;
+    try {
+      await fetch(`${apiBase}/api/machines/${machineUuid}/name`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ machine_name: newName.trim() }),
+      });
+      setMachines((prev) =>
+        prev.map((m) => (m.machine_uuid === machineUuid ? { ...m, machine_name: newName.trim() } : m))
+      );
+    } catch {
+      // silent — next poll will restore correct name
+    }
+    setRenamingMachineUuid(null);
+  };
+
+  const deleteWorker = async (machineUuid: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    try {
+      await fetch(`${apiBase}/api/machines/${machineUuid}`, { method: "DELETE" });
+      setMachines((prev) => prev.filter((m) => m.machine_uuid !== machineUuid));
+    } catch {
+      // silent
     }
   };
 
@@ -2844,8 +2876,59 @@ export default function Home() {
                         }
                       >
                         <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="text-sm font-medium">{machine.machine_name ?? machine.worker_name ?? "Unknown worker"}</p>
+                          <div className="min-w-0 flex-1">
+                            {renamingMachineUuid === machine.machine_uuid ? (
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  autoFocus
+                                  value={renameValue}
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") void renameWorker(machine.machine_uuid ?? "", renameValue);
+                                    if (e.key === "Escape") setRenamingMachineUuid(null);
+                                  }}
+                                  className="w-full rounded border border-cyan-500/50 bg-slate-800 px-2 py-1 text-sm text-slate-100 outline-none focus:ring-1 focus:ring-cyan-500/50"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => void renameWorker(machine.machine_uuid ?? "", renameValue)}
+                                  className="shrink-0 rounded bg-cyan-600 px-2 py-1 text-[11px] text-white hover:bg-cyan-500"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setRenamingMachineUuid(null)}
+                                  className="shrink-0 text-slate-500 hover:text-slate-300"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <p className="text-sm font-medium">{machine.machine_name ?? machine.worker_name ?? "Unknown worker"}</p>
+                                <button
+                                  type="button"
+                                  title="Rename worker"
+                                  onClick={() => { setRenamingMachineUuid(machine.machine_uuid ?? null); setRenameValue(machine.machine_name ?? ""); }}
+                                  className="text-slate-600 hover:text-slate-300 transition"
+                                >
+                                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 112.828 2.828L11.828 15.828a2 2 0 01-1.414.586H9v-2a2 2 0 01.586-1.414z" />
+                                  </svg>
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Remove worker"
+                                  onClick={() => { if (confirm(`Remove "${machine.machine_name ?? "this worker"}" from the list?`)) void deleteWorker(machine.machine_uuid ?? ""); }}
+                                  className="text-slate-600 hover:text-rose-400 transition"
+                                >
+                                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4h6v3M3 7h18" />
+                                  </svg>
+                                </button>
+                              </div>
+                            )}
                             <p className="mt-1 text-[11px] text-slate-500">{shortTaskId(machine.machine_uuid)}</p>
                           </div>
                           <span className={`rounded-full px-2.5 py-1 text-[11px] ${workerStatusClasses(machine)}`}>

@@ -32,7 +32,7 @@ SECRETS_PATH = APP_ROOT / "secrets.local.json"
 LOGS_DIR = APP_ROOT / "logs"
 SCREENSHOTS_DIR = APP_ROOT / "screenshots"
 DOWNLOADS_DIR = APP_ROOT / "downloads"
-WORKER_VERSION = "0.3.21"
+WORKER_VERSION = "0.3.29"
 HEARTBEAT_INTERVAL_SECONDS = 10.0
 POLLING_INTERVAL_SECONDS = 5.0
 UPDATE_CHECK_INTERVAL_SECONDS = 120.0
@@ -505,7 +505,7 @@ def _download_update_package(package_url: str, destination_path: Path) -> None:
     raise ValueError(f"Unsupported update package URL scheme: {scheme}")
 
 
-def _launch_windows_updater(package_path: Path, app_root: Path, executable_path: Path) -> None:
+def _launch_windows_updater(package_path: Path, app_root: Path, executable_path: Path, updater_script_url: str | None = None) -> None:
     script_path = package_path.with_suffix(".update.ps1")
     script_content = """param(
   [Parameter(Mandatory=$true)][string]$PackagePath,
@@ -519,7 +519,7 @@ function Write-UpdateLog([string]$Message) {
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     Add-Content -Path $logPath -Value "[$timestamp] $Message"
 }
-function Invoke-RobocopySafe([string]$Source, [string]$Destination, [string[]]$ExtraArgs) {
+function Invoke-RobocopySafe([string]$Source, [string]$Destination, [string[]]$ExtraArgs, [int]$FailThreshold = 8) {
     $args = @(
         $Source,
         $Destination,
@@ -534,7 +534,7 @@ function Invoke-RobocopySafe([string]$Source, [string]$Destination, [string[]]$E
     $robo = Start-Process -FilePath 'robocopy.exe' -ArgumentList $args -NoNewWindow -Wait -PassThru
     $code = [int]($robo.ExitCode)
     Write-UpdateLog "Robocopy [$Source -> $Destination] exit code: $code"
-    if ($code -ge 8) {
+    if ($code -ge $FailThreshold) {
         throw "Robocopy failed with exit code $code"
     }
 }
@@ -574,7 +574,8 @@ try {
     $backupRoot = Join-Path ([IO.Path]::GetDirectoryName($PackagePath)) ("bill_worker_backup_" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
     Write-UpdateLog "Creating rollback backup at: $backupRoot"
-    Invoke-RobocopySafe -Source $InstallDir -Destination $backupRoot -ExtraArgs @(
+    # Use threshold 16 (fatal errors only) for backup - locked files (e.g. Chrome profile on Desktop) are acceptable
+    Invoke-RobocopySafe -Source $InstallDir -Destination $backupRoot -FailThreshold 16 -ExtraArgs @(
         '/XF',
         'config.json',
         'worker-config.json',
@@ -607,17 +608,13 @@ try {
 
     Start-Sleep -Seconds 1
 
-    $startBat = Join-Path $InstallDir 'start_worker.bat'
+    # Always restart via BillWorker.exe directly - start-bill-worker.cmd launches Python, not the exe
+    $newExePath = Join-Path $InstallDir 'BillWorker.exe'
     $started = $false
     for ($attempt = 1; $attempt -le 5; $attempt++) {
         try {
-            if (Test-Path $startBat) {
-                Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'start', '""', $startBat
-                Write-UpdateLog "Relaunch requested via start_worker.bat (attempt $attempt)."
-            } else {
-                Start-Process -FilePath $ExePath
-                Write-UpdateLog "Relaunch requested via BillWorker.exe (attempt $attempt)."
-            }
+            Start-Process -FilePath $newExePath -WorkingDirectory $InstallDir
+            Write-UpdateLog "Relaunch requested via BillWorker.exe at $newExePath (attempt $attempt)."
             $started = $true
             break
         } catch {
@@ -627,29 +624,30 @@ try {
     }
 
     if (-not $started) {
-        Write-UpdateLog "All relaunch attempts failed."
-        throw 'Failed to relaunch BillWorker after update.'
-    }
-
-    $up = $false
-    for ($i = 0; $i -lt 20; $i++) {
-        $running = Get-Process -Name 'BillWorker' -ErrorAction SilentlyContinue
-        if ($running) {
-            $up = $true
-            break
+        Write-UpdateLog "WARNING: All relaunch attempts failed. Update files are in place; please restart BillWorker manually."
+    } else {
+        $up = $false
+        for ($i = 0; $i -lt 30; $i++) {
+            $running = Get-Process -Name 'BillWorker' -ErrorAction SilentlyContinue
+            if ($running) {
+                $up = $true
+                break
+            }
+            Start-Sleep -Seconds 1
         }
-        Start-Sleep -Seconds 1
-    }
 
-    if (-not $up) {
-        Write-UpdateLog "Worker process did not appear after relaunch attempts."
-        throw 'BillWorker process not detected after restart.'
+        if (-not $up) {
+            Write-UpdateLog "WARNING: BillWorker process not detected within 30s. Update files are in place; please restart BillWorker manually."
+        } else {
+            Write-UpdateLog "BillWorker process confirmed running after update."
+        }
     }
 
     Write-UpdateLog "Updater completed successfully."
 } catch {
     Write-UpdateLog "Update failed: $($_.Exception.Message)"
-    if ($backupRoot -and (Test-Path $backupRoot)) {
+    # Only rollback on file copy failures, not on restart detection failures
+    if ($backupRoot -and (Test-Path $backupRoot) -and (-not (Test-Path (Join-Path $InstallDir 'BillWorker.exe')))) {
         try {
             Write-UpdateLog "Attempting rollback from backup: $backupRoot"
             Invoke-RobocopySafe -Source $backupRoot -Destination $InstallDir -ExtraArgs @(
@@ -679,7 +677,19 @@ try {
     }
 }
 """
-    script_path.write_text(script_content, encoding="utf-8")
+    # Try to download the latest PS1 from the server so any exe version gets the fixed script
+    script_downloaded = False
+    if updater_script_url:
+        try:
+            resp = requests.get(updater_script_url, timeout=15)
+            resp.raise_for_status()
+            script_path.write_text(resp.text, encoding="utf-8")
+            script_downloaded = True
+            log_info(f"Worker updater: downloaded PS1 script from {updater_script_url}")
+        except Exception as dl_err:
+            log_warn(f"Worker updater: failed to download PS1 from {updater_script_url}: {dl_err}; using embedded script")
+    if not script_downloaded:
+        script_path.write_text(script_content, encoding="utf-8")
 
     creation_flags = 0
     creation_flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -718,7 +728,10 @@ try {
 
 
 def _launch_restart_watchdog(app_root: Path, delay_seconds: int = 20) -> None:
-    start_bat = app_root / "start_worker.bat"
+    # Try the known launcher names in order
+    start_bat = app_root / "start-bill-worker.cmd"
+    if not start_bat.exists():
+        start_bat = app_root / "start_worker.bat"
     if not start_bat.exists():
         return
 
@@ -778,6 +791,7 @@ def _apply_update_payload(
     latest_version = str(payload.get("latest_version") or "").strip()
     package_url = str(payload.get("package_url") or "").strip()
     package_sha256 = str(payload.get("package_sha256") or "").strip().lower()
+    updater_script_url = str(payload.get("updater_script_url") or "").strip() or None
 
     if not update_available or not latest_version or not package_url:
         log_info(f"Worker auto-update ({source}): no update required.")
@@ -843,7 +857,7 @@ def _apply_update_payload(
         _status("installing")
 
         exe_path = Path(sys.executable).resolve()
-        _launch_windows_updater(package_path=package_path, app_root=APP_ROOT, executable_path=exe_path)
+        _launch_windows_updater(package_path=package_path, app_root=APP_ROOT, executable_path=exe_path, updater_script_url=updater_script_url)
         # Secondary safety net in case updater relaunch is blocked by timing/desktop-session issues.
         _launch_restart_watchdog(app_root=APP_ROOT, delay_seconds=20)
         log_warn("Worker auto-update: updater launched, worker will exit for file replacement.")
@@ -868,15 +882,27 @@ def _apply_update_payload(
         return True
     except Exception as error:
         _status("failed", error=str(error))
-        pending = dict(state.get("pending_update") or {})
-        pending["retry_count"] = int(pending.get("retry_count") or 0) + 1
-        pending["last_error"] = str(error)
-        pending["last_error_at"] = datetime.utcnow().isoformat()
-        state["pending_update"] = pending
-        state["update_pending"] = True
-        state["update_last_error"] = str(error)
-        save_state(state)
-        log_error(f"Worker auto-update failed ({source}): {error}")
+        error_str = str(error)
+        # If the package URL returned a 404, the cached URL is stale (release replaced).
+        # Clear pending_update so the next cycle does a fresh check instead of retrying the bad URL.
+        is_404 = "404" in error_str
+        if is_404:
+            state.pop("pending_update", None)
+            state.pop("pending_update_version", None)
+            state.pop("update_pending", None)
+            state["update_last_error"] = error_str
+            save_state(state)
+            log_error(f"Worker auto-update failed ({source}) - stale release URL (404), will re-check: {error_str}")
+        else:
+            pending = dict(state.get("pending_update") or {})
+            pending["retry_count"] = int(pending.get("retry_count") or 0) + 1
+            pending["last_error"] = error_str
+            pending["last_error_at"] = datetime.utcnow().isoformat()
+            state["pending_update"] = pending
+            state["update_pending"] = True
+            state["update_last_error"] = error_str
+            save_state(state)
+            log_error(f"Worker auto-update failed ({source}): {error_str}")
         return False
 
 
@@ -1079,40 +1105,38 @@ def send_heartbeat(machine_name: str, machine_uuid: str, runtime_state: RuntimeS
 
 
 def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, Any]:
-    """Run teach_session.py on this worker machine so the Playwright browser
-    opens locally (on the employee's computer, not the bill-core server)."""
-    import subprocess
+    """Run the teach session browser on this worker machine so Playwright opens
+    locally (on the employee's computer, not the bill-core server).
+
+    Imports teach_session directly rather than spawning a subprocess so that
+    this works correctly when running as a PyInstaller-compiled exe (where
+    sys.executable is the exe itself, not a Python interpreter).
+    """
+    import importlib.util
     import sys as _sys
 
     draft_id = str(payload.get("draft_id") or "")
     api_base = str(payload.get("api_base") or API_BASE).strip().rstrip("/")
-    start_url = str(payload.get("start_url") or "").strip()
-
-    # Locate teach_session.py — bundled alongside this main.py
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teach_session.py")
-    if not os.path.isfile(script_path):
-        return {"status": "error", "error": f"teach_session.py not found at {script_path}"}
-
-    cmd = [_sys.executable, script_path, "--draft-id", draft_id, "--api-base", api_base]
-    if start_url:
-        cmd.extend(["--start-url", start_url])
+    start_url = str(payload.get("start_url") or "").strip() or None
 
     update_step("launching teach session browser")
-    print(f"[worker] launching teach session: draft_id={draft_id} api_base={api_base}")
+    log_info(f"[worker] launching teach session: draft_id={draft_id} api_base={api_base}")
 
-    launch_env = dict(os.environ)
-    launch_env["PYTHONIOENCODING"] = "utf-8"
-    launch_env["PYTHONUTF8"] = "1"
+    # Try importing teach_session — it's compiled into the exe as a module.
+    # Fall back to loading from the filesystem (dev / non-frozen mode).
+    try:
+        import teach_session as _ts
+    except ImportError:
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teach_session.py")
+        if not os.path.isfile(script_path):
+            return {"status": "error", "error": "teach_session module not found"}
+        spec = importlib.util.spec_from_file_location("teach_session", script_path)
+        _ts = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(_ts)  # type: ignore[union-attr]
 
     try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=os.path.dirname(script_path),
-            env=launch_env,
-        )
-        # Wait for the session to finish (browser closed by the trainer)
-        proc.wait()
-        return {"status": "completed", "draft_id": draft_id, "return_code": proc.returncode}
+        _ts.run_session(draft_id, api_base, start_url)
+        return {"status": "completed", "draft_id": draft_id}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
