@@ -231,6 +231,11 @@ type TeachingSessionQuestion = {
 const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
 
 const getApiBase = (): string => {
+  // When running in a browser over HTTPS, use the Next.js API proxy to avoid
+  // mixed-content blocking (HTTPS page -> HTTP backend).
+  if (typeof window !== "undefined" && window.location.protocol === "https:") {
+    return "/api/proxy";
+  }
   const configured = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim();
   return configured ? configured.replace(/\/$/, "") : NEXT_PUBLIC_API_BASE_DEFAULT;
 };

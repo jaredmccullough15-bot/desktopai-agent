@@ -110,7 +110,7 @@ for origin in (default_allow_origins + env_allow_origins):
 
 allow_origin_regex = (
     os.getenv("BILL_CORE_CORS_ALLOW_ORIGIN_REGEX")
-    or r"^https?://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}|[a-z0-9-]+\.trycloudflare\.com)(:\d+)?$"
+    or r"^https?://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}|[a-z0-9-]+\.trycloudflare\.com|[a-z0-9-]+\.amplifyapp\.com)(:\d+)?$"
 )
 
 app.add_middleware(
