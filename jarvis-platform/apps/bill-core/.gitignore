@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# SQLite database (runtime-generated)
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+server.log
+
+# Environment / secrets
+.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Runtime JSON state (managed by app, not source)
+workers_store.json
+worker_releases.json
+operational_memory.json
+workflow_sop_summaries.json
+improvement_proposals.json
+task_reflections.json
+
+# Worker packages (binary artifacts)
+worker-packages/
+
+# Deployment zips
+*.zip
+
+# Elastic Beanstalk
+.ebextensions/
+.elasticbeanstalk/

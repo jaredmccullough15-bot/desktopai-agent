@@ -82,6 +82,47 @@ from app.schemas import (
     TeachSessionStartRequest,
 )
 
+# ---------------------------------------------------------------------------
+# Phase 1: DB mirror imports (non-breaking)
+# ---------------------------------------------------------------------------
+try:
+    from seed import run_seed as _run_seed
+    from db_writes import (
+        save_worker_db,
+        delete_worker_db,
+        save_task_db,
+        save_release_db,
+        delete_release_db,
+        save_all_releases_db,
+        save_reflection_db,
+        save_proposal_db,
+        save_memory_db,
+        save_interaction_db,
+        save_preference_db,
+        save_sop_db,
+        save_workflow_db,
+        save_draft_db,
+    )
+    _DB_ENABLED = True
+except Exception as _db_import_err:
+    import logging as _log
+    _log.getLogger(__name__).warning("DB layer unavailable: %s", _db_import_err)
+    _DB_ENABLED = False
+    def save_worker_db(w): pass
+    def delete_worker_db(u): pass
+    def save_task_db(t): pass
+    def save_release_db(r): pass
+    def delete_release_db(r): pass
+    def save_all_releases_db(rs): pass
+    def save_reflection_db(r): pass
+    def save_proposal_db(p): pass
+    def save_memory_db(m): pass
+    def save_interaction_db(i): pass
+    def save_preference_db(p): pass
+    def save_sop_db(s): pass
+    def save_workflow_db(w): pass
+    def save_draft_db(d): pass
+
 app = FastAPI(title="bill-core", version="0.1.0")
 
 
@@ -150,6 +191,8 @@ def _save_workers_store() -> None:
     WORKERS_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     WORKERS_STORE_PATH.write_text(json.dumps(registered_workers, indent=2), encoding="utf-8")
     logger.info("worker store persisted: count=%s path=%s", len(registered_workers), WORKERS_STORE_PATH)
+    for _uuid, _w in registered_workers.items():
+        save_worker_db({**_w, "machine_uuid": _uuid})
 
 
 registered_workers: dict[str, dict] = _load_workers_store()
@@ -174,6 +217,7 @@ def _load_worker_releases() -> list[dict]:
 def _save_worker_releases() -> None:
     WORKER_RELEASES_PATH.parent.mkdir(parents=True, exist_ok=True)
     WORKER_RELEASES_PATH.write_text(json.dumps(worker_releases, indent=2), encoding="utf-8")
+    save_all_releases_db(worker_releases)
 
 
 def _sha256_file(path: Path) -> str:
@@ -233,6 +277,11 @@ def log_server_binding() -> None:
     _normalize_all_proposals()
     _normalize_all_workflow_drafts()
     WORKER_PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
+    if _DB_ENABLED:
+        try:
+            _run_seed()
+        except Exception as _seed_err:
+            logger.warning("DB seed failed (non-fatal): %s", _seed_err)
     logger.info("Server running on: http://%s:%s", SERVER_HOST, SERVER_PORT)
     logger.info("Loaded workflows: %s from %s", len(WORKFLOW_REGISTRY), WORKFLOWS_CONFIG_PATH)
     logger.info("Loaded brain audit entries: %s", len(brain_audit_log))
@@ -708,6 +757,7 @@ def _create_task_record(normalized_payload: dict) -> TaskCreateResponse:
     }
     tasks.append(task)
     _append_task_log(task, f"Task created with type={normalized_payload.get('task_type', 'unknown')}")
+    save_task_db(task)
     logger.info("Task created: id=%s task_type=%s", task_id, normalized_payload.get("task_type", "unknown"))
     return TaskCreateResponse(id=task_id, status="queued")
 
@@ -911,8 +961,7 @@ def delete_worker_release(release_id: str) -> None:
             logger.warning("Could not delete package file %s: %s", pkg_path, e)
 
     logger.info("Worker release deleted: version=%s id=%s", removed.get("version"), release_id)
-
-
+    delete_release_db(release_id)
 @app.post("/api/worker/releases/{release_id}/activate", response_model=WorkerReleaseRecord)
 def activate_worker_release(release_id: str) -> WorkerReleaseRecord:
     with _releases_lock:
@@ -1331,38 +1380,51 @@ def _append_brain_audit(entry: dict[str, Any]) -> None:
 def _append_operational_memory(entry: dict[str, Any]) -> None:
     operational_memory_log.append(entry)
     _save_json_list(OP_MEMORY_PATH, operational_memory_log)
+    save_memory_db(entry)
 
 
 def _append_task_reflection(entry: dict[str, Any]) -> None:
     task_reflections.append(entry)
     _save_json_list(REFLECTIONS_PATH, task_reflections)
+    save_reflection_db(entry)
 
 
 def _append_improvement_proposal(entry: dict[str, Any]) -> None:
     improvement_proposals.append(entry)
     _save_json_list(PROPOSALS_PATH, improvement_proposals)
+    save_proposal_db(entry)
 
 
 def _save_workflow_sop_summaries() -> None:
     _save_json_list(SOP_SUMMARIES_PATH, workflow_sop_summaries)
+    for _s in workflow_sop_summaries:
+        save_sop_db(_s)
 
 
 def _save_interactive_prompts() -> None:
     _save_json_list(INTERACTIONS_PATH, interactive_prompts)
+    for _i in interactive_prompts:
+        save_interaction_db(_i)
 
 
 def _save_conversation_preferences() -> None:
     _save_json_list(CONVERSATION_PREFS_PATH, conversation_preferences)
+    for _p in conversation_preferences:
+        save_preference_db(_p)
 
 
 def _save_workflow_learning_drafts() -> None:
     _save_json_list(WORKFLOW_DRAFTS_PATH, workflow_learning_drafts)
+    for _d in workflow_learning_drafts:
+        save_draft_db(_d)
 
 
 def _save_workflow_registry() -> None:
     WORKFLOWS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = [item.model_dump() for item in WORKFLOW_REGISTRY]
     WORKFLOWS_CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    for _wf in data:
+        save_workflow_db(_wf)
 
 
 def _save_learned_procedure_templates() -> None:
@@ -4893,6 +4955,7 @@ def delete_machine(machine_uuid: str) -> dict:
             raise HTTPException(status_code=404, detail="Machine not found")
         del registered_workers[machine_uuid]
         _save_workers_store()
+    delete_worker_db(machine_uuid)
     logger.info("machine %s removed from registry", machine_uuid)
     return {"deleted": machine_uuid}
 
@@ -5005,6 +5068,7 @@ def resolve_human_task(task_id: str, body: dict = None) -> dict[str, str]:
     task["updated_at"] = datetime.utcnow().isoformat()
     task["completed_at"] = datetime.utcnow().isoformat()
     _append_task_log(task, f"Task resolved by human operator: {resolution_note}")
+    save_task_db(task)
     clear_recovery_state(task_id)
     logger.info("Task resolved by human: id=%s resolution=%s", task_id, resolution_note)
     return {
@@ -5057,6 +5121,7 @@ def get_next_task(machine_uuid: str):
                 )
             else:
                 _append_task_log(task, f"Task assigned to machine_uuid={machine_uuid}")
+            save_task_db(task)
             logger.info("Task assigned: id=%s machine_uuid=%s", task["id"], machine_uuid)
             return TaskRecord(**task)
 
@@ -5075,6 +5140,7 @@ def complete_task(task_id: str, payload: TaskCompleteRequest) -> dict[str, str]:
             _append_task_log(task, f"Task completed by machine_uuid={payload.machine_uuid}")
             reflection = _record_task_outcome_learning(task, outcome="success", machine_uuid=payload.machine_uuid)
             _append_task_log(task, f"Reflection recorded: {reflection.get('id')}")
+            save_task_db(task)
             # Clear any in-progress recovery state on successful completion
             # Also clear the origin task's state if this was a retry task
             clear_recovery_state(task_id)
@@ -5154,6 +5220,7 @@ def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
                 )
                 _append_task_log(task, f"Reflection recorded (needs_human_help): {reflection.get('id')}")
                 _create_failure_interaction_if_needed(task, reflection)
+                save_task_db(task)
                 logger.error(
                     "Task escalated to needs_human_help after %d timeout recovery attempts: "
                     "id=%s timeout_type=%s machine_uuid=%s",
@@ -5228,6 +5295,7 @@ def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
         )
         _append_task_log(task, f"Reflection recorded: {reflection.get('id')}")
         _create_failure_interaction_if_needed(task, reflection)
+        save_task_db(task)
         logger.error(
             "Task failed: id=%s machine_uuid=%s error=%s",
             task_id,
@@ -5253,4 +5321,62 @@ def _RECOVERY_ACTION_DESCRIPTION(action: str) -> str:  # noqa: N802
         "task_restart": "Restart the entire task from the beginning.",
         "needs_human_help": "All automated recovery exhausted — human intervention required.",
     }.get(action, action)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Debug endpoints — query the DB directly to verify mirror writes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/debug/workers-db")
+def debug_workers_db() -> list[dict]:
+    """Return workers stored in the DB (Phase 1 verification endpoint)."""
+    if not _DB_ENABLED:
+        return [{"error": "DB layer not enabled"}]
+    try:
+        from db import SessionLocal
+        from models_db import Worker
+        with SessionLocal() as session:
+            rows = session.query(Worker).all()
+            return [
+                {
+                    "id": r.id,
+                    "tenant_id": r.tenant_id,
+                    "machine_uuid": r.machine_uuid,
+                    "machine_name": r.machine_name,
+                    "status": r.status,
+                    "worker_version": r.worker_version,
+                    "execution_mode": r.execution_mode,
+                    "last_seen": r.last_seen,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+                for r in rows
+            ]
+    except Exception as exc:
+        return [{"error": str(exc)}]
+
+
+@app.get("/api/debug/tasks-db")
+def debug_tasks_db() -> list[dict]:
+    """Return tasks stored in the DB (Phase 1 verification endpoint)."""
+    if not _DB_ENABLED:
+        return [{"error": "DB layer not enabled"}]
+    try:
+        from db import SessionLocal
+        from models_db import Task
+        with SessionLocal() as session:
+            rows = session.query(Task).order_by(Task.created_at.desc()).limit(50).all()
+            return [
+                {
+                    "id": r.id,
+                    "tenant_id": r.tenant_id,
+                    "status": r.status,
+                    "task_type": r.task_type,
+                    "assigned_machine_uuid": r.assigned_machine_uuid,
+                    "completed_at": r.completed_at,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in rows
+            ]
+    except Exception as exc:
+        return [{"error": str(exc)}]
 
