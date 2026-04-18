@@ -228,53 +228,11 @@ type TeachingSessionQuestion = {
   steps_remaining: number;
 };
 
+const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
+
 const getApiBase = (): string => {
-  const configuredBase = process.env.NEXT_PUBLIC_API_BASE?.trim();
-
-  const deriveApiBaseFromHost = (): string => {
-    if (typeof window === "undefined") {
-      return "";
-    }
-
-    const { protocol, hostname, port } = window.location;
-    const localhostHosts = new Set(["localhost", "127.0.0.1", "0.0.0.0"]);
-
-    if (localhostHosts.has(hostname)) {
-      return `${protocol}//${hostname}:8000`;
-    }
-
-    if (hostname.startsWith("core.")) {
-      return `${protocol}//api.${hostname.slice("core.".length)}`;
-    }
-
-    return `${protocol}//api.${hostname}`;
-  };
-
-  if (configuredBase) {
-    const normalized = configuredBase.replace(/\/$/, "");
-
-    if (typeof window !== "undefined") {
-      const currentHost = window.location.hostname;
-      const localhostHosts = new Set(["localhost", "127.0.0.1", "0.0.0.0"]);
-
-      try {
-        const configuredUrl = new URL(normalized);
-        if (!localhostHosts.has(currentHost) && localhostHosts.has(configuredUrl.hostname)) {
-          configuredUrl.hostname = currentHost.startsWith("core.")
-            ? `api.${currentHost.slice("core.".length)}`
-            : `api.${currentHost}`;
-          configuredUrl.port = "";
-          return configuredUrl.toString().replace(/\/$/, "");
-        }
-      } catch {
-        // Keep the configured value if it is not a valid absolute URL.
-      }
-    }
-
-    return normalized;
-  }
-
-  return deriveApiBaseFromHost();
+  const configured = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim();
+  return configured ? configured.replace(/\/$/, "") : NEXT_PUBLIC_API_BASE_DEFAULT;
 };
 
 const taskStatusLabel = (status?: string): string => {
