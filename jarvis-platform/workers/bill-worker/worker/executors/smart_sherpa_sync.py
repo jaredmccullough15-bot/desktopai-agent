@@ -292,6 +292,57 @@ _MUI_OVERLAY_CLOSE_SELECTORS = [
     "[role='dialog'] button:has(svg)",
 ]
 
+# Selectors for survey / product-review / NPS popups (Pendo, Intercom, etc.) that Health Sherpa
+# occasionally shows and that are not standard MUI dialogs.
+_SURVEY_POPUP_DISMISS_SELECTORS = [
+    # Pendo guide close / dismiss
+    "._pendo-close-guide",
+    "[class*='pendo'] button[aria-label*='close' i]",
+    "[class*='pendo'] button[aria-label*='dismiss' i]",
+    "[class*='pendo'] button:has-text('No thanks')",
+    "[class*='pendo'] button:has-text('Not now')",
+    "[class*='pendo'] button:has-text('Maybe later')",
+    "[class*='pendo'] button:has-text('Skip')",
+    "[class*='pendo'] button:has-text('Close')",
+    "[class*='pendo'] button:has-text('Dismiss')",
+    # Generic survey / NPS / feedback dismissal text anywhere on page
+    "button:has-text('No thanks')",
+    "button:has-text('Not now')",
+    "button:has-text('Maybe later')",
+    "button:has-text('Skip survey')",
+    "button:has-text('Dismiss')",
+    # Intercom / chat launcher widget close
+    "[class*='intercom'] button[aria-label*='close' i]",
+    # Floating overlay / banner with a close button that is NOT the main MUI dialog
+    "[class*='survey'] button[aria-label*='close' i]",
+    "[class*='feedback'] button[aria-label*='close' i]",
+    "[class*='nps'] button[aria-label*='close' i]",
+]
+
+
+def _dismiss_survey_popup_if_present(page: Page, timeout_ms: int = 1500) -> bool:
+    """Attempt to dismiss a product-review / survey / NPS popup from Health Sherpa.
+
+    These are typically third-party overlays (Pendo, NPS widgets, etc.) that are not
+    standard MUI dialogs and are not caught by _dismiss_mui_overlay_if_present.
+
+    Returns True if a popup was found and dismissed, False otherwise.
+    """
+    for selector in _SURVEY_POPUP_DISMISS_SELECTORS:
+        try:
+            element = page.locator(selector).first
+            if element.is_visible(timeout=timeout_ms):
+                element.click(timeout=timeout_ms)
+                print(f"[worker] dismissed survey/review popup via selector: {selector}")
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=1000)
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            continue
+    return False
+
 
 def _dismiss_mui_overlay_if_present(page: Page, timeout_ms: int = 2000) -> bool:
     """Attempt to dismiss a MUI modal/overlay that may be blocking the page.
@@ -1022,6 +1073,7 @@ def run(
 
             row_index = 0
             consecutive_empty_row_scans = 0
+            consecutive_accounts_recoveries = 0
             while True:
                 _emit_trace(
                     progress_callback,
@@ -1034,6 +1086,48 @@ def run(
                 if max_clients > 0 and clients_processed >= max_clients:
                     completion_reason = "max_clients_reached"
                     break
+
+                # --- Dismiss any product-review / survey popup before each iteration ---
+                _dismiss_survey_popup_if_present(list_page)
+                # Also attempt MUI overlay dismissal in case a dialog appeared between iterations.
+                _dismiss_mui_overlay_if_present(list_page)
+
+                # --- Accounts page guard: Health Sherpa sometimes redirects to an /accounts/ page. ---
+                # Detect this early and force-navigate back to the clients list URL rather than
+                # relying solely on _ensure_clients_list_context (which may loop if the survey
+                # popup triggered the navigation).
+                _current_url_check = str(list_page.url or "").lower()
+                if "/accounts" in _current_url_check and "/clients" not in _current_url_check:
+                    consecutive_accounts_recoveries += 1
+                    _emit_trace(
+                        progress_callback,
+                        verbose_trace_logging,
+                        f"accounts_page_detected: url={list_page.url} recovery_attempt={consecutive_accounts_recoveries}",
+                    )
+                    if progress_callback:
+                        progress_callback(
+                            f"accounts page detected instead of clients list; recovering (attempt {consecutive_accounts_recoveries})"
+                        )
+                    if consecutive_accounts_recoveries > 4:
+                        raise RuntimeError(
+                            "Stuck on HealthSherpa accounts page: automatic recovery failed after "
+                            f"{consecutive_accounts_recoveries} attempts. "
+                            "Please navigate to the clients list manually and restart the task."
+                        )
+                    if clients_list_url:
+                        _acct_recovery_url = _set_url_page_param(clients_list_url, max(1, current_logical_page))
+                        list_page.goto(_acct_recovery_url, wait_until="domcontentloaded", timeout=page_timeout_ms)
+                        try:
+                            list_page.wait_for_load_state("networkidle", timeout=min(page_timeout_ms, 10000))
+                        except TimeoutError:
+                            pass
+                        # Dismiss any popup that reappeared after the navigation.
+                        _dismiss_survey_popup_if_present(list_page)
+                        _dismiss_mui_overlay_if_present(list_page)
+                    row_index = 0
+                    continue
+                else:
+                    consecutive_accounts_recoveries = 0
 
                 # Match old Jarvis behavior: always begin row discovery near the top of the list page.
                 try:
