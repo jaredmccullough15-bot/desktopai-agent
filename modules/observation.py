@@ -431,66 +431,14 @@ class ObservationRecorder:
         if self.log_callback:
             self.log_callback("Observer", message)
 
-    def _launch_debug_chrome(self) -> bool:
-        """Best-effort launch for local Chrome debug session used by Selenium attach."""
-        try:
-            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-            self.log("No browser session detected. Launching Chrome debug window...")
-
-            port = str(os.getenv("CHROME_DEBUG_PORT", "9222") or "9222")
-            debug_profile = os.path.join(os.getenv("TEMP") or os.getcwd(), "chrome-agent-debug")
-            launch_args = [f"--remote-debugging-port={port}", f'--user-data-dir={debug_profile}']
-
-            candidates = [
-                os.getenv("CHROME_PATH", ""),
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                os.path.join(os.getenv("LOCALAPPDATA") or "", r"Google\Chrome\Application\chrome.exe"),
-            ]
-
-            for chrome_path in candidates:
-                if not chrome_path:
-                    continue
-                if not os.path.isfile(chrome_path):
-                    continue
-                try:
-                    subprocess.Popen([chrome_path] + launch_args, cwd=repo_root)
-                    time.sleep(2.0)
-                    self.log(f"Chrome debug window launched using: {chrome_path}")
-                    return True
-                except Exception as launch_err:
-                    self.log(f"Chrome launch attempt failed ({chrome_path}): {str(launch_err)}")
-
-            # Legacy fallback to PowerShell helper script if direct launch fails.
-            script_path = os.path.join(repo_root, "start-chrome-debug.ps1")
-            if os.path.isfile(script_path):
-                completed = subprocess.run(
-                    [
-                        "powershell",
-                        "-NoProfile",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-File",
-                        script_path,
-                    ],
-                    cwd=repo_root,
-                    capture_output=True,
-                    text=True,
-                    timeout=90,
-                )
-                if completed.returncode == 0:
-                    time.sleep(2.0)
-                    self.log("Chrome debug window launched (PowerShell fallback).")
-                    return True
-                stderr = (completed.stderr or "").strip()
-                self.log(f"Chrome debug launch failed: {stderr or f'exit={completed.returncode}'}")
-                return False
-
-            self.log("Chrome debug launch failed: no Chrome executable or launcher script found")
-            return False
-        except Exception as e:
-            self.log(f"Chrome debug launch error: {str(e)}")
-            return False
+    def _launch_debug_chrome(self, force_fresh: bool = False) -> bool:
+        """Launch (or reuse) a Chrome debug session using the shared chrome_launcher module."""
+        from .chrome_launcher import launch_debug_chrome
+        self.log("No browser session detected — starting Chrome debug window...")
+        return launch_debug_chrome(
+            log=self.log,
+            force_fresh=force_fresh,
+        )
 
     def start_observing(self, stop_event: threading.Event):
         self.stop_event = stop_event
@@ -505,7 +453,13 @@ class ObservationRecorder:
 
         driver = self.page_analyzer.get_driver()
         if not driver:
-            self._launch_debug_chrome()
+            launch_ok = self._launch_debug_chrome()
+            if not launch_ok:
+                self.log(
+                    "ERROR: Chrome debug session could not be started. "
+                    "Close all existing Chrome windows and try again. "
+                    "Observation will continue without browser integration."
+                )
             driver = self.page_analyzer.get_driver()
 
         if driver:
@@ -517,7 +471,11 @@ class ObservationRecorder:
             except Exception as e:
                 self.log(f"Browser connection issue: {str(e)}")
         else:
-            self.log("WARNING: Could not connect to browser. Make sure Chrome debug mode is on (port 9222)")
+            self.log(
+                "WARNING: Could not connect to browser. "
+                "If Chrome is running without --remote-debugging-port, close it and "
+                "click 'Open Chrome Debug + Attach Selenium' first."
+            )
 
         monitor_thread = threading.Thread(target=self._monitor_page_changes, daemon=True)
         monitor_thread.start()

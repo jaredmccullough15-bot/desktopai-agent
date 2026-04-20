@@ -298,29 +298,17 @@ class WorkerUI:
     def _launch_debug_chrome_with_selenium_async(self) -> None:
         debug_port = int(str(self.config_data.get("chrome_debug_port", 9222) or 9222))
         try:
-            if not self._is_debug_chrome_ready(debug_port):
-                chrome_path = self._detect_chrome_path()
-                profile_dir = Path("data") / "chrome_debug_profile"
-                profile_dir.mkdir(parents=True, exist_ok=True)
-                subprocess.Popen(
-                    [
-                        chrome_path,
-                        f"--remote-debugging-port={debug_port}",
-                        f"--user-data-dir={str(profile_dir.resolve())}",
-                        "--no-first-run",
-                        "--no-default-browser-check",
-                    ],
-                    cwd=str(Path(__file__).parent),
+            from modules.chrome_launcher import launch_debug_chrome
+
+            ready = launch_debug_chrome(
+                log=self.log_queue.put,
+                port=debug_port,
+            )
+            if not ready:
+                self.log_queue.put(
+                    f"[ChromeLauncher] Could not reach Chrome debug endpoint on port {debug_port}. "
+                    "Close all Chrome windows and try again."
                 )
-                self.log_queue.put(f"Chrome started in debug mode on port {debug_port}.")
-
-                for _ in range(20):
-                    if self._is_debug_chrome_ready(debug_port):
-                        break
-                    time.sleep(0.3)
-
-            if not self._is_debug_chrome_ready(debug_port):
-                self.log_queue.put(f"Could not reach Chrome debug endpoint on port {debug_port}.")
                 return
 
             from selenium import webdriver
@@ -331,8 +319,7 @@ class WorkerUI:
             options.add_experimental_option("detach", True)
 
             self.selenium_driver = webdriver.Chrome(options=options)
-            self.selenium_driver.get("https://www.google.com")
-            self.log_queue.put("Selenium attached to debug Chrome and opened Google.")
+            self.log_queue.put("Selenium attached to debug Chrome successfully.")
         except Exception as exc:
             self.log_queue.put(f"Chrome/Selenium attach failed: {exc}")
 
