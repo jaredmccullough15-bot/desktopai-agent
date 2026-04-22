@@ -244,6 +244,7 @@ const getApiBase = (): string => {
   return getConfiguredApiBase();
 };
 
+// Worker payloads must always use the real backend URL (never /api/proxy).
 const getWorkerApiBase = (): string => getConfiguredApiBase();
 
 const taskStatusLabel = (status?: string): string => {
