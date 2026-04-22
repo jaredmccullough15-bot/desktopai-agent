@@ -168,6 +168,31 @@ logger = logging.getLogger("bill-core")
 
 SERVER_HOST = (os.getenv("BILL_CORE_HOST") or "0.0.0.0").strip() or "0.0.0.0"
 SERVER_PORT = (os.getenv("BILL_CORE_PORT") or "8000").strip() or "8000"
+DEFAULT_TEACH_SESSION_WORKER_API_BASE = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com"
+
+
+def _looks_like_proxy_api_base(value: str) -> bool:
+    candidate = (value or "").strip()
+    if not candidate:
+        return False
+    if candidate.startswith("/"):
+        return candidate.rstrip("/").lower() == "/api/proxy"
+    parsed = urlparse(candidate)
+    path = (parsed.path or "").rstrip("/").lower()
+    return path == "/api/proxy"
+
+
+def _resolve_teach_session_worker_api_base(requested_api_base: str) -> str:
+    requested = (requested_api_base or "").strip().rstrip("/")
+    if requested.startswith(("http://", "https://")) and not _looks_like_proxy_api_base(requested):
+        return requested
+
+    for env_name in ("BILL_CORE_WORKER_API_BASE", "BILL_CORE_URL", "JARVIS_CORE_URL", "BILL_CORE_PUBLIC_URL"):
+        raw = (os.getenv(env_name) or "").strip().rstrip("/")
+        if raw.startswith(("http://", "https://")) and not _looks_like_proxy_api_base(raw):
+            return raw
+
+    return DEFAULT_TEACH_SESSION_WORKER_API_BASE
 
 WORKERS_STORE_PATH = Path(os.getenv("BILL_CORE_WORKERS_STORE") or (Path(__file__).resolve().parent / "workers_store.json"))
 _workers_lock = threading.Lock()
@@ -4011,7 +4036,9 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
     if draft is None or idx is None:
         raise HTTPException(status_code=404, detail="Workflow draft not found")
 
-    api_base = str(payload.api_base or "http://127.0.0.1:8010").strip().rstrip("/")
+    requested_api_base = str(payload.api_base or "").strip()
+    local_api_base = (requested_api_base or "http://127.0.0.1:8010").rstrip("/")
+    worker_api_base = _resolve_teach_session_worker_api_base(requested_api_base)
     target_machine_uuid = str(payload.target_machine_uuid or "").strip()
 
     if payload.start_url.strip():
@@ -4030,10 +4057,18 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
         task_payload: dict[str, Any] = {
             "task_type": "teach_session",
             "draft_id": draft_id,
-            "api_base": api_base,
+            "api_base": worker_api_base,
             "start_url": start_url,
             "target_machine_uuid": target_machine_uuid,
         }
+        logger.info(
+            "teach_session task payload prepared: draft_id=%s target_machine_uuid=%s api_base=%s start_url=%s requested_api_base=%s",
+            draft_id,
+            target_machine_uuid,
+            task_payload.get("api_base"),
+            task_payload.get("start_url"),
+            requested_api_base,
+        )
         result = _create_task_record(task_payload)
         _record_operational_memory(
             "teach_session_queued",
@@ -4066,9 +4101,13 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
             ),
         )
 
-    cmd = [sys.executable, script_path, "--draft-id", draft_id, "--api-base", api_base]
+    cmd = [sys.executable, script_path, "--draft-id", draft_id, "--api-base", local_api_base]
     if start_url:
         cmd.extend(["--start-url", start_url])
+    logger.info(
+        "teach_session local launch command: %s",
+        " ".join(cmd),
+    )
 
     try:
         teach_logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teach-session-logs")

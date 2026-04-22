@@ -230,15 +230,21 @@ type TeachingSessionQuestion = {
 
 const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
 
+const getConfiguredApiBase = (): string => {
+  const configured = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim();
+  return configured ? configured.replace(/\/$/, "") : NEXT_PUBLIC_API_BASE_DEFAULT;
+};
+
 const getApiBase = (): string => {
   // When running in a browser over HTTPS, use the Next.js API proxy to avoid
   // mixed-content blocking (HTTPS page -> HTTP backend).
   if (typeof window !== "undefined" && window.location.protocol === "https:") {
     return "/api/proxy";
   }
-  const configured = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim();
-  return configured ? configured.replace(/\/$/, "") : NEXT_PUBLIC_API_BASE_DEFAULT;
+  return getConfiguredApiBase();
 };
+
+const getWorkerApiBase = (): string => getConfiguredApiBase();
 
 const taskStatusLabel = (status?: string): string => {
   const normalized = (status ?? "").toLowerCase();
@@ -1776,6 +1782,7 @@ export default function Home() {
   const launchTeachBrowser = async () => {
     if (!teachingSessionDraftId) return;
     const apiBase = getApiBase();
+    const workerApiBase = getWorkerApiBase();
     if (!apiBase) return;
     setTeachingLaunchStatus("launching");
     try {
@@ -1784,7 +1791,11 @@ export default function Home() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ start_url: teachingStartUrl.trim(), api_base: apiBase, target_machine_uuid: teachingTargetWorkerUuid.trim() }),
+          body: JSON.stringify({
+            start_url: teachingStartUrl.trim(),
+            api_base: workerApiBase,
+            target_machine_uuid: teachingTargetWorkerUuid.trim(),
+          }),
         },
       );
       const data = (await res.json()) as { pid?: number; status?: string; detail?: string };

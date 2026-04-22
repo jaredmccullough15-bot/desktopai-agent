@@ -22,7 +22,7 @@ from worker.executors.smart_sherpa_sync import run as run_smart_sherpa_sync
 from worker.executors.type_text import run as run_type_text
 from worker.executors.wait_for_element import run as run_wait_for_element
 
-DEFAULT_CORE_URL = "https://api.bill-core.com"
+DEFAULT_CORE_URL = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com"
 API_BASE = os.getenv("BILL_CORE_URL") or os.getenv("JARVIS_CORE_URL", DEFAULT_CORE_URL)
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 STATE_PATH = APP_ROOT / ".worker_state.json"
@@ -32,7 +32,7 @@ SECRETS_PATH = APP_ROOT / "secrets.local.json"
 LOGS_DIR = APP_ROOT / "logs"
 SCREENSHOTS_DIR = APP_ROOT / "screenshots"
 DOWNLOADS_DIR = APP_ROOT / "downloads"
-WORKER_VERSION = "0.3.29"
+WORKER_VERSION = "0.3.30"
 HEARTBEAT_INTERVAL_SECONDS = 10.0
 POLLING_INTERVAL_SECONDS = 5.0
 UPDATE_CHECK_INTERVAL_SECONDS = 120.0
@@ -1116,10 +1116,31 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
     import sys as _sys
 
     draft_id = str(payload.get("draft_id") or "")
-    api_base = str(payload.get("api_base") or API_BASE).strip().rstrip("/")
+    requested_api_base = str(payload.get("api_base") or "").strip()
+    api_base = requested_api_base.rstrip("/")
+    if not api_base.startswith(("http://", "https://")):
+        api_base = str(API_BASE).strip().rstrip("/")
+    parsed_api_base = urlparse(api_base)
+    if (parsed_api_base.path or "").rstrip("/").lower() == "/api/proxy":
+        log_warn(
+            f"[worker] teach_session received proxy api_base={requested_api_base!r}; "
+            f"falling back to worker API base {API_BASE}"
+        )
+        api_base = str(API_BASE).strip().rstrip("/")
     start_url = str(payload.get("start_url") or "").strip() or None
 
+    if not draft_id:
+        raise WorkflowExecutionError("teach_session missing draft_id", {"status": "error", "error": "missing draft_id"})
+
+    launch_command = (
+        "playwright.chromium.launch(headless=False, "
+        "args=['--start-maximized', '--disable-infobars'])"
+    )
+
     update_step("launching teach session browser")
+    log_info(f"[worker] teach_session task payload api_base={api_base}")
+    log_info(f"[worker] teach_session task payload start_url={start_url or ''}")
+    log_info(f"[worker] teach_session final Chrome launch command: {launch_command}")
     log_info(f"[worker] launching teach session: draft_id={draft_id} api_base={api_base}")
 
     # Try importing teach_session — it's compiled into the exe as a module.
@@ -1129,16 +1150,55 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
     except ImportError:
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teach_session.py")
         if not os.path.isfile(script_path):
-            return {"status": "error", "error": "teach_session module not found"}
+            raise WorkflowExecutionError(
+                "teach_session module not found",
+                {"status": "error", "error": "teach_session module not found"},
+            )
         spec = importlib.util.spec_from_file_location("teach_session", script_path)
         _ts = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
         spec.loader.exec_module(_ts)  # type: ignore[union-attr]
 
     try:
-        _ts.run_session(draft_id, api_base, start_url)
-        return {"status": "completed", "draft_id": draft_id}
+        session_result = _ts.run_session(draft_id, api_base, start_url)
+        browser_launch_succeeded = bool((session_result or {}).get("browser_launch_succeeded"))
+        log_info(f"[worker] teach_session browser launch succeeded={browser_launch_succeeded}")
+        if not browser_launch_succeeded:
+            raise WorkflowExecutionError(
+                "Teach session browser launch was not confirmed",
+                {
+                    "status": "error",
+                    "draft_id": draft_id,
+                    "api_base": api_base,
+                    "start_url": start_url or "",
+                    "final_chrome_launch_command": launch_command,
+                    "browser_launch_succeeded": False,
+                },
+            )
+
+        return {
+            "status": "completed",
+            "draft_id": draft_id,
+            "api_base": api_base,
+            "start_url": start_url or "",
+            "final_chrome_launch_command": launch_command,
+            "browser_launch_succeeded": True,
+            **(session_result or {}),
+        }
+    except WorkflowExecutionError:
+        raise
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        raise WorkflowExecutionError(
+            f"teach_session failed: {exc}",
+            {
+                "status": "error",
+                "draft_id": draft_id,
+                "api_base": api_base,
+                "start_url": start_url or "",
+                "final_chrome_launch_command": launch_command,
+                "browser_launch_succeeded": False,
+                "error": str(exc),
+            },
+        ) from exc
 
 
 def poll_next_task(machine_uuid: str, state: dict[str, Any], runtime_state: RuntimeState) -> None:

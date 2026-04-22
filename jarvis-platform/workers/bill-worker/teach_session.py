@@ -285,7 +285,7 @@ def _post_step(api_base: str, draft_id: str, step: dict[str, Any]) -> dict[str, 
 
 # ── Session runner ────────────────────────────────────────────────────────────
 
-def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> None:
+def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> dict[str, Any]:
     sep = "=" * 62
     print(f"\n{sep}")
     print(f"  Bill Teach Mode — Observation Session")
@@ -304,6 +304,8 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
     last_url: list[str] = [""]
     step_num: list[int] = [0]
     step_lock = threading.Lock()
+    launch_command = "playwright.chromium.launch(headless=False, args=['--start-maximized', '--disable-infobars'])"
+    browser_launch_succeeded = False
 
     # ── Background thread drains HTTP posts so Playwright's event
     #    loop is never blocked by a slow/failed HTTP request. ──────
@@ -384,14 +386,22 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
             pass
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=False,
-            args=["--start-maximized", "--disable-infobars"],
-        )
+        print(f"  [teach] final Chrome launch command: {launch_command}")
+        try:
+            browser = pw.chromium.launch(
+                headless=False,
+                args=["--start-maximized", "--disable-infobars"],
+            )
+        except Exception as exc:
+            print(f"  [teach] browser launch succeeded: False ({exc})", file=sys.stderr)
+            raise RuntimeError(f"Unable to launch Chromium for teach session: {exc}") from exc
+
         context = browser.new_context(viewport=None)
         context.add_init_script(_LISTENER_JS)
 
         page = context.new_page()
+        browser_launch_succeeded = True
+        print("  [teach] browser launch succeeded: True")
         attach_page(page)
 
         def on_new_page(new_page: Any) -> None:
@@ -428,6 +438,15 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> N
         total = step_num[0]
     print(f"\n  Session complete. {total} steps captured.")
     print(f"  Open the Bill dashboard to review, enrich, and publish the draft.\n")
+    return {
+        "status": "completed",
+        "draft_id": draft_id,
+        "api_base": api_base,
+        "start_url": start_url or "",
+        "final_chrome_launch_command": launch_command,
+        "browser_launch_succeeded": browser_launch_succeeded,
+        "steps_captured": total,
+    }
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
