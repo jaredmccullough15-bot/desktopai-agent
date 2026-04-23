@@ -4464,12 +4464,24 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         "how is it going",
         "any progress",
     )
+    _last_task_phrases = (
+        "last task",
+        "last failed",
+        "failed task",
+        "what failed last",
+        "tell me about the last task",
+        "about the last task",
+        "last run",
+        "latest failure",
+    )
     if any(p in command_lower for p in _worker_status_phrases):
         command_lower = "show online workers"
     elif any(p in command_lower for p in _idle_worker_phrases):
         command_lower = "which worker is free"
     elif any(p in command_lower for p in _active_task_phrases):
         command_lower = "show active tasks"
+    elif any(p in command_lower for p in _last_task_phrases):
+        command_lower = "what failed last"
     # ────────────────────────────────────────────────────────────────────────
 
     if "show online workers" in command_lower or "list online workers" in command_lower:
@@ -5255,6 +5267,249 @@ def get_tasks_needing_help() -> dict[str, Any]:
         if str(t.get("status") or "") == "needs_human_help"
     ]
     return {"count": len(pending), "tasks": pending}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 2: Recovery System Endpoints (Paused for Human Recovery)
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/tasks/{task_id}/pause-for-human-recovery")
+def pause_task_for_human_recovery(task_id: str, body: dict = None) -> dict[str, Any]:
+    """
+    Pause a running task and transition to paused_for_human state with recovery context.
+    
+    Request body can include:
+    - pause_reason: human-readable message about why human intervention is needed
+    - recovery_context: PreRecoveryContext dict with diagnostic info
+    """
+    from recovery import RecoveryContext
+    
+    task = _find_task_by_ref(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    status = str(task.get("status") or "").lower()
+    allowed_pause_statuses = {"queued", "assigned", "in_progress", "running"}
+    if status not in allowed_pause_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot pause task with status={status}. Must be in {allowed_pause_statuses}"
+        )
+    
+    body = body or {}
+    pause_reason = str(body.get("pause_reason") or "Paused for human recovery").strip()
+    context_data = (body.get("recovery_context") or {})
+    
+    # Build recovery context
+    recovery_context = {
+        "task_id": task_id,
+        "workflow_name": (task.get("payload") or {}).get("workflow_name") or (task.get("payload") or {}).get("task_type") or "unknown",
+        "paused_at": datetime.utcnow().isoformat(),
+        "pause_reason": pause_reason,
+        "current_step": context_data.get("current_step", 0),
+        "last_successful_step": context_data.get("last_successful_step", 0),
+        "current_url": context_data.get("current_url", ""),
+        "last_client_attempted": context_data.get("last_client_attempted", ""),
+        "last_successful_client": context_data.get("last_successful_client", ""),
+        "clients_completed": context_data.get("clients_completed", []),
+        "clients_skipped": context_data.get("clients_skipped", []),
+        "open_tabs_count": context_data.get("open_tabs_count", 0),
+        "blocking_modal_detected": context_data.get("blocking_modal_detected", False),
+        "modal_type": context_data.get("modal_type", ""),
+        "worker_name": context_data.get("worker_name", ""),
+        "machine_uuid": context_data.get("machine_uuid", task.get("assigned_machine_uuid", "")),
+        "screenshot_path": context_data.get("screenshot_path", ""),
+        "last_error": context_data.get("last_error", ""),
+        "error_classification": context_data.get("error_classification", ""),
+        "metadata": context_data.get("metadata", {}),
+    }
+    
+    # Update task
+    task["status"] = "paused_for_human"
+    task["updated_at"] = datetime.utcnow().isoformat()
+    task["recovery_context"] = recovery_context
+    
+    _append_task_log(task, f"Task paused for human recovery: {pause_reason}", level="warning")
+    save_task_db(task)
+    
+    # Audit log
+    audit_entry = {
+        "entry_id": str(uuid4()),
+        "task_id": task_id,
+        "workflow_name": recovery_context["workflow_name"],
+        "event_type": "paused_for_human",
+        "timestamp": datetime.utcnow().isoformat(),
+        "details": {"pause_reason": pause_reason},
+    }
+    logger.info("Task paused for human recovery: id=%s reason=%s", task_id, pause_reason)
+    
+    return {
+        "status": "paused_for_human",
+        "message": f"Task {task_id} paused for human recovery",
+        "recovery_context": recovery_context,
+    }
+
+
+@app.get("/api/tasks/paused-for-human-recovery")
+def list_paused_tasks() -> dict[str, Any]:
+    """List all tasks currently paused for human recovery."""
+    paused = [
+        {
+            "id": t.get("id"),
+            "workflow_name": (t.get("payload") or {}).get("workflow_name") or (t.get("payload") or {}).get("task_type"),
+            "pause_reason": ((t.get("recovery_context") or {}).get("pause_reason") or ""),
+            "assigned_machine_uuid": t.get("assigned_machine_uuid"),
+            "updated_at": t.get("updated_at"),
+            "recovery_context": t.get("recovery_context"),
+        }
+        for t in tasks
+        if str(t.get("status") or "") == "paused_for_human"
+    ]
+    return {"count": len(paused), "tasks": paused}
+
+
+@app.post("/api/tasks/{task_id}/recovery-action")
+def execute_recovery_action(task_id: str, body: dict = None) -> dict[str, Any]:
+    """
+    Execute a recovery action on a paused task (e.g., close_extra_tabs, dismiss_modal, retry).
+    
+    Request body should include:
+    - action: recovery action enum string (e.g., "close_extra_tabs", "dismiss_product_review_modal")
+    - operator_notes: optional human comment
+    """
+    from recovery import RecoveryAction
+    
+    task = _find_task_by_ref(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    status = str(task.get("status") or "").lower()
+    if status != "paused_for_human":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is not paused for human recovery (status={status})"
+        )
+    
+    body = body or {}
+    action = str(body.get("action") or "").strip()
+    operator_notes = str(body.get("operator_notes") or "").strip()
+    
+    # Validate action is in RecoveryAction enum
+    valid_actions = {e.value for e in RecoveryAction}
+    if action not in valid_actions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid recovery action '{action}'. Valid actions: {', '.join(sorted(valid_actions))}"
+        )
+    
+    action_id = str(uuid4())
+    recovery_context = task.get("recovery_context") or {}
+    
+    # Record the recovery action request
+    if "recovery_actions" not in task:
+        task["recovery_actions"] = []
+    
+    task["recovery_actions"].append({
+        "action_id": action_id,
+        "action": action,
+        "requested_at": datetime.utcnow().isoformat(),
+        "operator_notes": operator_notes,
+        "status": "pending",  # waiting for worker to execute
+    })
+    
+    task["recovery_last_action"] = action
+    task["updated_at"] = datetime.utcnow().isoformat()
+    
+    _append_task_log(task, f"Recovery action requested: {action} ({operator_notes})")
+    save_task_db(task)
+    
+    logger.info(
+        "Recovery action queued: task_id=%s action=%s action_id=%s operator_notes=%s",
+        task_id, action, action_id, operator_notes
+    )
+    
+    return {
+        "status": "action_queued",
+        "action_id": action_id,
+        "action": action,
+        "message": f"Recovery action '{action}' queued for task {task_id}",
+    }
+
+
+@app.post("/api/tasks/{task_id}/recovery-action-completed")
+def mark_recovery_action_completed(task_id: str, body: dict = None) -> dict[str, Any]:
+    """
+    Mark a recovery action as completed by the worker.
+    Worker calls this after executing the recovery action.
+    
+    Request body should include:
+    - action_id: the action_id from the recovery action request
+    - success: bool (true if action succeeded)
+    - result_message: optional details about the result
+    """
+    task = _find_task_by_ref(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    body = body or {}
+    action_id = str(body.get("action_id") or "").strip()
+    success = bool(body.get("success", False))
+    result_message = str(body.get("result_message") or "").strip()
+    
+    if not action_id:
+        raise HTTPException(status_code=400, detail="action_id required")
+    
+    # Find and update the action record
+    actions = task.get("recovery_actions") or []
+    action_record = next((a for a in actions if a.get("action_id") == action_id), None)
+    
+    if not action_record:
+        raise HTTPException(status_code=404, detail=f"Recovery action {action_id} not found")
+    
+    action_record["status"] = "completed" if success else "failed"
+    action_record["completed_at"] = datetime.utcnow().isoformat()
+    action_record["result_message"] = result_message
+    
+    task["updated_at"] = datetime.utcnow().isoformat()
+    
+    if success:
+        # Mark as resolved and return to queued so worker can continue
+        task["status"] = "queued"
+        _append_task_log(task, f"Recovery action completed successfully: {action_record.get('action')}")
+    else:
+        _append_task_log(task, f"Recovery action failed: {action_record.get('action')} - {result_message}", level="error")
+    
+    save_task_db(task)
+    
+    logger.info(
+        "Recovery action completed: task_id=%s action_id=%s success=%s result=%s",
+        task_id, action_id, success, result_message
+    )
+    
+    return {
+        "status": "action_completed",
+        "action_id": action_id,
+        "success": success,
+        "message": f"Recovery action marked {'successful' if success else 'failed'}",
+    }
+
+
+@app.get("/api/tasks/{task_id}/recovery-context")
+def get_recovery_context(task_id: str) -> dict[str, Any]:
+    """Get the recovery context and history for a paused task."""
+    task = _find_task_by_ref(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    recovery_context = task.get("recovery_context") or {}
+    recovery_actions = task.get("recovery_actions") or []
+    
+    return {
+        "task_id": task_id,
+        "status": task.get("status"),
+        "recovery_context": recovery_context,
+        "recovery_actions": recovery_actions,
+    }
 
 
 @app.get("/worker/tasks/next", response_model=TaskRecord | None)

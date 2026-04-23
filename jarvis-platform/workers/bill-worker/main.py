@@ -32,7 +32,7 @@ SECRETS_PATH = APP_ROOT / "secrets.local.json"
 LOGS_DIR = APP_ROOT / "logs"
 SCREENSHOTS_DIR = APP_ROOT / "screenshots"
 DOWNLOADS_DIR = APP_ROOT / "downloads"
-WORKER_VERSION = "0.3.30"
+WORKER_VERSION = "0.3.31"
 HEARTBEAT_INTERVAL_SECONDS = 10.0
 POLLING_INTERVAL_SECONDS = 5.0
 UPDATE_CHECK_INTERVAL_SECONDS = 120.0
@@ -1224,6 +1224,14 @@ def poll_next_task(machine_uuid: str, state: dict[str, Any], runtime_state: Runt
         _log_http_failure("task-poll", poll_url, error)
 
 
+def poll_recovery_actions(machine_uuid: str, state: dict[str, Any], runtime_state: RuntimeState) -> None:
+    """Poll for recovery actions on paused tasks assigned to this machine."""
+    # TODO Phase 7: Fetch paused tasks for this machine
+    # GET /api/tasks/paused-for-human-recovery?machine_uuid={machine_uuid}
+    # For now, this is a placeholder for Phase 7 implementation
+    pass
+
+
 def _now_iso() -> str:
     return datetime.utcnow().isoformat()
 
@@ -1737,6 +1745,60 @@ def fail_task(machine_uuid: str, task_id: str | None, error_message: str, result
         print(f"[worker] fail task update failed: {error}")
 
 
+def _validate_playwright_chromium() -> None:
+    """Check that Playwright and Chromium are available; auto-install Chromium if missing.
+
+    Logs Python path, Playwright version, Chromium exe path, and whether the
+    browser binary was found.  If Chromium is missing, attempts a subprocess
+    install and logs the outcome.  Never raises — a missing browser is
+    surfaced as a clear error in the log so the operator can act.
+    """
+    log_info(f"[playwright-check] Python executable : {sys.executable}")
+
+    # Check Playwright package
+    try:
+        import playwright as _pw
+        log_info(f"[playwright-check] Playwright version : {_pw.__version__}")
+    except ImportError:
+        log_warn("[playwright-check] playwright package is NOT installed — teach sessions will fail")
+        return
+
+    # Resolve Chromium exe path
+    chromium_exe: str | None = None
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            chromium_exe = p.chromium.executable_path
+    except Exception as exc:
+        log_warn(f"[playwright-check] Could not resolve Chromium path: {exc}")
+
+    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "(default)")
+    log_info(f"[playwright-check] PLAYWRIGHT_BROWSERS_PATH : {browsers_path}")
+
+    if chromium_exe and Path(chromium_exe).exists():
+        log_info(f"[playwright-check] Chromium exe : {chromium_exe} (OK)")
+        return
+
+    log_warn(f"[playwright-check] Chromium NOT found at: {chromium_exe or '(unknown)'}")
+    log_info("[playwright-check] Attempting automatic: playwright install chromium")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode == 0:
+            log_info("[playwright-check] playwright install chromium succeeded")
+        else:
+            log_warn(f"[playwright-check] playwright install chromium failed (exit {result.returncode})")
+            log_warn(f"[playwright-check] stderr: {result.stderr[:400]}")
+            log_warn(f"[playwright-check] Remediation: run  {sys.executable} -m playwright install chromium")
+    except Exception as exc:
+        log_warn(f"[playwright-check] Auto-install exception: {exc}")
+        log_warn(f"[playwright-check] Remediation: run  {sys.executable} -m playwright install chromium")
+
+
 def main() -> None:
     startup_log_path = initialize_logging()
     log_info("Starting Bill Worker...")
@@ -1748,6 +1810,7 @@ def main() -> None:
 
     runtime_settings = apply_runtime_config()
     log_info(f"Worker version: {WORKER_VERSION}")
+    _validate_playwright_chromium()
 
     machine_name = str(MACHINE_DISPLAY_NAME_OVERRIDE or socket.gethostname()).strip()
     log_info(f"Worker name: {machine_name}")
@@ -1893,6 +1956,7 @@ def main() -> None:
         if now - last_task_poll >= POLLING_INTERVAL_SECONDS:
             log_info("Startup sequence step 3/3: task poll") if last_task_poll == 0.0 else None
             poll_next_task(machine_uuid, state, runtime_state)
+            poll_recovery_actions(machine_uuid, state, runtime_state)
             last_task_poll = now
 
         if AUTO_UPDATE_ENABLED and (now - last_update_check) >= UPDATE_CHECK_INTERVAL_SECONDS:
