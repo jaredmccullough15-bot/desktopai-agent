@@ -23,14 +23,14 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
-from app.error_explainer import (
+from error_explainer import (
     classify_error,
     generate_explanation,
     build_human_summary,
     find_similar_failure,
     score_confidence,
 )
-from app.timeout_recovery import (
+from timeout_recovery import (
     TimeoutPolicy,
     DEFAULT_POLICY,
     classify_timeout_type,
@@ -41,7 +41,7 @@ from app.timeout_recovery import (
     get_or_create_recovery_state,
     clear_recovery_state,
 )
-from app.schemas import (
+from schemas import (
     BrainCommandRequest,
     BrainCommandResponse,
     ConversationPreferenceRecord,
@@ -4392,6 +4392,52 @@ def _llm_conversational_response(
             f"Error: {exc}. Try a specific command like 'list workflows' or 'which worker is free?'",
         )
 
+def _voice_metadata_for_command_response(
+    recognized_intent: str,
+    before_execution: str,
+    after_execution: str,
+    suggested_next_action: str | None,
+    task: TaskCreateResponse | None,
+    selected_workflow: str | None,
+) -> tuple[bool, str, str, str, str]:
+    candidate_text = " ".join(
+        part.strip() for part in [after_execution, suggested_next_action or ""] if part and part.strip()
+    ).strip()
+    if not candidate_text:
+        candidate_text = before_execution.strip() or "I have an update."
+
+    lowered = " ".join([recognized_intent, before_execution, after_execution, suggested_next_action or ""]).lower()
+
+    emotion = "helpful"
+    style_profile = "default"
+    event_type = "command_response"
+
+    if any(token in lowered for token in ["warning", "risk", "timeout", "blocked", "needs_human_help"]):
+        emotion = "alert"
+        style_profile = "urgent"
+        event_type = "warning_risk"
+    elif any(token in lowered for token in ["failed", "error", "could not", "cannot", "no worker", "not found"]):
+        emotion = "apologetic"
+        style_profile = "empathetic"
+        event_type = "recovery_stuck"
+    elif any(token in lowered for token in ["completed", "resolved", "queued workflow", "succeeded", "success"]):
+        emotion = "confident"
+        style_profile = "energetic"
+        event_type = "workflow_completed"
+    elif recognized_intent in {"task_summary", "worker_query", "workflow_query", "conversational"}:
+        emotion = "helpful"
+        style_profile = "calm"
+        event_type = "status_update"
+
+    speak_response = bool(candidate_text) and not any(
+        token in lowered for token in ["pending approval", "provide required inputs", "answer the guided questions"]
+    )
+
+    if task and task.id and selected_workflow:
+        candidate_text += f" Task {task.id} for workflow {selected_workflow}."
+
+    return speak_response, candidate_text, emotion, style_profile, event_type
+
 
 @app.post("/api/brain/command", response_model=BrainCommandResponse)
 def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
@@ -5060,6 +5106,15 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         tags=["brain", recognized_intent],
     )
 
+    speak_response, voice_text, suggested_emotion, suggested_style_profile, voice_event_type = _voice_metadata_for_command_response(
+        recognized_intent=recognized_intent,
+        before_execution=before_execution,
+        after_execution=after_execution,
+        suggested_next_action=suggested_next_action,
+        task=task,
+        selected_workflow=selected_workflow,
+    )
+
     return BrainCommandResponse(
         recognized_intent=recognized_intent,
         command=command_text,
@@ -5075,6 +5130,11 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         pending_questions=pending_questions,
         live_reasoning=decision_reasoning + preflight_warnings,
         task=task,
+        speak_response=speak_response,
+        voice_text=voice_text,
+        suggested_emotion=suggested_emotion,
+        suggested_style_profile=suggested_style_profile,
+        voice_event_type=voice_event_type,
     )
 
 

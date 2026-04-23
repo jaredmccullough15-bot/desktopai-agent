@@ -19,6 +19,9 @@ REQUIRED_ROOT_FILES = [
     "db_writes.py",
     "seed.py",
     "teach_session.py",
+    "error_explainer.py",  # Flat import dependency for main.py
+    "timeout_recovery.py",  # Flat import dependency for main.py
+    "schemas.py",  # Flat import dependency for main.py
     "recovery.py",  # Phase 6: Human recovery system
     "recovery_playbooks.py",  # Phase 6.5: Recovery playbooks (self-healing)
     "playbook_service.py",  # Phase 6.5: Playbook service (matching, learning)

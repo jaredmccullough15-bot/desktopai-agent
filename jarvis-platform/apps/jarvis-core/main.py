@@ -5,7 +5,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.schemas import (
+from schemas import (
     MachineRecord,
     TaskCompleteRequest,
     TaskCreateRequest,

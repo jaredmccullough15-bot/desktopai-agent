@@ -7,6 +7,7 @@ import AlertsPanel, { type AlertItem, type AlertKind, type HelpTask } from "./co
 import BillVoiceControls from "./components/BillVoiceControls";
 import RecoveryPanel from "./components/RecoveryPanel";
 import RecoveryAnalyticsPanel from "./components/RecoveryAnalyticsPanel";
+import { useBillMic } from "./hooks/useBillMic";
 import { useBillVoice } from "./hooks/useBillVoice";
 import { useVoice } from "./hooks/useVoice";
 
@@ -113,6 +114,11 @@ type BrainCommandResponse = {
   pending_questions?: string[];
   live_reasoning?: string[];
   task?: BrainTaskRef | null;
+  speak_response?: boolean;
+  voice_text?: string | null;
+  suggested_emotion?: string | null;
+  suggested_style_profile?: string | null;
+  voice_event_type?: string | null;
 };
 
 type DraftVariableInput = {
@@ -233,6 +239,7 @@ type TeachingSessionQuestion = {
 };
 
 const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
+const COMMAND_CENTER_VOICE_PREF_KEY = "bill.command-center.voice.enabled";
 
 const getConfiguredApiBase = (): string => {
   const configured = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim();
@@ -312,6 +319,15 @@ const toDisplayTime = (value?: string): string => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleString();
+};
+
+const hashText = (text: string): string => {
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash << 5) - hash + text.charCodeAt(i);
+    hash |= 0;
+  }
+  return String(hash);
 };
 
 const BUTTON_PRIMARY =
@@ -415,10 +431,36 @@ export default function Home() {
     },
   });
   const billVoice = useBillVoice(getApiBase());
+  const commandMic = useBillMic();
+  const [commandVoiceEnabled, setCommandVoiceEnabled] = useState<boolean>(true);
+  const [commandVoiceEmotion, setCommandVoiceEmotion] = useState<string>("helpful");
+  const [commandVoiceStyleProfile, setCommandVoiceStyleProfile] = useState<string>("default");
+  const [lastCommandResponseText, setLastCommandResponseText] = useState<string>("");
+  const lastSpokenHashRef = useRef<string>("");
+  const lastSpokenAtRef = useRef<number>(0);
+  const lastVoiceEventRef = useRef<{ eventType: string; at: number }>({ eventType: "", at: 0 });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(COMMAND_CENTER_VOICE_PREF_KEY);
+    if (raw === "0") {
+      setCommandVoiceEnabled(false);
+      setTtsEnabled(false);
+    } else if (raw === "1") {
+      setCommandVoiceEnabled(true);
+      setTtsEnabled(true);
+    }
+  }, [setTtsEnabled]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(COMMAND_CENTER_VOICE_PREF_KEY, commandVoiceEnabled ? "1" : "0");
+    setTtsEnabled(commandVoiceEnabled);
+  }, [commandVoiceEnabled, setTtsEnabled]);
 
   const queueBillEventSpeech = useCallback(
     (eventType: string, options?: { taskId?: string; workflowName?: string; context?: Record<string, unknown>; overrideText?: string }) => {
-      if (!ttsEnabled) return;
+      if (!commandVoiceEnabled) return;
       if (!billVoice.config?.voice_enabled || !billVoice.config?.configured) return;
       void billVoice.speakEvent({
         event_type: eventType,
@@ -427,8 +469,9 @@ export default function Home() {
         context: options?.context,
         override_text: options?.overrideText,
       });
+      lastVoiceEventRef.current = { eventType, at: Date.now() };
     },
-    [billVoice, ttsEnabled],
+    [billVoice, commandVoiceEnabled],
   );
 
   // Init notification permission state on mount
@@ -1276,22 +1319,46 @@ export default function Home() {
           suggestedNextAction: body.suggested_next_action ?? undefined,
         },
       ]);
+      setLastCommandResponseText(lines.join(". "));
 
-      // Speak the response if TTS is enabled (Phase 4)
-      if (ttsEnabled && lines.length > 0) {
-        const spoken = await billVoice.speakText({
-          text: lines.join(". "),
-          emotion: "helpful",
-          style_profile: "default",
-          task_id: body.task?.id,
-          workflow_name: body.selected_workflow ?? undefined,
-          context: {
-            event_type: "brain_response",
-            suggested_next_action: body.suggested_next_action ?? "",
-          },
-        });
-        if (!spoken) {
-          speak(lines.join(". "));
+      const responseVoiceText = (body.voice_text ?? "").trim() || lines.join(". ");
+      if (commandVoiceEnabled && body.speak_response !== false && responseVoiceText) {
+        const responseId = [
+          body.task?.id ?? "",
+          body.selected_workflow ?? "",
+          responseVoiceText,
+        ].join("|");
+        const responseHash = hashText(responseId);
+        const now = Date.now();
+        const isDuplicateReplay = responseHash === lastSpokenHashRef.current;
+        const isDuplicateQuickReplay =
+          responseHash === lastSpokenHashRef.current && now - lastSpokenAtRef.current < 8000;
+        const eventJustSpokeSimilar =
+          body.voice_event_type &&
+          body.voice_event_type === lastVoiceEventRef.current.eventType &&
+          now - lastVoiceEventRef.current.at < 5000;
+
+        if (!isDuplicateReplay && !isDuplicateQuickReplay && !eventJustSpokeSimilar) {
+          const spoken = await billVoice.speakText({
+            text: responseVoiceText,
+            emotion: body.suggested_emotion ?? commandVoiceEmotion,
+            style_profile: body.suggested_style_profile ?? commandVoiceStyleProfile,
+            task_id: body.task?.id,
+            workflow_name: body.selected_workflow ?? undefined,
+            context: {
+              event_type: body.voice_event_type ?? "brain_response",
+              recognized_intent: body.recognized_intent ?? "",
+              command: command,
+              suggested_next_action: body.suggested_next_action ?? "",
+            },
+          });
+
+          if (spoken) {
+            lastSpokenHashRef.current = responseHash;
+            lastSpokenAtRef.current = now;
+          } else {
+            speak(responseVoiceText);
+          }
         }
       }
 
@@ -2032,28 +2099,93 @@ export default function Home() {
                         </svg>
                       </button>
                     )}
-                    {/* TTS toggle (Phase 4) */}
                     <button
                       type="button"
-                      onClick={() => setTtsEnabled(!ttsEnabled)}
-                      title={ttsEnabled ? "Mute Bill's voice" : "Enable Bill's voice"}
-                      className={`rounded-lg px-3 py-2 text-sm transition ${
-                        ttsEnabled
+                      onClick={() => setCommandVoiceEnabled((current) => !current)}
+                      title={commandVoiceEnabled ? "Speak responses enabled" : "Speak responses disabled"}
+                      className={`rounded-lg px-3 py-2 text-xs font-medium transition ${
+                        commandVoiceEnabled
                           ? "border border-cyan-400/40 bg-cyan-500/15 text-cyan-300"
-                          : "border border-slate-700 bg-slate-900 text-slate-600 hover:text-slate-400"
+                          : "border border-slate-700 bg-slate-900 text-slate-500 hover:text-slate-300"
                       }`}
                     >
-                      {isSpeaking ? (
-                        <svg className="h-4 w-4 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072M12 6v12m3-9a3 3 0 010 6" />
-                        </svg>
-                      ) : (
-                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M11 5L6 9H2v6h4l5 4V5z" />
-                          {ttsEnabled && <path strokeLinecap="round" strokeLinejoin="round" d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" />}
-                        </svg>
-                      )}
+                      {commandVoiceEnabled ? "Voice On" : "Voice Off"}
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        billVoice.stopPlayback();
+                      }}
+                      title="Stop speaking"
+                      className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-300 transition hover:border-cyan-400/60 hover:text-cyan-200"
+                    >
+                      Stop Voice
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!commandMic.supported}
+                      onClick={() => {
+                        if (commandMic.isRecording) {
+                          commandMic.stopRecording();
+                        } else {
+                          void commandMic.requestPermission().then((granted) => {
+                            if (granted) {
+                              void commandMic.startRecording();
+                            }
+                          });
+                        }
+                      }}
+                      title="Experimental mic capture (STT coming soon)"
+                      className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-300 transition hover:border-cyan-400/60 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {commandMic.isRecording ? "Stop Mic" : "Mic (experimental)"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const repeatText = lastCommandResponseText.trim();
+                        if (!repeatText || !commandVoiceEnabled) return;
+                        void billVoice.speakText({
+                          text: repeatText,
+                          emotion: commandVoiceEmotion,
+                          style_profile: commandVoiceStyleProfile,
+                          context: { event_type: "repeat_last_response" },
+                        });
+                      }}
+                      title="Repeat last Bill response"
+                      disabled={!lastCommandResponseText.trim()}
+                      className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-300 transition hover:border-cyan-400/60 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Repeat
+                    </button>
+                    <label className="hidden xl:block">
+                      <span className="sr-only">Voice emotion</span>
+                      <select
+                        value={commandVoiceEmotion}
+                        onChange={(event) => setCommandVoiceEmotion(event.target.value)}
+                        className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs text-slate-200"
+                      >
+                        {["helpful", "neutral", "empathetic", "alert", "confident", "apologetic"].map((emotion) => (
+                          <option key={emotion} value={emotion}>
+                            {emotion}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="hidden xl:block">
+                      <span className="sr-only">Voice style</span>
+                      <select
+                        value={commandVoiceStyleProfile}
+                        onChange={(event) => setCommandVoiceStyleProfile(event.target.value)}
+                        className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs text-slate-200"
+                      >
+                        {["default", "calm", "energetic", "urgent", "empathetic"].map((profile) => (
+                          <option key={profile} value={profile}>
+                            {profile}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                     <button
                       type="button"
                       onClick={() => void submitBrainCommand()}
@@ -2063,6 +2195,22 @@ export default function Home() {
                       {chatLoading ? "Thinking..." : "Send"}
                     </button>
                   </div>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                  <span>
+                    Command voice: {commandVoiceEnabled ? "enabled" : "disabled"}
+                  </span>
+                  <span>•</span>
+                  <span>
+                    ElevenLabs: {billVoice.config?.configured ? "ready" : "unavailable"}
+                  </span>
+                  <span>•</span>
+                  <span>
+                    Mic capture: experimental (STT coming soon)
+                  </span>
+                  {billVoice.lastError && (
+                    <span className="text-rose-300">• Voice warning: {billVoice.lastError}</span>
+                  )}
                 </div>
               </div>
 
