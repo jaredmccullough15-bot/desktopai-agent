@@ -41,9 +41,11 @@ async function proxyRequest(
   const search = request.nextUrl.search;
   const url = `${BACKEND}/${path}${search}`;
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  const headers: Record<string, string> = {};
+  const requestContentType = request.headers.get("content-type");
+  if (requestContentType) {
+    headers["Content-Type"] = requestContentType;
+  }
   const authHeader = request.headers.get("authorization");
   if (authHeader) headers["authorization"] = authHeader;
 
@@ -62,10 +64,10 @@ async function proxyRequest(
       headers,
       body,
     });
-    const data = await response.text();
+    const data = await response.arrayBuffer();
     return new NextResponse(data, {
       status: response.status,
-      headers: { "Content-Type": response.headers.get("Content-Type") || "application/json" },
+      headers: { "Content-Type": response.headers.get("Content-Type") || "application/octet-stream" },
     });
   } catch (err) {
     return NextResponse.json({ error: "Proxy error", detail: String(err) }, { status: 502 });

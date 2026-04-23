@@ -27,6 +27,10 @@ REQUIRED_ROOT_FILES = [
     "recovery_suggestion_service.py",  # Phase 7.5: Suggested fix service
     "recovery_analytics_schemas.py",  # Phase 8: Analytics schemas
     "recovery_analytics_service.py",  # Phase 8: Analytics service
+    "voice_schemas.py",  # Phase Voice: Bill voice request/response schemas
+    "emotion_engine.py",  # Phase Voice: rules-based emotion/style routing
+    "elevenlabs_voice_service.py",  # Phase Voice: ElevenLabs TTS service
+    "bill_voice_events.py",  # Phase Voice: event-to-speech mapping
 ]
 
 REQUIRED_DIRS = [

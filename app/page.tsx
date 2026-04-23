@@ -4,8 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import MobileNav, { type MobileView } from "./components/MobileNav";
 import MobileDashboard from "./components/MobileDashboard";
 import AlertsPanel, { type AlertItem, type AlertKind, type HelpTask } from "./components/AlertsPanel";
+import BillVoiceControls from "./components/BillVoiceControls";
 import RecoveryPanel from "./components/RecoveryPanel";
 import RecoveryAnalyticsPanel from "./components/RecoveryAnalyticsPanel";
+import { useBillVoice } from "./hooks/useBillVoice";
 import { useVoice } from "./hooks/useVoice";
 
 type TaskCreateResponse = {
@@ -412,6 +414,22 @@ export default function Home() {
       setChatInput(text);
     },
   });
+  const billVoice = useBillVoice(getApiBase());
+
+  const queueBillEventSpeech = useCallback(
+    (eventType: string, options?: { taskId?: string; workflowName?: string; context?: Record<string, unknown>; overrideText?: string }) => {
+      if (!ttsEnabled) return;
+      if (!billVoice.config?.voice_enabled || !billVoice.config?.configured) return;
+      void billVoice.speakEvent({
+        event_type: eventType,
+        task_id: options?.taskId,
+        workflow_name: options?.workflowName,
+        context: options?.context,
+        override_text: options?.overrideText,
+      });
+    },
+    [billVoice, ttsEnabled],
+  );
 
   // Init notification permission state on mount
   useEffect(() => {
@@ -751,6 +769,14 @@ export default function Home() {
               taskPayload: task.payload as Record<string, unknown> | undefined,
             });
             _sendBrowserNotification(`Task Failed: ${name}`, task.error ?? short);
+            queueBillEventSpeech("recovery_stuck", {
+              taskId: task.id,
+              workflowName: String(task.payload?.workflow_name ?? task.payload?.task_type ?? ""),
+              context: {
+                event_type: "task_failed",
+                error: task.error ?? "",
+              },
+            });
           } else if (currStatus === "needs_human_help") {
             newAlerts.push({
               id: `alert-help-${task.id}-${Date.now()}`,
@@ -762,6 +788,13 @@ export default function Home() {
               taskPayload: task.payload as Record<string, unknown> | undefined,
             });
             _sendBrowserNotification(`Needs Attention: ${name}`, "Human intervention required.");
+            queueBillEventSpeech("suggested_fix_available", {
+              taskId: task.id,
+              workflowName: String(task.payload?.workflow_name ?? task.payload?.task_type ?? ""),
+              context: {
+                event_type: "needs_human_help",
+              },
+            });
           } else if (currStatus === "recovering" && prevStatus !== "recovering") {
             newAlerts.push({
               id: `alert-recover-${task.id}-${Date.now()}`,
@@ -772,6 +805,13 @@ export default function Home() {
               taskId: task.id,
               taskPayload: task.payload as Record<string, unknown> | undefined,
             });
+            queueBillEventSpeech("warning_risk", {
+              taskId: task.id,
+              workflowName: String(task.payload?.workflow_name ?? task.payload?.task_type ?? ""),
+              context: {
+                event_type: "recovering",
+              },
+            });
           } else if (currStatus === "completed" && prevStatus !== "completed") {
             newAlerts.push({
               id: `alert-done-${task.id}-${Date.now()}`,
@@ -780,6 +820,13 @@ export default function Home() {
               detail: `Task ${short} finished successfully.`,
               timestamp: new Date().toISOString(),
               taskId: task.id,
+            });
+            queueBillEventSpeech("workflow_completed", {
+              taskId: task.id,
+              workflowName: String(task.payload?.workflow_name ?? task.payload?.task_type ?? ""),
+              context: {
+                event_type: "task_completed",
+              },
             });
           }
         }
@@ -1150,6 +1197,10 @@ export default function Home() {
       if (!res.ok) {
         setActionError(`Smart Sherpa Sync request failed: ${res.status}`);
       } else {
+        queueBillEventSpeech("workflow_started", {
+          workflowName: "smart_sherpa_sync",
+          context: { source: "runSmartSherpaSync" },
+        });
         await loadDashboardData();
       }
     } catch (err) {
@@ -1228,7 +1279,28 @@ export default function Home() {
 
       // Speak the response if TTS is enabled (Phase 4)
       if (ttsEnabled && lines.length > 0) {
-        speak(lines.join(". "));
+        const spoken = await billVoice.speakText({
+          text: lines.join(". "),
+          emotion: "helpful",
+          style_profile: "default",
+          task_id: body.task?.id,
+          workflow_name: body.selected_workflow ?? undefined,
+          context: {
+            event_type: "brain_response",
+            suggested_next_action: body.suggested_next_action ?? "",
+          },
+        });
+        if (!spoken) {
+          speak(lines.join(". "));
+        }
+      }
+
+      if (body.task?.id && body.selected_workflow) {
+        queueBillEventSpeech("workflow_started", {
+          taskId: body.task.id,
+          workflowName: body.selected_workflow,
+          context: { source: "brain_command" },
+        });
       }
 
       await loadDashboardData();
@@ -3219,6 +3291,11 @@ export default function Home() {
       {/* ── Recovery Analytics Panel ─────────────────────────────────────── */}
       <div className="mt-6 px-4 max-w-[1600px] mx-auto">
         <RecoveryAnalyticsPanel apiBase={getApiBase()} />
+      </div>
+
+      {/* ── Bill Voice Controls ─────────────────────────────────────────── */}
+      <div className="mt-6 px-4 max-w-[1600px] mx-auto">
+        <BillVoiceControls voice={billVoice} />
       </div>
       </div>{/* /desktop hidden lg:block */}
 
