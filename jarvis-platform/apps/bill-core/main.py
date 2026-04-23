@@ -3,6 +3,12 @@ import importlib.util
 import logging
 import os
 import json
+
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(override=False)  # loads .env from cwd or parent; does not override existing env vars
+except ImportError:
+    pass  # python-dotenv not installed; rely on system environment variables
 import re
 import subprocess
 import sys
@@ -4317,6 +4323,70 @@ def update_workflow_sop_summary(workflow_name: str, payload: WorkflowSOPUpdateRe
     return WorkflowSOPSummaryRecord(**current)
 
 
+# ── Conversational LLM fallback ───────────────────────────────────────────────
+
+def _llm_conversational_response(
+    command_text: str,
+    machines: list,
+    tasks: list,
+) -> tuple[str, str]:
+    """Call OpenAI chat completion to handle any command that didn't match a
+    keyword intent.  Returns (before_execution, after_execution) strings.
+    Falls back gracefully if OPENAI_API_KEY is not set or the call fails.
+    """
+    import requests as _requests
+
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return (
+            "I received your message but no AI key is configured.",
+            "Set OPENAI_API_KEY on the Bill Core server to enable conversational responses.",
+        )
+
+    # Build a brief system context so the LLM knows the current state
+    online_workers = [m for m in machines if getattr(m, "online", False)]
+    idle_workers = [m for m in online_workers if _worker_is_idle(m)]
+    active_tasks = [t for t in tasks if str(t.get("status") or "") in ("queued", "running")]
+    workflow_names = ", ".join(r.workflow_name for r in WORKFLOW_REGISTRY) or "none"
+
+    system_prompt = (
+        "You are Bill, an AI workflow operations assistant. "
+        "Answer conversationally and concisely. "
+        "Current state: "
+        f"{len(online_workers)} worker(s) online, "
+        f"{len(idle_workers)} idle, "
+        f"{len(active_tasks)} active task(s). "
+        f"Known workflows: {workflow_names}. "
+        "If the user asks about workers, tasks, or workflows use this state. "
+        "If they want to run something, tell them to say 'run <workflow name>'. "
+        "Keep answers under 3 sentences."
+    )
+
+    try:
+        resp = _requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": command_text},
+                ],
+                "max_tokens": 200,
+                "temperature": 0.5,
+            },
+            timeout=12,
+        )
+        resp.raise_for_status()
+        reply = resp.json()["choices"][0]["message"]["content"].strip()
+        return ("I understood your message and generated a conversational response.", reply)
+    except Exception as exc:
+        return (
+            "I received your message but could not reach the AI service.",
+            f"Error: {exc}. Try a specific command like 'list workflows' or 'which worker is free?'",
+        )
+
+
 @app.post("/api/brain/command", response_model=BrainCommandResponse)
 def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     command_text = (payload.command or "").strip()
@@ -4358,6 +4428,49 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
             labels.append(f"{stored.get('key')}={stored.get('value')}")
         after_execution = "Saved conversation preferences: " + "; ".join(labels)
         suggested_next_action = "These preferences will influence worker choice and runtime adjustments."
+
+    # ── Natural language aliases — broaden keyword matching ────────────────
+    _worker_status_phrases = (
+        "do we have any workers",
+        "are there any workers",
+        "any workers available",
+        "workers available",
+        "is any worker",
+        "any worker online",
+        "worker status",
+        "how many workers",
+    )
+    _idle_worker_phrases = (
+        "which worker is free",
+        "which worker is idle",
+        "who is free",
+        "is anyone free",
+        "is anyone idle",
+        "anyone available",
+        "free worker",
+        "idle worker",
+    )
+    _active_task_phrases = (
+        "show active tasks",
+        "what is running now",
+        "current progress",
+        "what are you doing",
+        "how is the workflow going",
+        "what's happening",
+        "whats happening",
+        "what is happening",
+        "status update",
+        "what is the status",
+        "how is it going",
+        "any progress",
+    )
+    if any(p in command_lower for p in _worker_status_phrases):
+        command_lower = "show online workers"
+    elif any(p in command_lower for p in _idle_worker_phrases):
+        command_lower = "which worker is free"
+    elif any(p in command_lower for p in _active_task_phrases):
+        command_lower = "show active tasks"
+    # ────────────────────────────────────────────────────────────────────────
 
     if "show online workers" in command_lower or "list online workers" in command_lower:
         recognized_intent = "worker_query"
@@ -4894,6 +5007,15 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
                     f"online={online_count}, busy_online={busy_online}, offline={len(machines) - online_count}."
                 )
                 suggested_next_action = "Ask 'show online workers' or run on a specific worker alias."
+
+    # ── LLM conversational fallback for anything still unrecognised ──────────
+    if recognized_intent == "unknown":
+        before_execution, after_execution = _llm_conversational_response(
+            command_text, machines, tasks
+        )
+        recognized_intent = "conversational"
+        suggested_next_action = None
+    # ────────────────────────────────────────────────────────────────────────
 
     audit_entry = {
         "timestamp": datetime.utcnow().isoformat(),
