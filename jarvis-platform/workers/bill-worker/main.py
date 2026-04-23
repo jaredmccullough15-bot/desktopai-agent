@@ -1230,18 +1230,115 @@ def poll_recovery_actions(machine_uuid: str, state: dict[str, Any], runtime_stat
     Fetch pending recovery actions, execute them, and report results back to core.
     """
     import asyncio
-    from recovery_handlers import execute_recovery_action, RECOVERY_HANDLERS
-    
-    # For now: placeholder to be filled by Phase 7 integration
-    # This will:
-    # 1. GET /api/tasks/paused-for-human-recovery to fetch paused tasks for this machine
-    # 2. For each task with pending recovery actions:
-    #    - Mark action as in_progress
-    #    - Launch browser if needed
-    #    - Execute recovery action via recovery_handlers
-    #    - POST /api/tasks/{task_id}/recovery-action-completed with result
-    # 3. Return to polling loop
-    pass
+    from recovery_handlers import execute_recovery_action
+
+    def _checkpoint_updates_for_action(action_name: str, success: bool, recovery_context: dict[str, Any]) -> dict[str, Any]:
+        if not success:
+            return {}
+        if action_name == "close_extra_tabs":
+            return {"open_tabs_count": 1}
+        if action_name == "dismiss_product_review_modal":
+            return {"blocking_modal_detected": False, "modal_type": ""}
+        if action_name == "skip_last_client":
+            last_client = str(recovery_context.get("last_client_attempted") or "").strip()
+            updates: dict[str, Any] = {}
+            if last_client:
+                updates["clients_skipped_addition"] = [last_client]
+            return updates
+        return {}
+
+    try:
+        list_url = f"{API_BASE}/api/tasks/paused-for-human-recovery"
+        params = {"machine_uuid": machine_uuid, "include_auto": "true"}
+        _log_http_start("recovery-poll", list_url, timeout=10, params=params)
+        response = requests.get(list_url, params=params, timeout=10)
+        response.raise_for_status()
+        payload = response.json() if response.content else {}
+        paused_tasks = payload.get("tasks") if isinstance(payload, dict) else []
+        if not isinstance(paused_tasks, list):
+            return
+
+        for paused_task in paused_tasks:
+            task_id = str(paused_task.get("id") or "").strip()
+            if not task_id:
+                continue
+
+            recovery_context = paused_task.get("recovery_context") or {}
+            recovery_actions = paused_task.get("recovery_actions") or []
+            pending_actions = [a for a in recovery_actions if str(a.get("status") or "") == "pending"]
+
+            for action_record in pending_actions:
+                action_id = str(action_record.get("action_id") or "").strip()
+                action_name = str(action_record.get("action") or "").strip()
+                if not action_id or not action_name:
+                    continue
+
+                success = False
+                result_message = ""
+                error_details = ""
+                checkpoint_updates: dict[str, Any] = {}
+
+                if action_name in {"playbook_auto_sequence", "suggested_action_sequence"}:
+                    sequence = action_record.get("action_sequence") or []
+                    stop_on_first_failure = bool(action_record.get("stop_on_first_failure", True))
+                    sequence_results: list[dict[str, Any]] = []
+                    success = True
+
+                    for sequence_action in sequence:
+                        one_success, one_message = asyncio.run(
+                            execute_recovery_action(sequence_action, None, recovery_context)
+                        )
+                        sequence_results.append(
+                            {
+                                "action": sequence_action,
+                                "success": bool(one_success),
+                                "message": one_message,
+                            }
+                        )
+                        if one_success:
+                            checkpoint_updates.update(_checkpoint_updates_for_action(sequence_action, True, recovery_context))
+                        elif stop_on_first_failure:
+                            success = False
+                            break
+
+                    if stop_on_first_failure:
+                        success = success and all(item.get("success") for item in sequence_results)
+                    else:
+                        success = any(item.get("success") for item in sequence_results)
+
+                    result_message = json.dumps({"sequence_results": sequence_results})
+                    if not success:
+                        first_failure = next((item for item in sequence_results if not item.get("success")), None)
+                        error_details = str((first_failure or {}).get("message") or "playbook action sequence failed")
+                else:
+                    one_success, one_message = asyncio.run(execute_recovery_action(action_name, None, recovery_context))
+                    success = bool(one_success)
+                    result_message = str(one_message or "")
+                    if success:
+                        checkpoint_updates = _checkpoint_updates_for_action(action_name, True, recovery_context)
+                    else:
+                        error_details = result_message or "recovery action failed"
+
+                completed_url = f"{API_BASE}/api/tasks/{task_id}/recovery-action-completed"
+                completed_payload = {
+                    "action_id": action_id,
+                    "success": success,
+                    "machine_uuid": machine_uuid,
+                    "result_message": result_message,
+                    "error_details": error_details,
+                    "checkpoint_updates": checkpoint_updates,
+                    "resume_recommended": success,
+                }
+
+                _log_http_start("recovery-complete", completed_url, timeout=15)
+                completed_response = requests.post(completed_url, json=completed_payload, timeout=15)
+                completed_response.raise_for_status()
+                log_info(
+                    f"Recovery action completed: task_id={task_id} action_id={action_id} "
+                    f"action={action_name} success={success}"
+                )
+    except Exception as error:
+        _log_http_failure("recovery-poll", f"{API_BASE}/api/tasks/paused-for-human-recovery", error)
 
 
 def _now_iso() -> str:

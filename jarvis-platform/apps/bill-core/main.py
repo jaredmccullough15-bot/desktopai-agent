@@ -172,6 +172,12 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("bill-core")
 
+try:
+    from playbook_endpoints import register_playbook_endpoints
+except Exception as _playbook_endpoints_import_err:
+    logger.warning("Playbook endpoints unavailable: %s", _playbook_endpoints_import_err)
+    register_playbook_endpoints = None
+
 SERVER_HOST = (os.getenv("BILL_CORE_HOST") or "0.0.0.0").strip() or "0.0.0.0"
 SERVER_PORT = (os.getenv("BILL_CORE_PORT") or "8000").strip() or "8000"
 DEFAULT_TEACH_SESSION_WORKER_API_BASE = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com"
@@ -5284,6 +5290,11 @@ def pause_task_for_human_recovery(task_id: str, body: dict = None) -> dict[str, 
     - recovery_context: PreRecoveryContext dict with diagnostic info
     """
     from recovery import RecoveryContext
+    from playbook_service import (
+        MAX_AUTO_PLAYBOOK_ATTEMPTS_PER_INCIDENT,
+        find_matching_playbooks,
+        get_playbook,
+    )
     
     task = _find_task_by_ref(task_id)
     if task is None:
@@ -5331,6 +5342,13 @@ def pause_task_for_human_recovery(task_id: str, body: dict = None) -> dict[str, 
         "last_error": context_data.get("last_error", ""),
         "error_classification": context_data.get("error_classification", ""),
         "metadata": context_data.get("metadata", {}),
+        # Phase 6.5: playbook metadata
+        "matched_playbook_id": None,
+        "matched_problem_signature": None,
+        "playbook_auto_attempted": False,
+        "playbook_auto_attempt_result": None,
+        "candidate_playbook_created": False,
+        "learned_from_human_recovery": False,
     }
     
     # Initialize recovery tracking if not present
@@ -5340,6 +5358,93 @@ def pause_task_for_human_recovery(task_id: str, body: dict = None) -> dict[str, 
         task["recovery_actions"] = []
     if "recovery_audit_trail" not in task:
         task["recovery_audit_trail"] = []
+
+    # Phase 6.5: match-before-pause self-healing check.
+    workflow_name = recovery_context["workflow_name"]
+    explicit_no_auto = bool(context_data.get("no_auto_playbook")) or bool((task.get("payload") or {}).get("disable_playbook_auto_apply"))
+    prior_auto_attempts = int((task.get("recovery_context") or {}).get("playbook_auto_attempt_count") or 0)
+
+    if not explicit_no_auto and prior_auto_attempts < MAX_AUTO_PLAYBOOK_ATTEMPTS_PER_INCIDENT:
+        try:
+            matches = find_matching_playbooks(
+                workflow_name,
+                recovery_context,
+                recovery_context.get("last_error", ""),
+            )
+            if matches:
+                best_match = matches[0]
+                recovery_context["matched_playbook_id"] = best_match.playbook_id
+                recovery_context["matched_problem_signature"] = best_match.problem_signature
+
+                _log_recovery_audit(
+                    task_id,
+                    "playbook_matched",
+                    {
+                        "playbook_id": best_match.playbook_id,
+                        "problem_signature": best_match.problem_signature,
+                        "match_score": best_match.match_score,
+                        "confidence": best_match.confidence,
+                        "can_auto_apply": best_match.can_auto_apply,
+                    },
+                )
+
+                if best_match.can_auto_apply:
+                    playbook = get_playbook(best_match.playbook_id)
+                    sequence = [a.action for a in ((playbook.action_sequence.actions) if playbook and playbook.action_sequence else [])]
+
+                    if playbook and sequence:
+                        auto_action_id = str(uuid4())
+                        task.setdefault("recovery_actions", []).append(
+                            {
+                                "action_id": auto_action_id,
+                                "action": "playbook_auto_sequence",
+                                "requested_at": datetime.utcnow().isoformat(),
+                                "operator_notes": "auto-playbook attempt",
+                                "status": "pending",
+                                "source": "playbook_auto",
+                                "playbook_id": playbook.playbook_id,
+                                "problem_signature": best_match.problem_signature,
+                                "action_sequence": sequence,
+                                "stop_on_first_failure": bool(playbook.action_sequence.stop_on_first_failure),
+                            }
+                        )
+
+                        recovery_context["playbook_auto_attempted"] = True
+                        recovery_context["playbook_auto_attempt_count"] = prior_auto_attempts + 1
+                        recovery_context["playbook_auto_attempt_result"] = "started"
+
+                        task["status"] = "paused_for_auto_recovery"
+                        task["updated_at"] = datetime.utcnow().isoformat()
+                        task["recovery_context"] = recovery_context
+
+                        _append_task_log(
+                            task,
+                            f"Auto playbook recovery started: playbook_id={playbook.playbook_id}",
+                            level="info",
+                        )
+                        _log_recovery_audit(
+                            task_id,
+                            "playbook_auto_apply_started",
+                            {
+                                "playbook_id": playbook.playbook_id,
+                                "action_id": auto_action_id,
+                                "action_sequence": sequence,
+                            },
+                        )
+
+                        save_task_db(task)
+
+                        return {
+                            "status": "playbook_auto_apply_started",
+                            "message": f"Auto playbook attempt started for task {task_id}",
+                            "task_status": task["status"],
+                            "playbook_id": playbook.playbook_id,
+                            "action_id": auto_action_id,
+                            "action_sequence": sequence,
+                            "recovery_context": recovery_context,
+                        }
+        except Exception as exc:
+            logger.warning("Playbook match-before-pause failed task_id=%s: %s", task_id, exc)
     
     # Update task state
     task["status"] = "paused_for_human"
@@ -5376,7 +5481,7 @@ def pause_task_for_human_recovery(task_id: str, body: dict = None) -> dict[str, 
 
 
 @app.get("/api/tasks/paused-for-human-recovery")
-def list_paused_tasks(machine_uuid: str = None) -> dict[str, Any]:
+def list_paused_tasks(machine_uuid: str = None, include_auto: bool = False) -> dict[str, Any]:
     """
     List all tasks currently paused for human recovery.
     Optionally filter by machine_uuid (worker machine).
@@ -5384,8 +5489,12 @@ def list_paused_tasks(machine_uuid: str = None) -> dict[str, Any]:
     """
     paused = []
     
+    target_statuses = {"paused_for_human"}
+    if include_auto:
+        target_statuses.add("paused_for_auto_recovery")
+
     for t in tasks:
-        if str(t.get("status") or "") != "paused_for_human":
+        if str(t.get("status") or "") not in target_statuses:
             continue
         
         # Filter by machine_uuid if provided
@@ -5402,6 +5511,7 @@ def list_paused_tasks(machine_uuid: str = None) -> dict[str, Any]:
             "id": t.get("id"),
             "workflow_name": (t.get("payload") or {}).get("workflow_name") or (t.get("payload") or {}).get("task_type"),
             "pause_reason": recovery_context.get("pause_reason", ""),
+            "recovery_context": recovery_context,
             "assigned_machine_uuid": task_machine,
             "updated_at": t.get("updated_at"),
             "paused_at": recovery_context.get("paused_at"),
@@ -5409,8 +5519,9 @@ def list_paused_tasks(machine_uuid: str = None) -> dict[str, Any]:
             # Phase 7: UI readiness fields
             "latest_action": latest_action,
             "recovery_actions": recovery_actions,
-            "can_submit_new_action": True,
+            "can_submit_new_action": str(t.get("status") or "") == "paused_for_human",
             "can_retry_action": latest_action and latest_action.get("status") == "failed",
+            "is_auto_recovery": str(t.get("status") or "") == "paused_for_auto_recovery",
         })
     
     return {"count": len(paused), "tasks": paused}
@@ -5450,23 +5561,14 @@ def execute_recovery_action(task_id: str, body: dict = None) -> dict[str, Any]:
             detail=f"Invalid recovery action '{action}'. Valid actions: {', '.join(sorted(valid_actions))}"
         )
     
-    action_id = str(uuid4())
-    recovery_context = task.get("recovery_context") or {}
-    
-    # Record the recovery action request
-    if "recovery_actions" not in task:
-        task["recovery_actions"] = []
-    
-    task["recovery_actions"].append({
-        "action_id": action_id,
-        "action": action,
-        "requested_at": datetime.utcnow().isoformat(),
-        "operator_notes": operator_notes,
-        "status": "pending",  # waiting for worker to execute
-    })
-    
-    task["recovery_last_action"] = action
-    task["updated_at"] = datetime.utcnow().isoformat()
+    queued = _queue_recovery_action_record(
+        task,
+        action=action,
+        operator_notes=operator_notes,
+        source="human",
+        extra=None,
+    )
+    action_id = queued["action_id"]
     
     _append_task_log(task, f"Recovery action requested: {action} ({operator_notes})")
     save_task_db(task)
@@ -5481,6 +5583,184 @@ def execute_recovery_action(task_id: str, body: dict = None) -> dict[str, Any]:
         "action_id": action_id,
         "action": action,
         "message": f"Recovery action '{action}' queued for task {task_id}",
+    }
+
+
+def _queue_recovery_action_record(
+    task: dict[str, Any],
+    action: str,
+    operator_notes: str = "",
+    source: str = "human",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    action_id = str(uuid4())
+    if "recovery_actions" not in task:
+        task["recovery_actions"] = []
+
+    record = {
+        "action_id": action_id,
+        "action": action,
+        "requested_at": datetime.utcnow().isoformat(),
+        "operator_notes": operator_notes,
+        "status": "pending",
+        "source": source,
+    }
+    if extra:
+        record.update(extra)
+
+    task["recovery_actions"].append(record)
+    task["recovery_last_action"] = action
+    task["updated_at"] = datetime.utcnow().isoformat()
+    return record
+
+
+@app.get("/api/tasks/{task_id}/recovery-suggestion")
+def get_recovery_suggestion(task_id: str, refresh: bool = False) -> dict[str, Any]:
+    """
+    Phase 7.5: Generate a structured suggested fix for paused recovery incidents.
+
+    - Operator-triggered recommendation only
+    - No autonomous execution
+    - Deterministic rules are always available (AI ranking is optional)
+    """
+    from recovery_suggestion_service import generate_recovery_suggestion
+
+    task = _find_task_by_ref(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    status = str(task.get("status") or "").lower()
+    if status not in {"paused_for_human", "paused_for_auto_recovery"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is not in a recovery-paused state (status={status})",
+        )
+
+    # Prevent repeated suggestion loops by reusing a fresh cached suggestion unless refresh requested.
+    cache = task.get("latest_recovery_suggestion") or {}
+    cache_generated_at = str(cache.get("generated_at") or "").strip()
+    cache_dt = datetime.fromisoformat(cache_generated_at) if cache_generated_at else None
+    if not refresh and cache and cache_dt:
+        if (datetime.utcnow() - cache_dt).total_seconds() <= 60:
+            return {
+                "status": "success",
+                "cached": True,
+                "suggestion": cache,
+            }
+
+    try:
+        suggestion = generate_recovery_suggestion(task)
+        suggestion_dict = suggestion.to_dict()
+        task["latest_recovery_suggestion"] = suggestion_dict
+
+        event_name = "suggestion_refreshed" if refresh else "suggestion_generated"
+        _log_recovery_audit(
+            task_id,
+            event_name,
+            {
+                "suggestion_id": suggestion_dict.get("suggestion_id"),
+                "source": suggestion_dict.get("source"),
+                "confidence": suggestion_dict.get("confidence"),
+                "recommended_action_sequence": suggestion_dict.get("recommended_action_sequence"),
+                "primary_action": suggestion_dict.get("primary_action"),
+            },
+        )
+        save_task_db(task)
+
+        return {
+            "status": "success",
+            "cached": False,
+            "suggestion": suggestion_dict,
+        }
+    except Exception as exc:
+        _log_recovery_audit(
+            task_id,
+            "suggestion_failed",
+            {"error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to generate suggestion: {exc}")
+
+
+@app.post("/api/tasks/{task_id}/apply-suggested-fix")
+def apply_suggested_fix(task_id: str, body: dict = None) -> dict[str, Any]:
+    """
+    Phase 7.5: Queue suggested fix actions via normal recovery action flow.
+
+    - Operator-triggered only
+    - No automatic execution from suggestion generation
+    """
+    from recovery_suggestion_service import generate_recovery_suggestion, queue_suggested_fix_actions
+
+    task = _find_task_by_ref(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    status = str(task.get("status") or "").lower()
+    if status != "paused_for_human":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task must be paused_for_human to apply suggested fix (status={status})",
+        )
+
+    body = body or {}
+    operator_notes = str(body.get("operator_notes") or "").strip()
+
+    # Reuse latest suggestion when recent; regenerate otherwise.
+    suggestion_raw = task.get("latest_recovery_suggestion") or {}
+    suggestion_id = str(suggestion_raw.get("suggestion_id") or "").strip()
+    cached_generated_at = str(suggestion_raw.get("generated_at") or "").strip()
+    is_recent = False
+    if suggestion_id and cached_generated_at:
+        try:
+            is_recent = (datetime.utcnow() - datetime.fromisoformat(cached_generated_at)).total_seconds() <= 300
+        except Exception:
+            is_recent = False
+
+    if not is_recent:
+        suggestion = generate_recovery_suggestion(task)
+        suggestion_raw = suggestion.to_dict()
+        task["latest_recovery_suggestion"] = suggestion_raw
+    else:
+        from recovery_suggestion_schemas import RecoverySuggestion, RecoverySuggestionBasis, RecoverySuggestionWarning
+
+        suggestion = RecoverySuggestion(
+            suggestion_id=str(suggestion_raw.get("suggestion_id") or str(uuid4())),
+            task_id=str(suggestion_raw.get("task_id") or task_id),
+            workflow_name=str(suggestion_raw.get("workflow_name") or "unknown"),
+            recommended_action_sequence=[str(x) for x in (suggestion_raw.get("recommended_action_sequence") or [])],
+            primary_action=str(suggestion_raw.get("primary_action") or ""),
+            confidence=float(suggestion_raw.get("confidence") or 0.5),
+            reasoning_summary=str(suggestion_raw.get("reasoning_summary") or ""),
+            based_on=RecoverySuggestionBasis(**(suggestion_raw.get("based_on") or {})),
+            warnings=[RecoverySuggestionWarning(**w) for w in (suggestion_raw.get("warnings") or [])],
+            generated_at=str(suggestion_raw.get("generated_at") or datetime.utcnow().isoformat()),
+            source=str(suggestion_raw.get("source") or "rule_based"),
+        )
+
+    queued_actions = queue_suggested_fix_actions(task, suggestion, operator_notes=operator_notes)
+    if not queued_actions:
+        raise HTTPException(status_code=400, detail="No suggested actions available to queue")
+
+    save_task_db(task)
+
+    _log_recovery_audit(
+        task_id,
+        "suggestion_applied",
+        {
+            "suggestion_id": suggestion.suggestion_id,
+            "source": suggestion.source,
+            "recommended_action_sequence": suggestion.recommended_action_sequence,
+            "queued_action_ids": [a.get("action_id") for a in queued_actions],
+        },
+    )
+
+    return {
+        "status": "suggested_fix_queued",
+        "task_id": task_id,
+        "suggestion_id": suggestion.suggestion_id,
+        "queued_actions": queued_actions,
+        "sequence_mode": len(suggestion.recommended_action_sequence) > 1,
+        "message": "Suggested fix queued via recovery action flow",
     }
 
 
@@ -5500,16 +5780,21 @@ def mark_recovery_action_completed(task_id: str, body: dict = None) -> dict[str,
     - resume_recommended: bool (if false, keep task paused despite success)
     """
     from recovery import RecoveryActionStatus
+    from playbook_service import (
+        create_candidate_playbook_from_recovery,
+        get_playbook,
+        record_playbook_execution,
+    )
     
     task = _find_task_by_ref(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     
     status = str(task.get("status") or "").lower()
-    if status != "paused_for_human":
+    if status not in {"paused_for_human", "paused_for_auto_recovery"}:
         raise HTTPException(
             status_code=400,
-            detail=f"Task is not paused for human recovery (status={status})"
+            detail=f"Task is not in a recovery-paused state (status={status})"
         )
     
     body = body or {}
@@ -5538,6 +5823,9 @@ def mark_recovery_action_completed(task_id: str, body: dict = None) -> dict[str,
     action_record["machine_uuid"] = machine_uuid
     if error_details:
         action_record["error_details"] = error_details
+
+    is_playbook_auto_action = str(action_record.get("source") or "") == "playbook_auto"
+    auto_playbook_id = str(action_record.get("playbook_id") or "")
     
     # Increment recovery attempt counter
     recovery_attempt_count = task.get("recovery_attempt_count", 0)
@@ -5602,6 +5890,87 @@ def mark_recovery_action_completed(task_id: str, body: dict = None) -> dict[str,
             "Recovery action succeeded and task requeued: task_id=%s action=%s action_id=%s recovery_attempt=%d",
             task_id, action_record.get("action"), action_id, task.get("recovery_attempt_count", 1)
         )
+
+        if is_playbook_auto_action and auto_playbook_id:
+            recovery_context["playbook_auto_attempt_result"] = "succeeded"
+            task["recovery_context"] = recovery_context
+
+            playbook = get_playbook(auto_playbook_id)
+            if playbook:
+                old_status = playbook.status
+                record_playbook_execution(
+                    task_id=task_id,
+                    playbook=playbook,
+                    actions_attempted=action_record.get("action_sequence") or [action_record.get("action")],
+                    success=True,
+                    resulting_task_state="queued",
+                )
+                _log_recovery_audit(
+                    task_id,
+                    "playbook_auto_apply_succeeded",
+                    {
+                        "playbook_id": auto_playbook_id,
+                        "action_id": action_id,
+                        "result_message": result_message,
+                    },
+                    machine_uuid=machine_uuid,
+                )
+                if old_status != "trusted" and playbook.status == "trusted":
+                    _log_recovery_audit(
+                        task_id,
+                        "playbook_promoted_to_trusted",
+                        {
+                            "playbook_id": auto_playbook_id,
+                            "reason": "auto-apply success promotion",
+                        },
+                        machine_uuid=machine_uuid,
+                    )
+        elif not is_playbook_auto_action:
+            # Learn from successful human-guided recovery and create/strengthen candidates.
+            try:
+                workflow_name = (task.get("payload") or {}).get("workflow_name") or (task.get("payload") or {}).get("task_type") or "unknown"
+                recovery_actions = task.get("recovery_actions") or []
+                completed_human_action_ids = [
+                    str(a.get("action_id"))
+                    for a in recovery_actions
+                    if str(a.get("status") or "") == "completed" and str(a.get("source") or "human") != "playbook_auto"
+                ]
+
+                candidate_playbook = create_candidate_playbook_from_recovery(
+                    task_id=task_id,
+                    workflow_name=workflow_name,
+                    recovery_context=recovery_context,
+                    recovery_action_ids=completed_human_action_ids,
+                    recovery_actions=recovery_actions,
+                )
+
+                recovery_context["candidate_playbook_created"] = True
+                recovery_context["learned_from_human_recovery"] = True
+                task["recovery_context"] = recovery_context
+
+                _log_recovery_audit(
+                    task_id,
+                    "candidate_playbook_created",
+                    {
+                        "playbook_id": candidate_playbook.playbook_id,
+                        "status": candidate_playbook.status,
+                        "confidence": candidate_playbook.confidence_score,
+                        "source": candidate_playbook.source,
+                    },
+                    machine_uuid=machine_uuid,
+                )
+                if candidate_playbook.status == "trusted":
+                    _log_recovery_audit(
+                        task_id,
+                        "playbook_promoted_to_trusted",
+                        {
+                            "playbook_id": candidate_playbook.playbook_id,
+                            "reason": "human recovery threshold met",
+                        },
+                        machine_uuid=machine_uuid,
+                    )
+            except Exception as exc:
+                logger.warning("Candidate playbook learning failed task_id=%s: %s", task_id, exc)
     else:
         # ── Recovery failed or not recommended for resume ──────────────
         action_reason = "Worker did not recommend resume" if not resume_recommended else f"Recovery action failed"
@@ -5619,6 +5988,44 @@ def mark_recovery_action_completed(task_id: str, body: dict = None) -> dict[str,
                 "Recovery action failed: task_id=%s action=%s action_id=%s error=%s",
                 task_id, action_record.get("action"), action_id, error_details or result_message
             )
+            if is_playbook_auto_action and auto_playbook_id:
+                task["status"] = "paused_for_human"
+                recovery_context = task.get("recovery_context") or {}
+                recovery_context["playbook_auto_attempt_result"] = "failed"
+                task["recovery_context"] = recovery_context
+
+                playbook = get_playbook(auto_playbook_id)
+                if playbook:
+                    old_status = playbook.status
+                    record_playbook_execution(
+                        task_id=task_id,
+                        playbook=playbook,
+                        actions_attempted=action_record.get("action_sequence") or [action_record.get("action")],
+                        success=False,
+                        failure_reason=error_details or result_message,
+                        resulting_task_state="paused_for_human",
+                    )
+                    if old_status == "trusted" and playbook.status != "trusted":
+                        _log_recovery_audit(
+                            task_id,
+                            "playbook_disabled",
+                            {
+                                "playbook_id": auto_playbook_id,
+                                "reason": "auto-apply failures triggered demotion",
+                            },
+                            machine_uuid=machine_uuid,
+                        )
+
+                _log_recovery_audit(
+                    task_id,
+                    "playbook_auto_apply_failed",
+                    {
+                        "playbook_id": auto_playbook_id,
+                        "action_id": action_id,
+                        "error_details": error_details or result_message,
+                    },
+                    machine_uuid=machine_uuid,
+                )
         else:
             # Success but resume not recommended
             task["status"] = "paused_for_human"
@@ -5660,6 +6067,10 @@ def mark_recovery_action_completed(task_id: str, body: dict = None) -> dict[str,
         "task_status": task.get("status"),
         "recovery_attempt": task.get("recovery_attempt_count", 1),
     }
+
+
+if register_playbook_endpoints is not None:
+    register_playbook_endpoints(app)
 
 
 def _log_recovery_audit(
@@ -5725,10 +6136,11 @@ def get_recovery_context(task_id: str) -> dict[str, Any]:
     latest_action_status = latest_action.get("status") if latest_action else None
     
     # Phase 7: UI readiness fields
-    is_paused = task_status == "paused_for_human"
+    is_paused = task_status in {"paused_for_human", "paused_for_auto_recovery"}
+    is_auto_recovery = task_status == "paused_for_auto_recovery"
     can_resume = task_status == "queued"  # Already requeued
     can_retry_action = is_paused and latest_action_status == "failed"
-    can_submit_new_action = is_paused  # Can submit new action while paused
+    can_submit_new_action = task_status == "paused_for_human"  # disable manual actions while auto recovery is running
     
     last_error = recovery_context.get("last_error", "")
     if latest_action and latest_action.get("status") == "failed":
@@ -5751,8 +6163,128 @@ def get_recovery_context(task_id: str) -> dict[str, Any]:
         "can_submit_new_action": can_submit_new_action,
         "last_error": last_error,
         "is_paused_for_recovery": is_paused,
+        "is_auto_recovery": is_auto_recovery,
+        "matched_playbook_id": recovery_context.get("matched_playbook_id"),
+        "matched_problem_signature": recovery_context.get("matched_problem_signature"),
+        "playbook_auto_attempted": bool(recovery_context.get("playbook_auto_attempted")),
+        "playbook_auto_attempt_result": recovery_context.get("playbook_auto_attempt_result"),
+        "candidate_playbook_created": bool(recovery_context.get("candidate_playbook_created")),
+        "learned_from_human_recovery": bool(recovery_context.get("learned_from_human_recovery")),
         # Audit trail (if present)
         "audit_trail": task.get("recovery_audit_trail", []),
+    }
+
+
+@app.get("/api/recovery-analytics/summary")
+def get_recovery_analytics_summary(
+    workflow_name: str | None = None,
+    machine_uuid: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    recovery_status: str | None = None,
+    playbook_status: str | None = None,
+) -> dict[str, Any]:
+    from recovery_analytics_service import build_recovery_analytics_summary
+
+    filters = {
+        "workflow_name": workflow_name,
+        "machine_uuid": machine_uuid,
+        "start_date": start_date,
+        "end_date": end_date,
+        "recovery_status": recovery_status,
+        "playbook_status": playbook_status,
+    }
+    summary = build_recovery_analytics_summary(tasks, filters)
+    return {"status": "success", "filters": filters, "summary": summary.to_dict()}
+
+
+@app.get("/api/recovery-analytics/incidents")
+def get_recovery_incident_analytics(
+    workflow_name: str | None = None,
+    machine_uuid: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    recovery_status: str | None = None,
+) -> dict[str, Any]:
+    from recovery_analytics_service import build_incident_analytics
+
+    filters = {
+        "workflow_name": workflow_name,
+        "machine_uuid": machine_uuid,
+        "start_date": start_date,
+        "end_date": end_date,
+        "recovery_status": recovery_status,
+    }
+    return {
+        "status": "success",
+        "filters": filters,
+        "data": build_incident_analytics(tasks, filters),
+    }
+
+
+@app.get("/api/recovery-analytics/actions")
+def get_recovery_action_analytics(
+    workflow_name: str | None = None,
+    machine_uuid: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    recovery_status: str | None = None,
+) -> dict[str, Any]:
+    from recovery_analytics_service import build_action_analytics
+
+    filters = {
+        "workflow_name": workflow_name,
+        "machine_uuid": machine_uuid,
+        "start_date": start_date,
+        "end_date": end_date,
+        "recovery_status": recovery_status,
+    }
+    return {
+        "status": "success",
+        "filters": filters,
+        "data": build_action_analytics(tasks, filters),
+    }
+
+
+@app.get("/api/recovery-analytics/playbooks")
+def get_recovery_playbook_analytics(
+    workflow_name: str | None = None,
+    playbook_status: str | None = None,
+) -> dict[str, Any]:
+    from recovery_analytics_service import build_playbook_analytics
+
+    filters = {
+        "workflow_name": workflow_name,
+        "playbook_status": playbook_status,
+    }
+    return {
+        "status": "success",
+        "filters": filters,
+        "data": build_playbook_analytics(filters),
+    }
+
+
+@app.get("/api/recovery-analytics/timeline")
+def get_recovery_timeline_analytics(
+    workflow_name: str | None = None,
+    machine_uuid: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    recovery_status: str | None = None,
+) -> dict[str, Any]:
+    from recovery_analytics_service import build_recovery_timeline
+
+    filters = {
+        "workflow_name": workflow_name,
+        "machine_uuid": machine_uuid,
+        "start_date": start_date,
+        "end_date": end_date,
+        "recovery_status": recovery_status,
+    }
+    return {
+        "status": "success",
+        "filters": filters,
+        "data": build_recovery_timeline(tasks, filters),
     }
 
 

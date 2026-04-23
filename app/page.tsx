@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import MobileNav, { type MobileView } from "./components/MobileNav";
 import MobileDashboard from "./components/MobileDashboard";
 import AlertsPanel, { type AlertItem, type AlertKind, type HelpTask } from "./components/AlertsPanel";
+import RecoveryPanel from "./components/RecoveryPanel";
+import RecoveryAnalyticsPanel from "./components/RecoveryAnalyticsPanel";
 import { useVoice } from "./hooks/useVoice";
 
 type TaskCreateResponse = {
@@ -3207,6 +3209,16 @@ export default function Home() {
             </section>
           </div>
         </section>
+      </div>
+
+      {/* ── Recovery Queue Panel ─────────────────────────────────────────── */}
+      <div className="mt-6 px-4 max-w-[1600px] mx-auto">
+        <RecoveryPanel apiBase={getApiBase()} />
+      </div>
+
+      {/* ── Recovery Analytics Panel ─────────────────────────────────────── */}
+      <div className="mt-6 px-4 max-w-[1600px] mx-auto">
+        <RecoveryAnalyticsPanel apiBase={getApiBase()} />
       </div>
       </div>{/* /desktop hidden lg:block */}
 

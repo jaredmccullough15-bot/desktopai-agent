@@ -20,6 +20,13 @@ REQUIRED_ROOT_FILES = [
     "seed.py",
     "teach_session.py",
     "recovery.py",  # Phase 6: Human recovery system
+    "recovery_playbooks.py",  # Phase 6.5: Recovery playbooks (self-healing)
+    "playbook_service.py",  # Phase 6.5: Playbook service (matching, learning)
+    "playbook_endpoints.py",  # Phase 6.5: Playbook REST API (Phase 7 UI)
+    "recovery_suggestion_schemas.py",  # Phase 7.5: Suggested fix schemas
+    "recovery_suggestion_service.py",  # Phase 7.5: Suggested fix service
+    "recovery_analytics_schemas.py",  # Phase 8: Analytics schemas
+    "recovery_analytics_service.py",  # Phase 8: Analytics service
 ]
 
 REQUIRED_DIRS = [
