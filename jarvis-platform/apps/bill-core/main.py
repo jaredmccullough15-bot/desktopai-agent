@@ -5277,6 +5277,7 @@ def get_tasks_needing_help() -> dict[str, Any]:
 def pause_task_for_human_recovery(task_id: str, body: dict = None) -> dict[str, Any]:
     """
     Pause a running task and transition to paused_for_human state with recovery context.
+    Initializes recovery tracking and audit trail.
     
     Request body can include:
     - pause_reason: human-readable message about why human intervention is needed
@@ -5300,71 +5301,118 @@ def pause_task_for_human_recovery(task_id: str, body: dict = None) -> dict[str, 
     pause_reason = str(body.get("pause_reason") or "Paused for human recovery").strip()
     context_data = (body.get("recovery_context") or {})
     
-    # Build recovery context
+    # Build recovery context with full checkpoint
     recovery_context = {
         "task_id": task_id,
         "workflow_name": (task.get("payload") or {}).get("workflow_name") or (task.get("payload") or {}).get("task_type") or "unknown",
         "paused_at": datetime.utcnow().isoformat(),
         "pause_reason": pause_reason,
+        # Workflow state (checkpoint)
         "current_step": context_data.get("current_step", 0),
         "last_successful_step": context_data.get("last_successful_step", 0),
         "current_url": context_data.get("current_url", ""),
+        "current_page_number": context_data.get("current_page_number", 1),
+        # Client tracking (for smart_sherpa_sync)
         "last_client_attempted": context_data.get("last_client_attempted", ""),
         "last_successful_client": context_data.get("last_successful_client", ""),
         "clients_completed": context_data.get("clients_completed", []),
         "clients_skipped": context_data.get("clients_skipped", []),
+        # Tab/modal state
         "open_tabs_count": context_data.get("open_tabs_count", 0),
+        "open_tab_titles": context_data.get("open_tab_titles", []),
+        "active_tab_index": context_data.get("active_tab_index", 0),
         "blocking_modal_detected": context_data.get("blocking_modal_detected", False),
         "modal_type": context_data.get("modal_type", ""),
+        # Worker context
         "worker_name": context_data.get("worker_name", ""),
         "machine_uuid": context_data.get("machine_uuid", task.get("assigned_machine_uuid", "")),
+        # Diagnostics
         "screenshot_path": context_data.get("screenshot_path", ""),
         "last_error": context_data.get("last_error", ""),
         "error_classification": context_data.get("error_classification", ""),
         "metadata": context_data.get("metadata", {}),
     }
     
-    # Update task
+    # Initialize recovery tracking if not present
+    if "recovery_attempt_count" not in task:
+        task["recovery_attempt_count"] = 0
+    if "recovery_actions" not in task:
+        task["recovery_actions"] = []
+    if "recovery_audit_trail" not in task:
+        task["recovery_audit_trail"] = []
+    
+    # Update task state
     task["status"] = "paused_for_human"
     task["updated_at"] = datetime.utcnow().isoformat()
     task["recovery_context"] = recovery_context
     
     _append_task_log(task, f"Task paused for human recovery: {pause_reason}", level="warning")
+    
+    # Log to audit trail
+    _log_recovery_audit(
+        task_id,
+        "paused_for_human",
+        {
+            "pause_reason": pause_reason,
+            "workflow_name": recovery_context["workflow_name"],
+            "last_client_attempted": recovery_context.get("last_client_attempted"),
+            "blocking_modal_detected": recovery_context.get("blocking_modal_detected"),
+        },
+    )
+    
     save_task_db(task)
     
-    # Audit log
-    audit_entry = {
-        "entry_id": str(uuid4()),
-        "task_id": task_id,
-        "workflow_name": recovery_context["workflow_name"],
-        "event_type": "paused_for_human",
-        "timestamp": datetime.utcnow().isoformat(),
-        "details": {"pause_reason": pause_reason},
-    }
-    logger.info("Task paused for human recovery: id=%s reason=%s", task_id, pause_reason)
+    logger.info(
+        "Task paused for human recovery: id=%s reason=%s workflow=%s",
+        task_id, pause_reason, recovery_context["workflow_name"]
+    )
     
     return {
         "status": "paused_for_human",
         "message": f"Task {task_id} paused for human recovery",
         "recovery_context": recovery_context,
+        "recovery_attempt_count": task.get("recovery_attempt_count", 0),
     }
 
 
 @app.get("/api/tasks/paused-for-human-recovery")
-def list_paused_tasks() -> dict[str, Any]:
-    """List all tasks currently paused for human recovery."""
-    paused = [
-        {
+def list_paused_tasks(machine_uuid: str = None) -> dict[str, Any]:
+    """
+    List all tasks currently paused for human recovery.
+    Optionally filter by machine_uuid (worker machine).
+    Includes Phase 7 UI fields.
+    """
+    paused = []
+    
+    for t in tasks:
+        if str(t.get("status") or "") != "paused_for_human":
+            continue
+        
+        # Filter by machine_uuid if provided
+        task_machine = t.get("assigned_machine_uuid", "")
+        if machine_uuid and task_machine != machine_uuid:
+            continue
+        
+        # Phase 7 UI fields
+        recovery_context = t.get("recovery_context") or {}
+        recovery_actions = t.get("recovery_actions") or []
+        latest_action = recovery_actions[-1] if recovery_actions else None
+        
+        paused.append({
             "id": t.get("id"),
             "workflow_name": (t.get("payload") or {}).get("workflow_name") or (t.get("payload") or {}).get("task_type"),
-            "pause_reason": ((t.get("recovery_context") or {}).get("pause_reason") or ""),
-            "assigned_machine_uuid": t.get("assigned_machine_uuid"),
+            "pause_reason": recovery_context.get("pause_reason", ""),
+            "assigned_machine_uuid": task_machine,
             "updated_at": t.get("updated_at"),
-            "recovery_context": t.get("recovery_context"),
-        }
-        for t in tasks
-        if str(t.get("status") or "") == "paused_for_human"
-    ]
+            "paused_at": recovery_context.get("paused_at"),
+            "recovery_attempt_count": t.get("recovery_attempt_count", 0),
+            # Phase 7: UI readiness fields
+            "latest_action": latest_action,
+            "recovery_actions": recovery_actions,
+            "can_submit_new_action": True,
+            "can_retry_action": latest_action and latest_action.get("status") == "failed",
+        })
+    
     return {"count": len(paused), "tasks": paused}
 
 
@@ -5440,21 +5488,38 @@ def execute_recovery_action(task_id: str, body: dict = None) -> dict[str, Any]:
 def mark_recovery_action_completed(task_id: str, body: dict = None) -> dict[str, Any]:
     """
     Mark a recovery action as completed by the worker.
-    Worker calls this after executing the recovery action.
+    Implements Phase 6 resume logic: apply checkpoint updates, requeue on success.
     
     Request body should include:
     - action_id: the action_id from the recovery action request
     - success: bool (true if action succeeded)
+    - machine_uuid: worker's machine_uuid for audit trail
     - result_message: optional details about the result
+    - error_details: error info if success=false
+    - checkpoint_updates: dict of CheckpointUpdate fields to apply
+    - resume_recommended: bool (if false, keep task paused despite success)
     """
+    from recovery import RecoveryActionStatus
+    
     task = _find_task_by_ref(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     
+    status = str(task.get("status") or "").lower()
+    if status != "paused_for_human":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is not paused for human recovery (status={status})"
+        )
+    
     body = body or {}
     action_id = str(body.get("action_id") or "").strip()
     success = bool(body.get("success", False))
+    machine_uuid = str(body.get("machine_uuid") or "").strip()
     result_message = str(body.get("result_message") or "").strip()
+    error_details = str(body.get("error_details") or "").strip()
+    checkpoint_updates_raw = body.get("checkpoint_updates") or {}
+    resume_recommended = bool(body.get("resume_recommended", True))
     
     if not action_id:
         raise HTTPException(status_code=400, detail="action_id required")
@@ -5466,49 +5531,228 @@ def mark_recovery_action_completed(task_id: str, body: dict = None) -> dict[str,
     if not action_record:
         raise HTTPException(status_code=404, detail=f"Recovery action {action_id} not found")
     
+    # Update action record with completion details
     action_record["status"] = "completed" if success else "failed"
     action_record["completed_at"] = datetime.utcnow().isoformat()
     action_record["result_message"] = result_message
+    action_record["machine_uuid"] = machine_uuid
+    if error_details:
+        action_record["error_details"] = error_details
+    
+    # Increment recovery attempt counter
+    recovery_attempt_count = task.get("recovery_attempt_count", 0)
+    task["recovery_attempt_count"] = recovery_attempt_count + 1
     
     task["updated_at"] = datetime.utcnow().isoformat()
     
-    if success:
-        # Mark as resolved and return to queued so worker can continue
+    # Phase 6: Resume Logic
+    # ─────────────────────────────────────────────────────────────────
+    
+    if success and resume_recommended:
+        # ── Step 1: Apply checkpoint updates ──────────────────────────
+        recovery_context = task.get("recovery_context") or {}
+        if checkpoint_updates_raw:
+            # Apply each checkpoint update field
+            if checkpoint_updates_raw.get("current_page_number") is not None:
+                recovery_context["current_page_number"] = checkpoint_updates_raw["current_page_number"]
+            if checkpoint_updates_raw.get("last_successful_client"):
+                recovery_context["last_successful_client"] = checkpoint_updates_raw["last_successful_client"]
+                # Also add to completed list if not already there
+                if recovery_context["last_successful_client"] not in recovery_context.get("clients_completed", []):
+                    recovery_context.setdefault("clients_completed", []).append(recovery_context["last_successful_client"])
+            if checkpoint_updates_raw.get("clients_skipped_addition"):
+                recovery_context.setdefault("clients_skipped", []).extend(checkpoint_updates_raw["clients_skipped_addition"])
+            if checkpoint_updates_raw.get("clients_completed_addition"):
+                recovery_context.setdefault("clients_completed", []).extend(checkpoint_updates_raw["clients_completed_addition"])
+            if checkpoint_updates_raw.get("current_url") is not None:
+                recovery_context["current_url"] = checkpoint_updates_raw["current_url"]
+            if checkpoint_updates_raw.get("open_tabs_count") is not None:
+                recovery_context["open_tabs_count"] = checkpoint_updates_raw["open_tabs_count"]
+            if checkpoint_updates_raw.get("blocking_modal_detected") is not None:
+                recovery_context["blocking_modal_detected"] = checkpoint_updates_raw["blocking_modal_detected"]
+            if checkpoint_updates_raw.get("modal_type") is not None:
+                recovery_context["modal_type"] = checkpoint_updates_raw["modal_type"]
+            if checkpoint_updates_raw.get("metadata_updates"):
+                recovery_context.setdefault("metadata", {}).update(checkpoint_updates_raw["metadata_updates"])
+        
+        task["recovery_context"] = recovery_context
+        
+        # ── Step 2: Mark task for resumption ──────────────────────────
         task["status"] = "queued"
-        _append_task_log(task, f"Recovery action completed successfully: {action_record.get('action')}")
+        task["resume_from_checkpoint"] = True
+        task["recovery_action_succeeded"] = True
+        
+        # Add recovery metadata to task payload so worker knows to resume
+        if "payload" not in task:
+            task["payload"] = {}
+        task["payload"]["recovery_resume"] = {
+            "enabled": True,
+            "recovery_attempt": task.get("recovery_attempt_count", 1),
+            "last_recovery_action": action_record.get("action"),
+            "checkpoint": recovery_context,
+        }
+        
+        _append_task_log(
+            task,
+            f"Recovery action succeeded: {action_record.get('action')} | Task requeued with checkpoint resume (attempt #{task.get('recovery_attempt_count', 1)})",
+            level="info"
+        )
+        
+        logger.info(
+            "Recovery action succeeded and task requeued: task_id=%s action=%s action_id=%s recovery_attempt=%d",
+            task_id, action_record.get("action"), action_id, task.get("recovery_attempt_count", 1)
+        )
     else:
-        _append_task_log(task, f"Recovery action failed: {action_record.get('action')} - {result_message}", level="error")
+        # ── Recovery failed or not recommended for resume ──────────────
+        action_reason = "Worker did not recommend resume" if not resume_recommended else f"Recovery action failed"
+        
+        if not success:
+            # Keep paused state for failed actions
+            task["status"] = "paused_for_human"
+            task["recovery_action_failed"] = True
+            _append_task_log(
+                task,
+                f"Recovery action failed: {action_record.get('action')} - {error_details or result_message}",
+                level="error"
+            )
+            logger.warning(
+                "Recovery action failed: task_id=%s action=%s action_id=%s error=%s",
+                task_id, action_record.get("action"), action_id, error_details or result_message
+            )
+        else:
+            # Success but resume not recommended
+            task["status"] = "paused_for_human"
+            task["recovery_action_succeeded"] = True  # Mark as succeeded
+            _append_task_log(
+                task,
+                f"Recovery action completed but resume not recommended: {action_record.get('action')}",
+                level="warning"
+            )
+            logger.info(
+                "Recovery action succeeded but resume not recommended: task_id=%s action=%s",
+                task_id, action_record.get("action")
+            )
+    
+    # Log completion to audit trail
+    _log_recovery_audit(
+        task_id,
+        "recovery_action_completed",
+        {
+            "action": action_record.get("action"),
+            "action_id": action_id,
+            "success": success,
+            "machine_uuid": machine_uuid,
+            "result_message": result_message,
+            "checkpoint_updates_applied": bool(checkpoint_updates_raw) and success,
+            "recovery_attempt": task.get("recovery_attempt_count", 1),
+        },
+        machine_uuid=machine_uuid,
+    )
     
     save_task_db(task)
-    
-    logger.info(
-        "Recovery action completed: task_id=%s action_id=%s success=%s result=%s",
-        task_id, action_id, success, result_message
-    )
     
     return {
         "status": "action_completed",
         "action_id": action_id,
         "success": success,
-        "message": f"Recovery action marked {'successful' if success else 'failed'}",
+        "requeued": success and resume_recommended,
+        "message": f"Recovery action marked {('successful and task requeued' if success and resume_recommended else 'successful but task paused' if success else 'failed')}",
+        "task_status": task.get("status"),
+        "recovery_attempt": task.get("recovery_attempt_count", 1),
     }
+
+
+def _log_recovery_audit(
+    task_id: str,
+    event_type: str,
+    details: dict[str, Any],
+    machine_uuid: str = "",
+    operator: str = "",
+) -> None:
+    """
+    Log a recovery audit event.
+    
+    Args:
+        task_id: Task ID
+        event_type: "paused", "recovery_requested", "recovery_action_completed", etc.
+        details: Event-specific details dict
+        machine_uuid: Worker machine UUID (if applicable)
+        operator: Operator name (if human action)
+    """
+    task = _find_task_by_ref(task_id)
+    if not task:
+        return
+    
+    audit_entry = {
+        "entry_id": str(uuid4()),
+        "task_id": task_id,
+        "workflow_name": (task.get("payload") or {}).get("workflow_name") or (task.get("payload") or {}).get("task_type") or "unknown",
+        "event_type": event_type,
+        "timestamp": datetime.utcnow().isoformat(),
+        "operator": operator,
+        "details": details,
+    }
+    
+    # Append to audit trail on task (for now, in-memory; can be persisted)
+    if "recovery_audit_trail" not in task:
+        task["recovery_audit_trail"] = []
+    task["recovery_audit_trail"].append(audit_entry)
+    
+    logger.debug(
+        "Recovery audit logged: task_id=%s event=%s operator=%s machine_uuid=%s",
+        task_id, event_type, operator, machine_uuid
+    )
+
 
 
 @app.get("/api/tasks/{task_id}/recovery-context")
 def get_recovery_context(task_id: str) -> dict[str, Any]:
-    """Get the recovery context and history for a paused task."""
+    """
+    Get the recovery context and history for a paused task.
+    Includes Phase 7 UI-ready fields for recovery panel.
+    """
     task = _find_task_by_ref(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     
     recovery_context = task.get("recovery_context") or {}
     recovery_actions = task.get("recovery_actions") or []
+    recovery_attempt_count = task.get("recovery_attempt_count", 0)
+    
+    # Determine current recovery state
+    task_status = str(task.get("status") or "").lower()
+    latest_action = recovery_actions[-1] if recovery_actions else None
+    latest_action_status = latest_action.get("status") if latest_action else None
+    
+    # Phase 7: UI readiness fields
+    is_paused = task_status == "paused_for_human"
+    can_resume = task_status == "queued"  # Already requeued
+    can_retry_action = is_paused and latest_action_status == "failed"
+    can_submit_new_action = is_paused  # Can submit new action while paused
+    
+    last_error = recovery_context.get("last_error", "")
+    if latest_action and latest_action.get("status") == "failed":
+        last_error = latest_action.get("error_details") or latest_action.get("result_message") or last_error
     
     return {
         "task_id": task_id,
-        "status": task.get("status"),
+        "status": task_status,
+        # Checkpoint and diagnostics
         "recovery_context": recovery_context,
+        # Action history
         "recovery_actions": recovery_actions,
+        "recovery_attempt_count": recovery_attempt_count,
+        # Latest action info
+        "latest_action": latest_action,
+        "latest_action_status": latest_action_status,
+        # Phase 7 UI control flags
+        "can_resume": can_resume,
+        "can_retry_action": can_retry_action,
+        "can_submit_new_action": can_submit_new_action,
+        "last_error": last_error,
+        "is_paused_for_recovery": is_paused,
+        # Audit trail (if present)
+        "audit_trail": task.get("recovery_audit_trail", []),
     }
 
 

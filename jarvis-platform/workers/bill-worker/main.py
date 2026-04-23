@@ -1225,10 +1225,22 @@ def poll_next_task(machine_uuid: str, state: dict[str, Any], runtime_state: Runt
 
 
 def poll_recovery_actions(machine_uuid: str, state: dict[str, Any], runtime_state: RuntimeState) -> None:
-    """Poll for recovery actions on paused tasks assigned to this machine."""
-    # TODO Phase 7: Fetch paused tasks for this machine
-    # GET /api/tasks/paused-for-human-recovery?machine_uuid={machine_uuid}
-    # For now, this is a placeholder for Phase 7 implementation
+    """
+    Poll for recovery actions on paused tasks assigned to this machine.
+    Fetch pending recovery actions, execute them, and report results back to core.
+    """
+    import asyncio
+    from recovery_handlers import execute_recovery_action, RECOVERY_HANDLERS
+    
+    # For now: placeholder to be filled by Phase 7 integration
+    # This will:
+    # 1. GET /api/tasks/paused-for-human-recovery to fetch paused tasks for this machine
+    # 2. For each task with pending recovery actions:
+    #    - Mark action as in_progress
+    #    - Launch browser if needed
+    #    - Execute recovery action via recovery_handlers
+    #    - POST /api/tasks/{task_id}/recovery-action-completed with result
+    # 3. Return to polling loop
     pass
 
 

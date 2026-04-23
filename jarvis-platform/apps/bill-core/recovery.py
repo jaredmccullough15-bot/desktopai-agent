@@ -16,6 +16,16 @@ from typing import Any, Optional
 from uuid import uuid4
 
 
+# ── Recovery Action States ───────────────────────────────────────────────
+
+class RecoveryActionStatus(str, Enum):
+    """Status of a recovery action during execution."""
+    PENDING = "pending"  # Queued, waiting for worker
+    IN_PROGRESS = "in_progress"  # Worker is executing
+    COMPLETED = "completed"  # Executed successfully
+    FAILED = "failed"  # Execution failed
+
+
 # ── Recovery Actions ──────────────────────────────────────────────────────
 
 class RecoveryAction(str, Enum):
@@ -88,6 +98,51 @@ class RecoveryContext:
 
 
 @dataclass
+class CheckpointUpdate:
+    """Updates to apply to checkpoint after successful recovery action."""
+    
+    current_page_number: Optional[int] = None  # Advance page if skip_last_client or similar
+    last_successful_client: Optional[str] = None  # Mark client as processed
+    clients_skipped_addition: Optional[list[str]] = None  # Add to skipped list
+    clients_completed_addition: Optional[list[str]] = None  # Add to completed list
+    current_url: Optional[str] = None  # Update if navigation occurred
+    open_tabs_count: Optional[int] = None  # Updated tab count
+    blocking_modal_detected: Optional[bool] = None  # Modal state updated
+    modal_type: Optional[str] = None  # Modal type cleared
+    metadata_updates: dict[str, Any] = field(default_factory=dict)  # Generic updates
+    
+    def apply_to_context(self, context: dict[str, Any]) -> None:
+        """Mutate the context dict with these updates."""
+        if self.current_page_number is not None:
+            context["current_page_number"] = self.current_page_number
+        if self.last_successful_client is not None:
+            context["last_successful_client"] = self.last_successful_client
+        if self.clients_skipped_addition:
+            context.setdefault("clients_skipped", []).extend(self.clients_skipped_addition)
+        if self.clients_completed_addition:
+            context.setdefault("clients_completed", []).extend(self.clients_completed_addition)
+        if self.current_url is not None:
+            context["current_url"] = self.current_url
+        if self.open_tabs_count is not None:
+            context["open_tabs_count"] = self.open_tabs_count
+        if self.blocking_modal_detected is not None:
+            context["blocking_modal_detected"] = self.blocking_modal_detected
+        if self.modal_type is not None:
+            context["modal_type"] = self.modal_type
+        if self.metadata_updates:
+            context.setdefault("metadata", {}).update(self.metadata_updates)
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to serializable dict."""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CheckpointUpdate:
+        """Create from dict."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
 class RecoveryActionRequest:
     """Operator request to recover a paused task."""
     
@@ -108,7 +163,7 @@ class RecoveryActionRequest:
 
 @dataclass
 class RecoveryResult:
-    """Outcome of a recovery action execution."""
+    """Outcome of a recovery action execution by worker."""
     
     action_id: str
     task_id: str
@@ -117,11 +172,17 @@ class RecoveryResult:
     executed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     result_message: str = ""
     error_details: str = ""
-    workflow_resumed: bool = False
+    checkpoint_updates: Optional[dict[str, Any]] = None  # CheckpointUpdate as dict
+    resume_recommended: bool = True  # Worker recommends returning to queued
     
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict."""
         return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RecoveryResult:
+        """Create from dict."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
 # ── Audit Entry ───────────────────────────────────────────────────────────
