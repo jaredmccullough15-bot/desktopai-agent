@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import RecoveryPanel from "./RecoveryPanel";
@@ -8,7 +8,7 @@ import type { useBillVoice } from "../hooks/useBillVoice";
 
 type BillVoiceHandle = ReturnType<typeof useBillVoice>;
 
-// ── Types mirrored from page.tsx ────────────────────────────────────────────
+// ΓöÇΓöÇ Types mirrored from page.tsx ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 interface WorkflowRecord {
   workflow_name: string;
@@ -92,7 +92,7 @@ interface ChatEntry {
   suggestedNextAction?: string;
 }
 
-// ── Helper constants ─────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Helper constants ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 const BTN_SECONDARY =
   "rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 transition hover:border-cyan-400/70 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50";
@@ -120,10 +120,10 @@ function updateStatusClasses(status?: string | null): string {
 
 function shortTaskId(id?: string): string {
   if (!id) return "-";
-  return id.length > 10 ? `${id.slice(0, 8)}…` : id;
+  return id.length > 10 ? `${id.slice(0, 8)}ΓÇª` : id;
 }
 
-// ── Tab definitions ──────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Tab definitions ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 const TABS = [
   "Advanced Tools",
@@ -137,7 +137,7 @@ const TABS = [
 ] as const;
 type TabName = (typeof TABS)[number];
 
-// ── Props ─────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Props ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 interface AdvancedToolsTabsProps {
   apiBase: string;
@@ -246,7 +246,7 @@ interface AdvancedToolsTabsProps {
   chatHistory: ChatEntry[];
 }
 
-// ── Component ────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Component ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 export function AdvancedToolsTabs(props: AdvancedToolsTabsProps) {
   const [activeTab, setActiveTab] = useState<TabName>("Advanced Tools");
@@ -316,7 +316,7 @@ export function AdvancedToolsTabs(props: AdvancedToolsTabsProps) {
   );
 }
 
-// ── Teach Bill tab ────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Teach Bill tab ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 function TeachBillTab(props: AdvancedToolsTabsProps) {
   const {
@@ -337,7 +337,7 @@ function TeachBillTab(props: AdvancedToolsTabsProps) {
 
       <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/5 p-3 text-xs text-cyan-100">
         <p className="font-semibold">Training Stages</p>
-        <p className="mt-1 text-slate-300">1) Setup · 2) Teaching Mode · 3) Step Builder · 4) Validation · 5) Test Mode · 6) Publish</p>
+        <p className="mt-1 text-slate-300">1) Setup ┬╖ 2) Teaching Mode ┬╖ 3) Step Builder ┬╖ 4) Validation ┬╖ 5) Test Mode ┬╖ 6) Publish</p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -361,7 +361,7 @@ function TeachBillTab(props: AdvancedToolsTabsProps) {
         Worker (which computer opens the browser)
         <select value={teachingTargetWorkerUuid} onChange={(e) => setTeachingTargetWorkerUuid(e.target.value)}
           className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/60">
-          <option value="">— Opens browser on this computer —</option>
+          <option value="">ΓÇö Opens browser on this computer ΓÇö</option>
           {machines.filter((m) => m.online).map((m) => (
             <option key={m.machine_uuid} value={m.machine_uuid}>
               {m.machine_name} {m.status === "busy" ? "(busy)" : "(idle)"}
@@ -394,7 +394,7 @@ function TeachBillTab(props: AdvancedToolsTabsProps) {
       {draftsError && <p className="text-sm text-rose-300">{draftsError}</p>}
       {learningFeedback && (
         <div className={`rounded-lg px-3 py-2 text-sm ${learningFeedback.kind === "success" ? "border border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : "border border-rose-400/30 bg-rose-500/10 text-rose-200"}`}>
-          {learningFeedback.message} · {learningFeedback.timestamp}
+          {learningFeedback.message} ┬╖ {learningFeedback.timestamp}
         </div>
       )}
 
@@ -406,7 +406,7 @@ function TeachBillTab(props: AdvancedToolsTabsProps) {
             <article key={draft.draft_id} className={`rounded-xl border p-3 ${teachingSessionDraftId === draft.draft_id ? "border-amber-500/40 bg-amber-950/20" : "border-slate-800 bg-slate-950/70"}`}>
               <p className="text-sm font-semibold text-slate-100">{draft.workflow_name}</p>
               <p className="mt-1 text-xs text-slate-400">
-                Path: {draft.learning_path} · Status: {draft.review_status} · Updated: {toDisplayTime(draft.updated_at)}
+                Path: {draft.learning_path} ┬╖ Status: {draft.review_status} ┬╖ Updated: {toDisplayTime(draft.updated_at)}
               </p>
               <p className="mt-1 text-xs text-slate-300">{draft.goal}</p>
               <p className="mt-1 text-xs text-slate-500">Steps: {(draft.steps as unknown[]).length}</p>
@@ -416,7 +416,7 @@ function TeachBillTab(props: AdvancedToolsTabsProps) {
                 <button type="button" onClick={() => onUpdateDraftStatus(draft.draft_id, "approved")} disabled={learningBusyKey !== null} className={BTN_SECONDARY}>Approve</button>
                 <button type="button" onClick={() => onStartTeachingSession(draft.draft_id)} disabled={learningBusyKey !== null}
                   className={teachingSessionDraftId === draft.draft_id ? "rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200 hover:bg-amber-500/20" : BTN_GHOST}>
-                  {teachingSessionDraftId === draft.draft_id ? "● Teaching Active" : "Teach Steps"}
+                  {teachingSessionDraftId === draft.draft_id ? "ΓùÅ Teaching Active" : "Teach Steps"}
                 </button>
                 <button type="button" onClick={() => onTestDraft(draft.draft_id)} disabled={learningBusyKey !== null} className={BTN_GHOST}>
                   {learningBusyKey === `test-${draft.draft_id}` ? "Testing..." : "Test Mode"}
@@ -433,7 +433,7 @@ function TeachBillTab(props: AdvancedToolsTabsProps) {
   );
 }
 
-// ── Workflow Builder tab ────────────────────────────────────────────────────
+// ΓöÇΓöÇ Workflow Builder tab ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
   const {
@@ -472,8 +472,8 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
   const workerStatusText = (m: Machine) => {
     if (!m.online) return "Offline";
     const s = (m.status ?? "").toLowerCase();
-    if (s === "idle") return "Online · Idle";
-    if (s === "busy" || s === "running") return "Online · Busy";
+    if (s === "idle") return "Online ┬╖ Idle";
+    if (s === "busy" || s === "running") return "Online ┬╖ Busy";
     return "Online";
   };
 
@@ -487,7 +487,7 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
           <option value="">Auto assign best available</option>
           {machines.map((m) => m.machine_uuid ? (
             <option key={m.machine_uuid} value={m.machine_uuid}>
-              {m.machine_name ?? "unknown"} · {workerStatusText(m)}
+              {m.machine_name ?? "unknown"} ┬╖ {workerStatusText(m)}
             </option>
           ) : null)}
         </select>
@@ -531,7 +531,7 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-cyan-400/70">
               <option value="">Use selected / auto</option>
               {machines.filter((m) => m.machine_uuid).map((m) => (
-                <option key={m.machine_uuid} value={m.machine_uuid}>{m.machine_name ?? "unknown"} · {workerStatusText(m)}</option>
+                <option key={m.machine_uuid} value={m.machine_uuid}>{m.machine_name ?? "unknown"} ┬╖ {workerStatusText(m)}</option>
               ))}
             </select>
           </label>
@@ -572,7 +572,7 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
         </div>
         {helperFeedback && (
           <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${helperFeedback.kind === "success" ? "border border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : "border border-rose-400/30 bg-rose-500/10 text-rose-200"}`}>
-            {helperFeedback.message} · {helperFeedback.timestamp}
+            {helperFeedback.message} ┬╖ {helperFeedback.timestamp}
           </div>
         )}
       </div>
@@ -582,7 +582,7 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
         <p className="mb-2 text-xs font-medium text-slate-400">All Tasks</p>
         {taskActionFeedback && (
           <div className={`mb-3 rounded-lg px-3 py-2 text-sm ${taskActionFeedback.kind === "success" ? "border border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : "border border-rose-400/30 bg-rose-500/10 text-rose-200"}`}>
-            {taskActionFeedback.message} · {taskActionFeedback.timestamp}
+            {taskActionFeedback.message} ┬╖ {taskActionFeedback.timestamp}
           </div>
         )}
         {actionError && (
@@ -604,7 +604,7 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
                       <p className="text-sm font-semibold">{task.payload?.task_type ?? "General Task"}</p>
                       <span className={`rounded-full px-2.5 py-1 text-xs ${taskStatusCls(task.status)}`}>{taskStatusLabel(task.status)}</span>
                     </div>
-                    <p className="mt-1 text-xs text-slate-400">{shortTaskId(task.id)} · {toDisplayTime(task.created_at)}</p>
+                    <p className="mt-1 text-xs text-slate-400">{shortTaskId(task.id)} ┬╖ {toDisplayTime(task.created_at)}</p>
                     {task.error && <p className="mt-1 text-xs text-rose-300">{task.error}</p>}
                   </button>
                   <div className="mt-2 flex flex-wrap gap-2">
@@ -631,7 +631,7 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
   );
 }
 
-// ── Audit Trail tab ───────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Audit Trail tab ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 function AuditTrailTab({ auditEntries, onRefreshAudit, auditError, chatHistory }: AdvancedToolsTabsProps) {
   return (
@@ -671,8 +671,8 @@ function AuditTrailTab({ auditEntries, onRefreshAudit, auditError, chatHistory }
               <p className="mt-1 text-sm text-slate-200">{entry.original_user_text ?? "-"}</p>
               <p className="mt-1.5 text-xs text-slate-400">
                 Intent: <span className="text-slate-300">{entry.interpreted_intent ?? "-"}</span>
-                {" · "}Workflow: <span className="text-slate-300">{entry.selected_workflow ?? "-"}</span>
-                {" · "}Worker: <span className="text-slate-300">{entry.selected_worker ?? "-"}</span>
+                {" ┬╖ "}Workflow: <span className="text-slate-300">{entry.selected_workflow ?? "-"}</span>
+                {" ┬╖ "}Worker: <span className="text-slate-300">{entry.selected_worker ?? "-"}</span>
               </p>
               <p className="mt-1 text-sm text-slate-300">{entry.after_execution ?? "No outcome recorded."}</p>
             </article>
@@ -683,7 +683,7 @@ function AuditTrailTab({ auditEntries, onRefreshAudit, auditError, chatHistory }
   );
 }
 
-// ── Settings tab ──────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Settings tab ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 function SettingsTab(props: AdvancedToolsTabsProps) {
   const {
@@ -742,10 +742,10 @@ function SettingsTab(props: AdvancedToolsTabsProps) {
                     <td className="px-3 py-2">
                       {w.update_status ? (
                         <span className={`rounded-full px-2 py-0.5 ${updateStatusClasses(w.update_status)}`}>{w.update_status}</span>
-                      ) : <span className="text-slate-600">—</span>}
+                      ) : <span className="text-slate-600">ΓÇö</span>}
                       {w.update_error && <p className="mt-0.5 truncate text-[10px] text-rose-400">{w.update_error}</p>}
                     </td>
-                    <td className="px-3 py-2 font-mono text-slate-500">{w.update_target_version ?? "—"}</td>
+                    <td className="px-3 py-2 font-mono text-slate-500">{w.update_target_version ?? "ΓÇö"}</td>
                     <td className="px-3 py-2">
                       <button type="button" onClick={() => onDeployToWorkers([w.machine_uuid])} disabled={deployBusy || !workerDeployStatus.active_release_version} className={BTN_GHOST}>Deploy</button>
                     </td>
@@ -756,7 +756,7 @@ function SettingsTab(props: AdvancedToolsTabsProps) {
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <button type="button" onClick={() => onDeployToWorkers()} disabled={deployBusy || !workerDeployStatus.active_release_version} className={BTN_PRIMARY}>
-              {deployBusy ? "Deploying…" : "Deploy to All Workers"}
+              {deployBusy ? "DeployingΓÇª" : "Deploy to All Workers"}
             </button>
             <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-400">
               <input type="checkbox" checked={deployForce} onChange={(e) => setDeployForce(e.target.checked)} className="accent-cyan-400" />
@@ -790,11 +790,11 @@ function SettingsTab(props: AdvancedToolsTabsProps) {
                   <div className="flex items-center gap-2">
                     {!release.is_active && (
                       <button type="button" onClick={() => onActivateRelease(release.id)} disabled={releaseBusyKey !== null} className={BTN_GHOST}>
-                        {releaseBusyKey === `activate-${release.id}` ? "…" : "Activate"}
+                        {releaseBusyKey === `activate-${release.id}` ? "ΓÇª" : "Activate"}
                       </button>
                     )}
                     <button type="button" onClick={() => onDeleteRelease(release.id)} disabled={releaseBusyKey !== null} className={BTN_DANGER}>
-                      {releaseBusyKey === `delete-${release.id}` ? "…" : "Delete"}
+                      {releaseBusyKey === `delete-${release.id}` ? "ΓÇª" : "Delete"}
                     </button>
                   </div>
                 </div>
@@ -825,7 +825,7 @@ function SettingsTab(props: AdvancedToolsTabsProps) {
           </div>
           <div>
             <label className="mb-1 block text-[11px] text-slate-500">Release Notes</label>
-            <textarea rows={2} placeholder="What changed in this release…" value={releaseUploadNotes} onChange={(e) => setReleaseUploadNotes(e.target.value)}
+            <textarea rows={2} placeholder="What changed in this releaseΓÇª" value={releaseUploadNotes} onChange={(e) => setReleaseUploadNotes(e.target.value)}
               className="w-full resize-none rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:border-cyan-400/60 focus:outline-none" />
           </div>
           <div>
@@ -834,7 +834,7 @@ function SettingsTab(props: AdvancedToolsTabsProps) {
               className="w-full text-xs text-slate-400 file:mr-3 file:rounded file:border-0 file:bg-slate-700 file:px-2.5 file:py-1 file:text-xs file:text-slate-200 file:cursor-pointer" />
           </div>
           <button type="button" onClick={onUploadRelease} disabled={releaseUploadBusy || !releaseUploadVersion.trim() || !releaseUploadFile} className={BTN_PRIMARY}>
-            {releaseUploadBusy ? "Uploading…" : "Publish Release"}
+            {releaseUploadBusy ? "UploadingΓÇª" : "Publish Release"}
           </button>
         </div>
       </div>
