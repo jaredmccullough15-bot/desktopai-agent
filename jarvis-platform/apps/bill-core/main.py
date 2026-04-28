@@ -1135,6 +1135,22 @@ async def create_task(payload: TaskCreateRequest, request: Request) -> TaskCreat
     raw_body = await request.json()
     if isinstance(raw_body, dict) and raw_body.get("mode") and "mode" not in normalized_payload:
         normalized_payload["mode"] = raw_body["mode"]
+
+    tenant_id = str(normalized_payload.get("tenant_id") or "").strip()
+    workflow_id = str(normalized_payload.get("workflow_id") or normalized_payload.get("workflow_name") or "").strip()
+    if tenant_id and workflow_id:
+        if not globals().get("_tenant_templates_available", False):
+            raise HTTPException(status_code=503, detail="Tenant template runtime is unavailable")
+        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_id, input_data=normalized_payload)
+
+    if str(normalized_payload.get("workflow_name") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Legacy workflow execution is disabled. "
+                "Submit tenant_id/workflow_id or use /api/tenants/{tenant_id}/workflows/{workflow_id}/run"
+            ),
+        )
     return _create_task_record(normalized_payload)
 
 
@@ -1145,22 +1161,24 @@ def list_procedures() -> list[ProcedureTemplate]:
 
 @app.post("/api/procedures/{procedure_name}/run", response_model=TaskCreateResponse)
 def run_procedure(procedure_name: str, payload: ProcedureRunRequest) -> TaskCreateResponse:
-    template = PROCEDURE_TEMPLATES.get(procedure_name)
-    if not template:
-        raise HTTPException(status_code=404, detail="Procedure not found")
-
-    normalized_payload = dict(template.get("payload") or {})
-    if payload.payload:
-        normalized_payload.update(payload.payload)
+    tenant_id = (os.getenv("BILL_DEFAULT_TENANT_ID") or "internal").strip() or "internal"
+    input_data = dict(payload.payload or {})
     if payload.mode:
-        normalized_payload["mode"] = payload.mode
+        input_data["mode"] = payload.mode
     if payload.target_machine_uuid:
-        normalized_payload["target_machine_uuid"] = payload.target_machine_uuid
+        input_data["target_machine_uuid"] = payload.target_machine_uuid
 
-    if "task_type" not in normalized_payload:
-        normalized_payload["task_type"] = template.get("task_type")
-
-    return _create_task_record(normalized_payload)
+    try:
+        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=procedure_name, input_data=input_data)
+    except NameError as exc:
+        raise HTTPException(status_code=503, detail="Tenant runtime is unavailable") from exc
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template-driven workflow not found for tenant={tenant_id} workflow={procedure_name}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 def _worker_is_idle(machine: MachineRecord) -> bool:
@@ -1361,24 +1379,22 @@ def _create_workflow_task(
     target_machine_uuid: str | None = None,
     extra_payload: dict[str, Any] | None = None,
 ) -> TaskCreateResponse:
-    workflow = next((record for record in WORKFLOW_REGISTRY if record.workflow_name == workflow_name), None)
-    if workflow is None:
-        raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_name}")
-
-    procedure_name = workflow.procedure_name or workflow.workflow_name
-    template = PROCEDURE_TEMPLATES.get(procedure_name)
-    if template is None:
-        raise HTTPException(status_code=404, detail=f"Procedure template missing: {procedure_name}")
-
-    normalized_payload = dict(template.get("payload") or {})
-    if "task_type" not in normalized_payload:
-        normalized_payload["task_type"] = template.get("task_type")
-    if extra_payload:
-        normalized_payload.update(extra_payload)
+    tenant_id = (os.getenv("BILL_DEFAULT_TENANT_ID") or "internal").strip() or "internal"
+    input_data = dict(extra_payload or {})
     if target_machine_uuid:
-        normalized_payload["target_machine_uuid"] = target_machine_uuid
+        input_data["target_machine_uuid"] = target_machine_uuid
 
-    return _create_task_record(normalized_payload)
+    try:
+        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_name, input_data=input_data)
+    except NameError as exc:
+        raise HTTPException(status_code=503, detail="Tenant runtime is unavailable") from exc
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template-driven workflow not found for tenant={tenant_id} workflow={workflow_name}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 def _find_task_by_ref(task_ref: str | None) -> dict | None:
