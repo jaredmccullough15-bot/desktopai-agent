@@ -208,7 +208,7 @@ interface AdvancedToolsTabsProps {
   setSelectedTask: (t: Task | null) => void;
   loading: boolean;
   actionError: string | null;
-  response: unknown;
+  response: unknown | null;
   onCreateTestTask: () => void;
   onCreateScreenshotTask: () => void;
   onCreateVisibleWorkflowTask: () => void;
@@ -620,7 +620,7 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
             })}
           </div>
         )}
-        {response && (
+        {response !== null && response !== undefined && (
           <details className="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
             <summary className="cursor-pointer text-xs font-medium text-slate-400">Last API response</summary>
             <pre className="mt-2 overflow-auto text-[11px] text-slate-300">{JSON.stringify(response, null, 2)}</pre>
