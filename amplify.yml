@@ -1,0 +1,18 @@
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - cd bill-web
+        - npm ci
+    build:
+      commands:
+        - npm run build
+  artifacts:
+    baseDirectory: bill-web/.next
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - bill-web/node_modules/**/*
+      - bill-web/.next/cache/**/*
