@@ -1856,12 +1856,16 @@ export default function Home() {
     }
   };
 
-  const startTeachingSession = (draftId: string) => {
+  const startTeachingSession = async (draftId: string) => {
     setTeachingSessionDraftId(draftId);
     setTeachingOverlayOpen(true);
     setTeachingStatus("watching");
     setTeachingCurrentQuestion(null);
     setTeachingAnswers({});
+    setTeachingLaunchStatus(null);
+    setTeachingLaunchPid(null);
+    await loadTeachingQuestion(draftId);
+    await launchTeachBrowser(draftId);
   };
 
   const submitTeachingAnswers = async () => {
@@ -1930,15 +1934,16 @@ export default function Home() {
     await loadBrainPanels();
   };
 
-  const launchTeachBrowser = async () => {
-    if (!teachingSessionDraftId) return;
+  const launchTeachBrowser = async (draftIdOverride?: string) => {
+    const draftId = draftIdOverride ?? teachingSessionDraftId;
+    if (!draftId) return;
     const apiBase = getApiBase();
     const workerApiBase = getWorkerApiBase();
     if (!apiBase) return;
     setTeachingLaunchStatus("launching");
     try {
       const res = await fetch(
-        `${apiBase}/api/brain/workflow-learning/drafts/${teachingSessionDraftId}/teach-session/start`,
+        `${apiBase}/api/brain/workflow-learning/drafts/${draftId}/teach-session/start`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
