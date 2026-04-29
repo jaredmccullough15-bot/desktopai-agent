@@ -7,6 +7,13 @@ import AlertsPanel, { type AlertItem, type AlertKind, type HelpTask } from "./co
 import BillVoiceControls from "./components/BillVoiceControls";
 import RecoveryPanel from "./components/RecoveryPanel";
 import RecoveryAnalyticsPanel from "./components/RecoveryAnalyticsPanel";
+import { BillHeader } from "./components/BillHeader";
+import { CommandCenterCard } from "./components/CommandCenterCard";
+import { WorkersPanel } from "./components/WorkersPanel";
+import { RecentActivityPanel } from "./components/RecentActivityPanel";
+import { ActiveTasksPanel } from "./components/ActiveTasksPanel";
+import { AdvancedToolsTabs } from "./components/AdvancedToolsTabs";
+import { SystemHealthFooter } from "./components/SystemHealthFooter";
 import { useBillMic } from "./hooks/useBillMic";
 import { useBillVoice } from "./hooks/useBillVoice";
 import { useVoice } from "./hooks/useVoice";
@@ -238,6 +245,26 @@ type TeachingSessionQuestion = {
   steps_remaining: number;
 };
 
+type TeachOverlayPrompt = {
+  prompt_id: string;
+  question: string;
+  category?: string;
+  question_type?: string;
+  trigger_type?: string;
+  system_context?: Record<string, unknown>;
+};
+
+type TeachOverlayQuestionResponse = {
+  session_id: string;
+  workflow_id?: string;
+  tenant_id?: string;
+  question?: TeachOverlayPrompt | null;
+  step_order: number;
+  teaching_complete: boolean;
+  observation_questions_paused: boolean;
+  observation_skip_all_questions: boolean;
+};
+
 const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
 const COMMAND_CENTER_VOICE_PREF_KEY = "bill.command-center.voice.enabled";
 
@@ -379,6 +406,11 @@ export default function Home() {
   const [teachingStatus, setTeachingStatus] = useState<"watching" | "step_captured" | "waiting_clarification" | "paused">("watching");
   const [teachingCurrentQuestion, setTeachingCurrentQuestion] = useState<TeachingSessionQuestion | null>(null);
   const [teachingAnswers, setTeachingAnswers] = useState<Record<string, string>>({});
+  const [teachingOverlayQuestion, setTeachingOverlayQuestion] = useState<TeachOverlayQuestionResponse | null>(null);
+  const [teachingOverlayAnswer, setTeachingOverlayAnswer] = useState("");
+  const [teachingOverlayTaskId, setTeachingOverlayTaskId] = useState<string | null>(null);
+  const [teachingOverlayBusyKey, setTeachingOverlayBusyKey] = useState<string | null>(null);
+  const [teachingOverlayError, setTeachingOverlayError] = useState<string | null>(null);
   const [teachingStartUrl, setTeachingStartUrl] = useState<string>("");
   const [teachingTargetWorkerUuid, setTeachingTargetWorkerUuid] = useState<string>("");
   const [teachingLaunchStatus, setTeachingLaunchStatus] = useState<null | "launching" | "running" | "error">(null);
@@ -408,6 +440,7 @@ export default function Home() {
   const [deployBusy, setDeployBusy] = useState(false);
   const [deployForce, setDeployForce] = useState(false);
   const [deployIdleOnly, setDeployIdleOnly] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
   // ── Mobile / Phase 1-5 state ────────────────────────────────────────────────
   const [mobileView, setMobileView] = useState<MobileView>("status");
@@ -424,6 +457,10 @@ export default function Home() {
 
   const selectedMachine = machines.find((machine) => machine.machine_uuid === targetMachineUuid) ?? null;
 
+  const logTeachOverlay = useCallback((message: string, details?: Record<string, unknown>) => {
+    console.info("[teach-overlay]", message, details ?? {});
+  }, []);
+
   // ── Voice (Phase 4) ──────────────────────────────────────────────────────────
   const { isSupported: voiceSupported, isListening, isSpeaking, ttsEnabled, setTtsEnabled, startListening, stopListening, speak } = useVoice({
     onTranscript: (text) => {
@@ -439,6 +476,9 @@ export default function Home() {
   const lastSpokenHashRef = useRef<string>("");
   const lastSpokenAtRef = useRef<number>(0);
   const lastVoiceEventRef = useRef<{ eventType: string; at: number }>({ eventType: "", at: 0 });
+  const teachingOverlayVoiceEnabled = Boolean(
+    commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured,
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -917,6 +957,7 @@ export default function Home() {
     }
 
     setErrors(nextErrors);
+    setLastUpdated(new Date());
   };
 
   const loadBrainPanels = async () => {
@@ -1847,12 +1888,154 @@ export default function Home() {
     }
   };
 
-  const startTeachingSession = (draftId: string) => {
+  const loadTeachOverlayQuestion = useCallback(
+    async (draftId: string, options?: { silent?: boolean }) => {
+      if (!draftId) {
+        return;
+      }
+      if (!options?.silent) {
+        setTeachingOverlayBusyKey(`overlay-load-${draftId}`);
+      }
+      try {
+        const apiBase = getApiBase();
+        if (!apiBase) {
+          throw new Error("NEXT_PUBLIC_API_BASE is not set");
+        }
+        logTeachOverlay("next question requested", { session_id: draftId });
+        const response = await fetch(`${apiBase}/api/teach-sessions/${draftId}/questions/next`);
+        const body = (await response.json()) as TeachOverlayQuestionResponse | { detail?: string };
+        if (!response.ok) {
+          throw new Error((body as { detail?: string }).detail ?? `Overlay question fetch failed (${response.status})`);
+        }
+        const nextQuestion = body as TeachOverlayQuestionResponse;
+        setTeachingOverlayQuestion(nextQuestion);
+        setTeachingOverlayAnswer((current) => (
+          nextQuestion.question?.prompt_id === teachingOverlayQuestion?.question?.prompt_id ? current : ""
+        ));
+        setTeachingOverlayError(null);
+        logTeachOverlay("overlay question loaded", {
+          session_id: draftId,
+          question_loaded: Boolean(nextQuestion.question),
+          paused: nextQuestion.observation_questions_paused,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        setTeachingOverlayError(message);
+        logTeachOverlay("overlay question request failed", { session_id: draftId, error: message });
+      } finally {
+        if (!options?.silent) {
+          setTeachingOverlayBusyKey(null);
+        }
+      }
+    },
+    [logTeachOverlay, teachingOverlayQuestion?.question?.prompt_id],
+  );
+
+  const startTeachingSession = async (draftId: string) => {
+    logTeachOverlay("teach mode started", { session_id: draftId, target_worker_uuid: teachingTargetWorkerUuid || null });
     setTeachingSessionDraftId(draftId);
     setTeachingOverlayOpen(true);
     setTeachingStatus("watching");
     setTeachingCurrentQuestion(null);
     setTeachingAnswers({});
+    setTeachingOverlayQuestion(null);
+    setTeachingOverlayAnswer("");
+    setTeachingOverlayTaskId(null);
+    setTeachingOverlayError(null);
+    setTeachingLaunchStatus(null);
+    setTeachingLaunchPid(null);
+    await loadTeachingQuestion(draftId);
+    await loadTeachOverlayQuestion(draftId);
+    await launchTeachBrowser(draftId);
+  };
+
+  const submitTeachOverlayAnswer = async (action: "answer" | "skip") => {
+    if (!teachingSessionDraftId) {
+      return;
+    }
+    const prompt = teachingOverlayQuestion?.question;
+    if (!prompt) {
+      await loadTeachOverlayQuestion(teachingSessionDraftId);
+      return;
+    }
+
+    setTeachingOverlayBusyKey(`overlay-${action}-${teachingSessionDraftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const endpoint = action === "answer"
+        ? `${apiBase}/api/teach-sessions/${teachingSessionDraftId}/answers`
+        : `${apiBase}/api/teach-sessions/${teachingSessionDraftId}/questions/skip`;
+      const payload = {
+        prompt_id: prompt.prompt_id,
+        step_order: teachingOverlayQuestion?.step_order ?? 0,
+        answer: teachingOverlayAnswer,
+        response_mode: "text",
+        question_type: prompt.question_type,
+        trigger_type: prompt.trigger_type,
+        question_frequency: "medium",
+        system_context: prompt.system_context ?? {},
+      };
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = (await response.json()) as { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Overlay ${action} failed (${response.status})`);
+      }
+      logTeachOverlay(action === "answer" ? "answer submitted" : "question skipped", {
+        session_id: teachingSessionDraftId,
+        task_id: teachingOverlayTaskId,
+        prompt_id: prompt.prompt_id,
+      });
+      setTeachingOverlayAnswer("");
+      setTeachingOverlayError(null);
+      await loadTeachOverlayQuestion(teachingSessionDraftId, { silent: true });
+      await loadBrainPanels();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setTeachingOverlayError(message);
+      logTeachOverlay("answer submission failed", { session_id: teachingSessionDraftId, error: message });
+    } finally {
+      setTeachingOverlayBusyKey(null);
+    }
+  };
+
+  const toggleTeachOverlayPause = async () => {
+    if (!teachingSessionDraftId) {
+      return;
+    }
+    const shouldResume = Boolean(teachingOverlayQuestion?.observation_questions_paused);
+    setTeachingOverlayBusyKey(`overlay-pause-${teachingSessionDraftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const response = await fetch(`${apiBase}/api/teach-sessions/${teachingSessionDraftId}/questions/pause`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume: shouldResume, question_frequency: "medium" }),
+      });
+      const body = (await response.json()) as { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Overlay pause toggle failed (${response.status})`);
+      }
+      logTeachOverlay(shouldResume ? "questions resumed" : "questions paused", {
+        session_id: teachingSessionDraftId,
+      });
+      await loadTeachOverlayQuestion(teachingSessionDraftId, { silent: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setTeachingOverlayError(message);
+      logTeachOverlay("pause toggle failed", { session_id: teachingSessionDraftId, error: message });
+    } finally {
+      setTeachingOverlayBusyKey(null);
+    }
   };
 
   const submitTeachingAnswers = async () => {
@@ -1917,19 +2100,24 @@ export default function Home() {
     setTeachingOverlayOpen(false);
     setTeachingCurrentQuestion(null);
     setTeachingAnswers({});
+    setTeachingOverlayQuestion(null);
+    setTeachingOverlayAnswer("");
+    setTeachingOverlayTaskId(null);
+    setTeachingOverlayError(null);
     setTeachingStatus("watching");
     await loadBrainPanels();
   };
 
-  const launchTeachBrowser = async () => {
-    if (!teachingSessionDraftId) return;
+  const launchTeachBrowser = async (draftIdOverride?: string) => {
+    const draftId = draftIdOverride ?? teachingSessionDraftId;
+    if (!draftId) return;
     const apiBase = getApiBase();
     const workerApiBase = getWorkerApiBase();
     if (!apiBase) return;
     setTeachingLaunchStatus("launching");
     try {
       const res = await fetch(
-        `${apiBase}/api/brain/workflow-learning/drafts/${teachingSessionDraftId}/teach-session/start`,
+        `${apiBase}/api/brain/workflow-learning/drafts/${draftId}/teach-session/start`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1940,10 +2128,16 @@ export default function Home() {
           }),
         },
       );
-      const data = (await res.json()) as { pid?: number; status?: string; detail?: string };
+      const data = (await res.json()) as { pid?: number; status?: string; detail?: string; task_id?: string };
       if (!res.ok) throw new Error(data.detail ?? `Launch failed (${res.status})`);
       setTeachingLaunchPid(data.pid ?? null);
+      setTeachingOverlayTaskId(data.task_id ?? null);
       setTeachingLaunchStatus("running");
+      logTeachOverlay("overlay should open", {
+        session_id: draftId,
+        task_id: data.task_id ?? null,
+        launch_status: data.status ?? "running",
+      });
     } catch (err) {
       setTeachingLaunchStatus("error");
       setFeedback(
@@ -1951,6 +2145,10 @@ export default function Home() {
         "error",
         `Browser launch failed: ${err instanceof Error ? err.message : "Unknown error"}`,
       );
+      logTeachOverlay("teach mode launch failed", {
+        session_id: draftId,
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
     }
   };
 
@@ -1961,6 +2159,26 @@ export default function Home() {
     const id = setInterval(() => { void loadBrainPanels(); }, 2000);
     return () => clearInterval(id);
   }, [teachingSessionDraftId]);
+
+  useEffect(() => {
+    if (!teachingSessionDraftId || !teachingOverlayOpen) {
+      return;
+    }
+    logTeachOverlay("overlay component mounted", {
+      session_id: teachingSessionDraftId,
+      task_id: teachingOverlayTaskId,
+    });
+  }, [logTeachOverlay, teachingOverlayOpen, teachingOverlayTaskId, teachingSessionDraftId]);
+
+  useEffect(() => {
+    if (!teachingSessionDraftId) {
+      return;
+    }
+    const id = setInterval(() => {
+      void loadTeachOverlayQuestion(teachingSessionDraftId, { silent: true });
+    }, 3000);
+    return () => clearInterval(id);
+  }, [loadTeachOverlayQuestion, teachingSessionDraftId]);
 
   // Flash "step_captured" when the Playwright script appends a new step
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2009,1445 +2227,194 @@ export default function Home() {
           : "border-amber-500/40 bg-amber-500/10";
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#13324a_0%,_#090d14_45%,_#070a11_100%)] text-slate-100 pb-16 lg:pb-0">
+    <main className="min-h-screen bg-[#070a11] text-slate-100">
 
-      {/* ── Desktop Full Control Center (hidden on mobile) ─────────────────── */}
+      {/* ── Desktop Command Center (hidden on mobile) ─────────────────────── */}
       <div className="hidden lg:block">
-      <div className="mx-auto max-w-[1600px] px-4 py-4 sm:px-6 lg:px-10 lg:py-6">
-        <header className="mb-4 rounded-2xl border border-slate-800/90 bg-slate-900/75 px-4 py-4 shadow-[0_22px_45px_-30px_rgba(8,145,178,0.7)] backdrop-blur sm:px-5 sm:py-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <div className="flex items-center justify-between gap-4 lg:block">
-              <div>
-                <p className="text-[10px] uppercase tracking-[0.2em] text-cyan-300 sm:text-xs">Bill Operations Control</p>
-                <h1 className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl lg:text-3xl">AI Workflow Command Center</h1>
-                <p className="mt-1 hidden text-sm text-slate-400 lg:block">
-                  Calm, real-time control of workers, orchestration, and task execution.
-                </p>
+        <div className="mx-auto max-w-[1600px] px-6 py-6">
+
+          {/* Header: logo + metric bar */}
+          <BillHeader
+            workersOnline={onlineWorkers.length}
+            activeTasks={activeTasks.length}
+            needsAttention={humanHelpTasks.length}
+            failedTasks={failedTasks.length}
+            completed24h={successfulTasks.length}
+          />
+
+          {errors.config && (
+            <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {errors.config}
+            </div>
+          )}
+
+          {/* Main grid: left content + right workers panel */}
+          <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+
+            {/* Left column */}
+            <div className="space-y-6">
+
+              {/* Primary command card */}
+              <CommandCenterCard
+                chatInput={chatInput}
+                setChatInput={setChatInput}
+                chatLoading={chatLoading}
+                onSubmit={() => void submitBrainCommand()}
+                commandVoiceEnabled={commandVoiceEnabled}
+                setCommandVoiceEnabled={setCommandVoiceEnabled}
+                voiceSupported={voiceSupported}
+                isListening={isListening}
+                startListening={startListening}
+                stopListening={stopListening}
+                billVoice={billVoice}
+                commandMic={commandMic}
+                workflows={workflows}
+                loading={loading}
+                helperWorkflow={helperWorkflow}
+                setHelperWorkflow={setHelperWorkflow}
+                onRunWorkflow={(name) => void runSelectedWorkflow(name)}
+                onQuickAction={(cmd) => { setChatInput(cmd); void submitBrainCommand(cmd); }}
+              />
+
+              {/* Recent Activity + Active Tasks row */}
+              <div className="grid gap-6 md:grid-cols-2">
+                <RecentActivityPanel alerts={alerts} />
+                <ActiveTasksPanel
+                  activeTasks={activeTasks}
+                  allTasks={tasks}
+                  taskActionBusyKey={taskActionBusyKey}
+                  onCancel={(id) => void cancelTask(id)}
+                  onRetry={(task) => void retryFailedTask(task)}
+                />
               </div>
+
+              {/* Advanced tools — tabbed */}
+              <AdvancedToolsTabs
+                apiBase={getApiBase()}
+                billVoice={billVoice}
+                auditEntries={auditEntries}
+                onRefreshAudit={() => void loadBrainPanels()}
+                auditError={errors.audit}
+                learningPath={learningPath}
+                setLearningPath={setLearningPath}
+                learningWorkflowName={learningWorkflowName}
+                setLearningWorkflowName={setLearningWorkflowName}
+                learningGoal={learningGoal}
+                setLearningGoal={setLearningGoal}
+                learningSourceText={learningSourceText}
+                setLearningSourceText={setLearningSourceText}
+                learningBusyKey={learningBusyKey}
+                learningFeedback={learningFeedback}
+                workflowDrafts={workflowDrafts}
+                expandedDraftId={expandedDraftId}
+                setExpandedDraftId={setExpandedDraftId}
+                onCreateDraft={() => void createWorkflowDraft()}
+                onDeleteDraft={(id, name) => void deleteDraft(id, name)}
+                onUpdateDraftStatus={(id, status) => void updateDraftStatus(id, status)}
+                onStartTeachingSession={startTeachingSession}
+                onTestDraft={(id) => void testDraftGuided(id)}
+                onPublishDraft={(id) => void publishDraft(id)}
+                teachingSessionDraftId={teachingSessionDraftId}
+                draftsError={errors.drafts}
+                teachingTargetWorkerUuid={teachingTargetWorkerUuid}
+                setTeachingTargetWorkerUuid={setTeachingTargetWorkerUuid}
+                machines={machines}
+                workflows={workflows}
+                helperWorkflow={helperWorkflow}
+                setHelperWorkflow={setHelperWorkflow}
+                helperWorkerUuid={helperWorkerUuid}
+                setHelperWorkerUuid={setHelperWorkerUuid}
+                helperClientName={helperClientName}
+                setHelperClientName={setHelperClientName}
+                helperHouseholdName={helperHouseholdName}
+                setHelperHouseholdName={setHelperHouseholdName}
+                helperMaxClients={helperMaxClients}
+                setHelperMaxClients={setHelperMaxClients}
+                helperMaxPages={helperMaxPages}
+                setHelperMaxPages={setHelperMaxPages}
+                helperRetryFailedOnly={helperRetryFailedOnly}
+                setHelperRetryFailedOnly={setHelperRetryFailedOnly}
+                helperFreeText={helperFreeText}
+                setHelperFreeText={setHelperFreeText}
+                helperBusy={helperBusy}
+                helperFeedback={helperFeedback}
+                onRunGuidedCommand={() => void runGuidedCommand()}
+                onRunFreeTextCommand={() => void runFreeTextCommand()}
+                workflowsError={errors.workflows}
+                tasks={tasks}
+                taskActionBusyKey={taskActionBusyKey}
+                taskActionFeedback={taskActionFeedback}
+                onCancelTask={(id) => void cancelTask(id)}
+                onRetryTask={(task) => void retryFailedTask(task)}
+                selectedTask={selectedTask}
+                setSelectedTask={setSelectedTask}
+                loading={loading}
+                actionError={actionError}
+                response={response}
+                onCreateTestTask={() => void createTestTask()}
+                onCreateScreenshotTask={() => void createScreenshotTask()}
+                onCreateVisibleWorkflowTask={() => void createVisibleWorkflowTask()}
+                onRunSmartSherpa={() => void runSmartSherpaSync()}
+                onRunWorkflow={(name) => void runSelectedWorkflow(name)}
+                targetMachineUuid={targetMachineUuid}
+                setTargetMachineUuid={setTargetMachineUuid}
+                workerReleases={workerReleases}
+                workerDeployStatus={workerDeployStatus}
+                releaseUploadVersion={releaseUploadVersion}
+                setReleaseUploadVersion={setReleaseUploadVersion}
+                releaseUploadNotes={releaseUploadNotes}
+                setReleaseUploadNotes={setReleaseUploadNotes}
+                releaseUploadChannel={releaseUploadChannel}
+                setReleaseUploadChannel={setReleaseUploadChannel}
+                releaseUploadFile={releaseUploadFile}
+                setReleaseUploadFile={setReleaseUploadFile}
+                releaseUploadBusy={releaseUploadBusy}
+                releaseBusyKey={releaseBusyKey}
+                releasesFeedback={releasesFeedback}
+                deployBusy={deployBusy}
+                deployForce={deployForce}
+                setDeployForce={setDeployForce}
+                deployIdleOnly={deployIdleOnly}
+                setDeployIdleOnly={setDeployIdleOnly}
+                onUploadRelease={() => void uploadRelease()}
+                onActivateRelease={(id) => void activateRelease(id)}
+                onDeleteRelease={(id) => void deleteRelease(id)}
+                onDeployToWorkers={(uuids) => void deployToWorkers(uuids)}
+                onRefreshBrainPanels={() => void loadBrainPanels()}
+                chatHistory={chatHistory}
+              />
             </div>
 
-            <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-4 lg:w-[540px] lg:gap-3">
-              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-3 py-2.5 shadow-[0_10px_24px_-18px_rgba(2,132,199,0.6)]">
-                <p className="text-[10px] text-slate-400 sm:text-xs">Workers Online</p>
-                <p className="mt-0.5 text-xl font-semibold text-cyan-300 sm:text-2xl">{onlineWorkers.length}</p>
-              </div>
-              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-3 py-2.5 shadow-[0_10px_24px_-18px_rgba(2,132,199,0.6)]">
-                <p className="text-[10px] text-slate-400 sm:text-xs">Active Tasks</p>
-                <p className="mt-0.5 text-xl font-semibold text-cyan-300 sm:text-2xl">{activeTasks.length}</p>
-              </div>
-              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-3 py-2.5 shadow-[0_10px_24px_-18px_rgba(244,63,94,0.45)]">
-                <p className="text-[10px] text-slate-400 sm:text-xs">Failed Tasks</p>
-                <p className="mt-0.5 text-xl font-semibold text-rose-300 sm:text-2xl">{failedTasks.length}</p>
-              </div>
-              <div className="rounded-xl border border-slate-800/90 bg-slate-900/90 px-3 py-2.5 shadow-[0_10px_24px_-18px_rgba(16,185,129,0.45)]">
-                <p className="text-[10px] text-slate-400 sm:text-xs">Completed</p>
-                <p className="mt-0.5 text-xl font-semibold text-emerald-300 sm:text-2xl">{successfulTasks.length}</p>
-              </div>
+            {/* Right column: Workers panel */}
+            <div>
+              <WorkersPanel
+                machines={machines}
+                onlineCount={onlineWorkers.length}
+                targetMachineUuid={targetMachineUuid}
+                setTargetMachineUuid={setTargetMachineUuid}
+                renamingMachineUuid={renamingMachineUuid}
+                setRenamingMachineUuid={setRenamingMachineUuid}
+                renameValue={renameValue}
+                setRenameValue={setRenameValue}
+                onRename={(uuid, name) => void renameWorker(uuid, name)}
+                onDelete={(uuid) => void deleteWorker(uuid)}
+                machinesError={errors.machines}
+              />
             </div>
           </div>
-        </header>
 
-        {errors.config && (
-          <div className="mb-6 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-            {errors.config}
-          </div>
-        )}
-
-        <section className="grid gap-6 lg:grid-cols-12">
-          <div className="space-y-6 lg:col-span-4">
-            <section className="rounded-2xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-900/70 p-5 shadow-[0_24px_45px_-30px_rgba(8,145,178,0.8)]">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold">Brain Command Center</h2>
-                  <p className="text-xs text-slate-400">Natural language control for Bill orchestration.</p>
-                </div>
-                <span className="rounded-full border border-cyan-400/40 bg-cyan-400/10 px-2.5 py-1 text-xs text-cyan-200">
-                  Live
-                </span>
-              </div>
-
-              <div className="rounded-xl border border-cyan-500/20 bg-slate-950/80 p-3 shadow-inner shadow-cyan-950/40">
-                <textarea
-                  value={chatInput}
-                  onChange={(event) => setChatInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void submitBrainCommand();
-                    }
-                  }}
-                  rows={4}
-                  placeholder="Tell Bill what to do. Example: Run marketplace workflow on the best idle worker with max clients 25"
-                  className="w-full resize-none rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-sm leading-relaxed text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                />
-                <div className="mt-3 flex justify-end">
-                  <div className="flex items-center gap-2">
-                    {/* Voice input button (Phase 4) */}
-                    {voiceSupported && (
-                      <button
-                        type="button"
-                        onClick={isListening ? stopListening : startListening}
-                        title={isListening ? "Stop listening" : "Speak command"}
-                        className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
-                          isListening
-                            ? "bg-rose-500 text-white animate-pulse hover:bg-rose-400"
-                            : "border border-slate-700 bg-slate-900 text-slate-400 hover:border-cyan-400/60 hover:text-cyan-300"
-                        }`}
-                      >
-                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                        </svg>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setCommandVoiceEnabled((current) => !current)}
-                      title={commandVoiceEnabled ? "Speak responses enabled" : "Speak responses disabled"}
-                      className={`rounded-lg px-3 py-2 text-xs font-medium transition ${
-                        commandVoiceEnabled
-                          ? "border border-cyan-400/40 bg-cyan-500/15 text-cyan-300"
-                          : "border border-slate-700 bg-slate-900 text-slate-500 hover:text-slate-300"
-                      }`}
-                    >
-                      {commandVoiceEnabled ? "Voice On" : "Voice Off"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        billVoice.stopPlayback();
-                      }}
-                      title="Stop speaking"
-                      className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-300 transition hover:border-cyan-400/60 hover:text-cyan-200"
-                    >
-                      Stop Voice
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!commandMic.supported}
-                      onClick={() => {
-                        if (commandMic.isRecording) {
-                          commandMic.stopRecording();
-                        } else {
-                          void commandMic.requestPermission().then((granted) => {
-                            if (granted) {
-                              void commandMic.startRecording();
-                            }
-                          });
-                        }
-                      }}
-                      title="Experimental mic capture (STT coming soon)"
-                      className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-300 transition hover:border-cyan-400/60 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {commandMic.isRecording ? "Stop Mic" : "Mic (experimental)"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const repeatText = lastCommandResponseText.trim();
-                        if (!repeatText || !commandVoiceEnabled) return;
-                        void billVoice.speakText({
-                          text: repeatText,
-                          emotion: commandVoiceEmotion,
-                          style_profile: commandVoiceStyleProfile,
-                          context: { event_type: "repeat_last_response" },
-                        });
-                      }}
-                      title="Repeat last Bill response"
-                      disabled={!lastCommandResponseText.trim()}
-                      className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-300 transition hover:border-cyan-400/60 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      Repeat
-                    </button>
-                    <label className="hidden xl:block">
-                      <span className="sr-only">Voice emotion</span>
-                      <select
-                        value={commandVoiceEmotion}
-                        onChange={(event) => setCommandVoiceEmotion(event.target.value)}
-                        className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs text-slate-200"
-                      >
-                        {["helpful", "neutral", "empathetic", "alert", "confident", "apologetic"].map((emotion) => (
-                          <option key={emotion} value={emotion}>
-                            {emotion}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="hidden xl:block">
-                      <span className="sr-only">Voice style</span>
-                      <select
-                        value={commandVoiceStyleProfile}
-                        onChange={(event) => setCommandVoiceStyleProfile(event.target.value)}
-                        className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs text-slate-200"
-                      >
-                        {["default", "calm", "energetic", "urgent", "empathetic"].map((profile) => (
-                          <option key={profile} value={profile}>
-                            {profile}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => void submitBrainCommand()}
-                      disabled={chatLoading || !chatInput.trim()}
-                      className={BUTTON_PRIMARY}
-                    >
-                      {chatLoading ? "Thinking..." : "Send"}
-                    </button>
-                  </div>
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                  <span>
-                    Command voice: {commandVoiceEnabled ? "enabled" : "disabled"}
-                  </span>
-                  <span>•</span>
-                  <span>
-                    ElevenLabs: {billVoice.config?.configured ? "ready" : "unavailable"}
-                  </span>
-                  <span>•</span>
-                  <span>
-                    Mic capture: experimental (STT coming soon)
-                  </span>
-                  {billVoice.lastError && (
-                    <span className="text-rose-300">• Voice warning: {billVoice.lastError}</span>
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                {[
-                  "Which worker is free?",
-                  "What is running now?",
-                  "What failed last?",
-                  "Retry last failed task",
-                  "Summarize all workers",
-                  "Show needs human help",
-                ].map((example) => (
-                  <button
-                    key={example}
-                    type="button"
-                    onClick={() => setChatInput(example)}
-                    className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400/60 hover:bg-cyan-500/10 hover:text-cyan-200"
-                  >
-                    {example}
-                  </button>
-                ))}
-              </div>
-
-              <div className="mt-4 max-h-[520px] space-y-3 overflow-auto pr-1">
-                {chatHistory.map((entry, index) => (
-                  <div
-                    key={`chat-${index}`}
-                    className={
-                      entry.role === "user"
-                        ? "ml-8 rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3"
-                        : "mr-8 rounded-xl border border-slate-700 bg-slate-900/90 p-3"
-                    }
-                  >
-                    <p className="mb-2 text-[11px] uppercase tracking-wider text-slate-400">
-                      {entry.role === "user" ? "You" : "Bill"}
-                    </p>
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">{entry.message}</p>
-                    {entry.suggestedNextAction && (
-                      <div className="mt-3 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
-                        Suggested next action: {entry.suggestedNextAction}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          </div>
-
-          <div className="space-y-6 lg:col-span-5">
-            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
-              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold">Task Operations</h2>
-                  <p className="text-xs text-slate-400">Run workflows, monitor progress, and recover quickly.</p>
-                </div>
-
-                <div className="min-w-[240px]">
-                  <label htmlFor="target-machine" className="mb-1 block text-xs text-slate-400">Target Worker</label>
-                  <select
-                    id="target-machine"
-                    value={targetMachineUuid}
-                    onChange={(event) => setTargetMachineUuid(event.target.value)}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                  >
-                    <option value="">Auto assign best available</option>
-                    {machines.map((machine) => {
-                      if (!machine.machine_uuid) return null;
-                      return (
-                        <option key={machine.machine_uuid} value={machine.machine_uuid}>
-                          {machine.machine_name ?? "unknown"} · {workerStatusText(machine)}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-              </div>
-
-              {/* Dynamic workflow selector — lists every published workflow from /api/workflows */}
-              {workflows.length > 0 && (
-                <div className="mb-4 flex flex-wrap items-center gap-2">
-                  <select
-                    value={helperWorkflow}
-                    onChange={(e) => setHelperWorkflow(e.target.value)}
-                    className="flex-1 min-w-[200px] rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                  >
-                    {workflows.map((wf) => (
-                      <option key={wf.workflow_name} value={wf.workflow_name}>
-                        {wf.workflow_name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => void runSelectedWorkflow(helperWorkflow)}
-                    disabled={loading || !helperWorkflow}
-                    className={BUTTON_PRIMARY}
-                  >
-                    {loading ? "Starting..." : "Run Workflow"}
-                  </button>
-                </div>
-              )}
-
-              <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                <button
-                  type="button"
-                  onClick={createTestTask}
-                  disabled={loading}
-                  className={BUTTON_SECONDARY}
-                >
-                  {loading ? "Creating..." : "Create Test Task"}
-                </button>
-                <button
-                  type="button"
-                  onClick={createScreenshotTask}
-                  disabled={loading}
-                  className={BUTTON_SECONDARY}
-                >
-                  Screenshot Task
-                </button>
-                <button
-                  type="button"
-                  onClick={createVisibleWorkflowTask}
-                  disabled={loading}
-                  className={BUTTON_SECONDARY}
-                >
-                  Visible Workflow
-                </button>
-                <button
-                  type="button"
-                  onClick={runSmartSherpaSync}
-                  disabled={loading}
-                  className={BUTTON_PRIMARY}
-                >
-                  Run Smart Sherpa Sync
-                </button>
-              </div>
-
-              {taskActionFeedback && (
-                <div
-                  className={
-                    taskActionFeedback.kind === "success"
-                      ? "mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200"
-                      : "mb-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
-                  }
-                >
-                  {taskActionFeedback.message} · {taskActionFeedback.timestamp}
-                </div>
-              )}
-
-              {actionError && (
-                <div className="mb-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
-                  {actionError}
-                </div>
-              )}
-
-              {errors.tasks ? (
-                <p className="text-sm text-rose-300">{errors.tasks}</p>
-              ) : tasks.length === 0 ? (
-                <p className="text-sm text-slate-400">No tasks yet. Start by running a command or workflow.</p>
-              ) : (
-                <div className="space-y-3">
-                  {tasks.map((task, index) => {
-                    const status = (task.status ?? "").toLowerCase();
-                    const canCancel = !!task.id && activeTaskStatuses.has(status);
-                    const canRetry = !!task.id && status === "failed";
-                    const isSelected = selectedTask?.id === task.id;
-
-                    return (
-                      <div
-                        key={task.id ?? `task-${index}`}
-                        className={
-                          isSelected
-                            ? "rounded-xl border border-cyan-400/50 bg-slate-900/90 p-4"
-                            : "rounded-xl border border-slate-800 bg-slate-900/60 p-4"
-                        }
-                      >
-                        <button
-                          type="button"
-                          onClick={() => setSelectedTask(task)}
-                          className="w-full text-left"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <p className="text-sm font-semibold">{task.payload?.task_type ?? "General Task"}</p>
-                              <p className="mt-1 text-xs text-slate-400">
-                                Task {shortTaskId(task.id)} · {toDisplayTime(task.created_at)}
-                              </p>
-                            </div>
-                            <span className={`rounded-full px-2.5 py-1 text-xs ${taskStatusClasses(task.status)}`}>
-                              {taskStatusLabel(task.status)}
-                            </span>
-                          </div>
-                          <p className="mt-2 text-sm text-slate-300">
-                            {task.error
-                              ? `This run failed: ${task.error}`
-                              : status === "completed"
-                                ? "Completed successfully."
-                                : status === "running"
-                                  ? "Currently executing on a worker."
-                                  : status === "queued"
-                                    ? "Waiting for an available worker."
-                                    : status === "assigned"
-                                      ? "Assigned and waiting to begin."
-                                      : "Awaiting status update."}
-                          </p>
-                          {task.assigned_machine_uuid && (
-                            <p className="mt-1 text-xs text-slate-500">Worker: {task.assigned_machine_uuid}</p>
-                          )}
-                        </button>
-
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            disabled={!canCancel || taskActionBusyKey !== null}
-                            onClick={() => void cancelTask(task.id)}
-                            className={BUTTON_DANGER}
-                          >
-                            {taskActionBusyKey === `cancel-${task.id}` ? "Canceling..." : "Cancel Task"}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!canRetry || taskActionBusyKey !== null}
-                            onClick={() => void retryFailedTask(task)}
-                            className={BUTTON_ACCENT_GHOST}
-                          >
-                            {taskActionBusyKey === `retry-${task.id}` ? "Retrying..." : "Retry Task"}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {selectedTask && (
-                <details className="mt-4 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
-                  <summary className="cursor-pointer text-sm font-medium text-slate-200">
-                    Selected task details (expand technical details)
-                  </summary>
-                  <div className="mt-3 space-y-3 text-xs text-slate-300">
-                    <p>Task ID: {selectedTask.id ?? "-"}</p>
-                    <p>Status: {taskStatusLabel(selectedTask.status)}</p>
-                    <p>Type: {selectedTask.payload?.task_type ?? "-"}</p>
-
-                    <div>
-                      <p className="mb-1 font-semibold text-slate-200">Downloaded files</p>
-                      {(selectedTask.result_json?.downloads ?? []).length > 0 ? (
-                        <ul className="list-disc pl-5">
-                          {(selectedTask.result_json?.downloads ?? []).map((download, index) => (
-                            <li key={`${selectedTask.id ?? "task"}-download-${index}`}>
-                              {download.filename ?? "-"} · {download.local_path ?? "-"}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-slate-400">No downloaded files recorded.</p>
-                      )}
-                    </div>
-
-                    <pre className="overflow-auto rounded-lg border border-slate-800 bg-slate-900 p-3 text-[11px] text-slate-300">
-                      {JSON.stringify(selectedTask.result_json ?? {}, null, 2)}
-                    </pre>
-                  </div>
-                </details>
-              )}
-
-              {response && (
-                <details className="mt-4 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
-                  <summary className="cursor-pointer text-sm font-medium text-slate-200">
-                    Last API response
-                  </summary>
-                  <pre className="mt-3 overflow-auto rounded-lg border border-slate-800 bg-slate-900 p-3 text-[11px] text-slate-300">
-                    {JSON.stringify(response, null, 2)}
-                  </pre>
-                </details>
-              )}
-            </section>
-
-            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
-              <div className="mb-3">
-                <h2 className="text-lg font-semibold">Workflow Command Builder</h2>
-                <p className="text-xs text-slate-400">Structured inputs with free-text fallback.</p>
-              </div>
-
-              {errors.workflows && <p className="mb-3 text-sm text-rose-300">{errors.workflows}</p>}
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="text-xs text-slate-400">
-                  Workflow
-                  <select
-                    value={helperWorkflow}
-                    onChange={(event) => setHelperWorkflow(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                  >
-                    {workflows.map((workflow) => (
-                      <option key={workflow.workflow_name} value={workflow.workflow_name}>
-                        {workflow.workflow_name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="text-xs text-slate-400">
-                  Worker override
-                  <select
-                    value={helperWorkerUuid}
-                    onChange={(event) => setHelperWorkerUuid(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                  >
-                    <option value="">Use selected / auto</option>
-                    {machines
-                      .filter((machine) => machine.machine_uuid)
-                      .map((machine) => (
-                        <option key={machine.machine_uuid} value={machine.machine_uuid}>
-                          {machine.machine_name ?? "unknown"} · {workerStatusText(machine)}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-
-                <label className="text-xs text-slate-400">
-                  Client name
-                  <input
-                    type="text"
-                    value={helperClientName}
-                    onChange={(event) => setHelperClientName(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                  />
-                </label>
-
-                <label className="text-xs text-slate-400">
-                  Household name
-                  <input
-                    type="text"
-                    value={helperHouseholdName}
-                    onChange={(event) => setHelperHouseholdName(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                  />
-                </label>
-
-                <label className="text-xs text-slate-400">
-                  Max clients
-                  <input
-                    type="number"
-                    min={1}
-                    value={helperMaxClients}
-                    onChange={(event) => setHelperMaxClients(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                  />
-                </label>
-
-                <label className="text-xs text-slate-400">
-                  Max pages
-                  <input
-                    type="number"
-                    min={1}
-                    value={helperMaxPages}
-                    onChange={(event) => setHelperMaxPages(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                  />
-                </label>
-              </div>
-
-              <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={helperRetryFailedOnly}
-                  onChange={(event) => setHelperRetryFailedOnly(event.target.checked)}
-                  className="h-4 w-4 rounded border-slate-600 bg-slate-900"
-                />
-                Retry failed items only
-              </label>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void runGuidedCommand()}
-                  disabled={helperBusy || !helperWorkflow}
-                  className={BUTTON_PRIMARY}
-                >
-                  {helperBusy ? "Submitting..." : "Run Guided Command"}
-                </button>
-              </div>
-
-              <div className="mt-4 border-t border-slate-800 pt-4">
-                <label className="text-xs text-slate-400">
-                  Free-text fallback
-                  <textarea
-                    value={helperFreeText}
-                    onChange={(event) => setHelperFreeText(event.target.value)}
-                    rows={3}
-                    placeholder="Example: run marketplace workflow on worker A max clients 25"
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-500/30"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => void runFreeTextCommand()}
-                  disabled={helperBusy || !helperFreeText.trim()}
-                  className={BUTTON_SECONDARY}
-                >
-                  Submit Free-text Command
-                </button>
-              </div>
-
-              {helperFeedback && (
-                <div
-                  className={
-                    helperFeedback.kind === "success"
-                      ? "mt-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200"
-                      : "mt-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
-                  }
-                >
-                  {helperFeedback.message} · {helperFeedback.timestamp}
-                </div>
-              )}
-            </section>
-
-            <section className="rounded-2xl border border-amber-500/30 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
-              <div className="mb-3">
-                <h2 className="text-lg font-semibold">Teach Bill a Workflow</h2>
-                <p className="text-xs text-slate-400">
-                  Training experience: teach Bill like a human operator, test step-by-step, then approve and publish.
-                </p>
-              </div>
-
-              <div className="mb-4 rounded-xl border border-cyan-400/30 bg-cyan-500/10 p-3 text-xs text-cyan-100">
-                <p className="font-semibold">Training Stages</p>
-                <p className="mt-1">1) Workflow Setup · 2) Teaching Mode · 3) Step Builder · 4) Validation · 5) Failure Behavior · 6) Test Mode · 7) Publish</p>
-              </div>
-
-              <div className="mb-3 grid gap-3 sm:grid-cols-2">
-                <label className="flex items-center gap-2 text-xs text-slate-300">
-                  <input type="checkbox" className="h-4 w-4 rounded border-slate-600 bg-slate-900" defaultChecked />
-                  Login required
-                </label>
-                <label className="flex items-center gap-2 text-xs text-slate-300">
-                  <input type="checkbox" className="h-4 w-4 rounded border-slate-600 bg-slate-900" defaultChecked />
-                  Visible mode required
-                </label>
-                <label className="flex items-center gap-2 text-xs text-slate-300">
-                  <input type="checkbox" className="h-4 w-4 rounded border-slate-600 bg-slate-900" />
-                  Safe for unattended
-                </label>
-                <label className="flex items-center gap-2 text-xs text-slate-300">
-                  <input type="checkbox" className="h-4 w-4 rounded border-slate-600 bg-slate-900" />
-                  Includes manual confirmations
-                </label>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="text-xs text-slate-400">
-                  Teaching path
-                  <select
-                    value={learningPath}
-                    onChange={(event) => setLearningPath(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
-                  >
-                    <option value="plain_english">Describe workflow</option>
-                    <option value="demonstration">Demonstration / observed run</option>
-                    <option value="sop_checklist">Import SOP / checklist</option>
-                  </select>
-                </label>
-
-                <label className="text-xs text-slate-400">
-                  Workflow name
-                  <input
-                    type="text"
-                    value={learningWorkflowName}
-                    onChange={(event) => setLearningWorkflowName(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
-                  />
-                </label>
-              </div>
-
-              <label className="mt-3 block text-xs text-slate-400">
-                Worker (which computer opens the browser)
-                <select
-                  value={teachingTargetWorkerUuid}
-                  onChange={(e) => setTeachingTargetWorkerUuid(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
-                >
-                  <option value="">— Opens browser on this computer —</option>
-                  {machines.filter((m) => m.online).map((m) => (
-                    <option key={m.machine_uuid} value={m.machine_uuid}>
-                      {m.machine_name} {m.status === "busy" ? "(busy)" : "(idle)"}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="mt-3 block text-xs text-slate-400">
-                Goal
-                <input
-                  type="text"
-                  value={learningGoal}
-                  onChange={(event) => setLearningGoal(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
-                />
-              </label>
-
-              <label className="mt-3 block text-xs text-slate-400">
-                Teaching notes / observed run details
-                <textarea
-                  rows={6}
-                  value={learningSourceText}
-                  onChange={(event) => setLearningSourceText(event.target.value)}
-                  placeholder={
-                    learningPath === "demonstration"
-                      ? "Optional notes. Start Teaching will open an empty draft and wait for real captured steps."
-                      : "Describe steps line-by-line, paste checklist, or summarize observed run."
-                  }
-                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-amber-400/70 focus:ring-2 focus:ring-amber-500/30"
-                />
-              </label>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void createWorkflowDraft()}
-                  disabled={
-                    learningBusyKey !== null ||
-                    !learningWorkflowName.trim() ||
-                    (learningPath !== "demonstration" && !learningSourceText.trim())
-                  }
-                  className={BUTTON_PRIMARY}
-                >
-                  {learningBusyKey === "create-draft" ? "Starting..." : "Start Teaching Mode"}
-                </button>
-              </div>
-
-              {learningPath === "demonstration" && (
-                <p className="mt-2 text-xs text-cyan-200/90">
-                  Demonstration mode now ignores setup form text as workflow steps. It starts an empty draft and waits for actual captured actions.
-                </p>
-              )}
-
-              {errors.drafts && <p className="mt-3 text-sm text-rose-300">{errors.drafts}</p>}
-
-              {learningFeedback && (
-                <div
-                  className={
-                    learningFeedback.kind === "success"
-                      ? "mt-3 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200"
-                      : "mt-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
-                  }
-                >
-                  {learningFeedback.message} · {learningFeedback.timestamp}
-                </div>
-              )}
-
-              <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90">
-                Draft cards below show parsed steps from the teaching input (snapshot at draft update time). For live per-click capture while you perform the workflow,
-                use the desktop app Teach Bill panel.
-              </p>
-
-              <div className="mt-4 max-h-[360px] space-y-3 overflow-auto pr-1">
-                {workflowDrafts.length === 0 ? (
-                  <p className="text-sm text-slate-400">No workflow drafts yet.</p>
-                ) : (
-                  workflowDrafts.map((draft) => (
-                    <article key={draft.draft_id} className={`rounded-xl border p-3 ${teachingSessionDraftId === draft.draft_id ? "border-amber-500/40 bg-amber-950/20" : "border-slate-800 bg-slate-950/70"}`}>
-                      <p className="text-sm font-semibold text-slate-100">{draft.workflow_name}</p>
-                      <p className="mt-1 text-xs text-slate-400">
-                        Teaching path: {draft.learning_path} · Status: {draft.review_status} · Updated: {toDisplayTime(draft.updated_at)}
-                      </p>
-                      <p className="mt-2 text-xs text-slate-300">{draft.goal}</p>
-                      <div className="mt-2 flex items-center justify-between gap-2">
-                        <p className="text-xs text-slate-500">Parsed steps: {draft.steps.length}</p>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            ensureDraftEditingState(draft);
-                            setExpandedDraftId((current) => (current === draft.draft_id ? null : draft.draft_id));
-                          }}
-                          className={BUTTON_ACCENT_GHOST}
-                        >
-                          {expandedDraftId === draft.draft_id ? "Hide Steps" : "View Steps"}
-                        </button>
-                      </div>
-
-                      {expandedDraftId === draft.draft_id && (
-                        <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/80 p-2">
-                          {getDraftStepsForDisplay(draft).length === 0 ? (
-                            <p className="text-xs text-slate-400">No parsed steps yet.</p>
-                          ) : (
-                            <div className="space-y-3 text-xs text-slate-200">
-                              {getDraftStepsForDisplay(draft).map((step, idx) => (
-                                <div key={`${draft.draft_id}-step-${idx}`} className="rounded border border-slate-800 bg-slate-950/70 px-2 py-2">
-                                  <p className="font-medium text-slate-100">
-                                    {idx + 1}. {draftStepSummary(step, idx)}
-                                  </p>
-                                  {draftStepExtraDetail(step) && (
-                                    <p className="mt-1 text-[11px] text-slate-400">{draftStepExtraDetail(step)}</p>
-                                  )}
-
-                                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                                    <label className="text-[11px] text-slate-400">
-                                      Step name
-                                      <input
-                                        type="text"
-                                        value={step.step_name}
-                                        onChange={(event) =>
-                                          updateDraftStep(draft.draft_id, idx, { step_name: event.target.value })
-                                        }
-                                        className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                      />
-                                    </label>
-                                    <label className="text-[11px] text-slate-400">
-                                      Detected action
-                                      <input
-                                        type="text"
-                                        value={step.action}
-                                        readOnly
-                                        className="mt-1 w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 text-xs text-slate-300"
-                                      />
-                                    </label>
-                                  </div>
-
-                                  <label className="mt-2 block text-[11px] text-slate-400">
-                                    Step purpose
-                                    <textarea
-                                      rows={2}
-                                      value={step.purpose}
-                                      onChange={(event) =>
-                                        updateDraftStep(draft.draft_id, idx, { purpose: event.target.value })
-                                      }
-                                      className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                    />
-                                  </label>
-
-                                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                                    <label className="text-[11px] text-slate-400">
-                                      Success condition
-                                      <input
-                                        type="text"
-                                        value={step.success_condition}
-                                        onChange={(event) =>
-                                          updateDraftStep(draft.draft_id, idx, { success_condition: event.target.value })
-                                        }
-                                        className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                      />
-                                    </label>
-                                    <label className="text-[11px] text-slate-400">
-                                      Failure behavior
-                                      <input
-                                        type="text"
-                                        value={step.failure_behavior}
-                                        onChange={(event) =>
-                                          updateDraftStep(draft.draft_id, idx, { failure_behavior: event.target.value })
-                                        }
-                                        className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                      />
-                                    </label>
-                                  </div>
-
-                                  {step.variable_inputs.length > 0 && (
-                                    <div className="mt-2 rounded border border-cyan-500/20 bg-cyan-500/5 p-2">
-                                      <p className="text-[11px] font-semibold text-cyan-100">Variable inputs</p>
-                                      {step.variable_inputs.map((variable, variableIdx) => (
-                                        <div key={`${draft.draft_id}-step-${idx}-var-${variableIdx}`} className="mt-2 rounded border border-slate-800 bg-slate-900/70 p-2">
-                                          <label className="text-[11px] text-slate-400">
-                                            Field key
-                                            <input
-                                              type="text"
-                                              value={variable.field_key}
-                                              onChange={(event) =>
-                                                updateDraftStepVariable(draft.draft_id, idx, variableIdx, { field_key: event.target.value })
-                                              }
-                                              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                            />
-                                          </label>
-
-                                          <label className="mt-2 block text-[11px] text-slate-400">
-                                            Clarifying question
-                                            <input
-                                              type="text"
-                                              value={variable.prompt_question}
-                                              onChange={(event) =>
-                                                updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
-                                                  prompt_question: event.target.value,
-                                                })
-                                              }
-                                              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                            />
-                                          </label>
-
-                                          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                                            <label className="text-[11px] text-slate-400">
-                                              Sample value
-                                              <input
-                                                type="text"
-                                                value={variable.sample_value}
-                                                onChange={(event) =>
-                                                  updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
-                                                    sample_value: event.target.value,
-                                                  })
-                                                }
-                                                className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                              />
-                                            </label>
-                                            <label className="text-[11px] text-slate-400">
-                                              Future value source
-                                              <select
-                                                value={variable.input_source}
-                                                onChange={(event) =>
-                                                  updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
-                                                    input_source: event.target.value,
-                                                  })
-                                                }
-                                                className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                              >
-                                                <option value="ask_user">Ask user at runtime</option>
-                                                <option value="client_record">Pull from client record</option>
-                                                <option value="fixed_default">Use fixed default</option>
-                                                <option value="derive_previous_step">Derive from previous step</option>
-                                              </select>
-                                            </label>
-                                          </div>
-
-                                          <label className="mt-2 block text-[11px] text-slate-400">
-                                            Source detail (optional)
-                                            <input
-                                              type="text"
-                                              value={variable.source_detail}
-                                              onChange={(event) =>
-                                                updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
-                                                  source_detail: event.target.value,
-                                                })
-                                              }
-                                              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                            />
-                                          </label>
-
-                                          <div className="mt-2 flex gap-4 text-[11px] text-slate-300">
-                                            <label className="flex items-center gap-1">
-                                              <input
-                                                type="checkbox"
-                                                checked={variable.is_variable}
-                                                onChange={(event) =>
-                                                  updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
-                                                    is_variable: event.target.checked,
-                                                  })
-                                                }
-                                              />
-                                              Variable each run
-                                            </label>
-                                            <label className="flex items-center gap-1">
-                                              <input
-                                                type="checkbox"
-                                                checked={variable.required_input}
-                                                onChange={(event) =>
-                                                  updateDraftStepVariable(draft.draft_id, idx, variableIdx, {
-                                                    required_input: event.target.checked,
-                                                  })
-                                                }
-                                              />
-                                              Required workflow input
-                                            </label>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-
-                              <div className="flex justify-end">
-                                <button
-                                  type="button"
-                                  onClick={() => void saveDraftStructure(draft)}
-                                  disabled={learningBusyKey !== null}
-                                  className={BUTTON_PRIMARY}
-                                >
-                                  {learningBusyKey === `save-structure-${draft.draft_id}` ? "Saving..." : "Save Structured Draft"}
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void deleteDraft(draft.draft_id, draft.workflow_name)}
-                          disabled={learningBusyKey !== null}
-                          className={BUTTON_DANGER}
-                        >
-                          {learningBusyKey === `delete-${draft.draft_id}` ? "Deleting..." : "Delete"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void updateDraftStatus(draft.draft_id, "in_review")}
-                          disabled={learningBusyKey !== null}
-                          className={BUTTON_SECONDARY}
-                        >
-                          In Review
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void updateDraftStatus(draft.draft_id, "approved")}
-                          disabled={learningBusyKey !== null}
-                          className={BUTTON_SECONDARY}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => startTeachingSession(draft.draft_id)}
-                          disabled={learningBusyKey !== null}
-                          className={teachingSessionDraftId === draft.draft_id ? `${BUTTON_ACCENT_GHOST} border-amber-400/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20` : BUTTON_ACCENT_GHOST}
-                        >
-                          {teachingSessionDraftId === draft.draft_id ? "● Teaching Active" : "Teach Steps"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void testDraftGuided(draft.draft_id)}
-                          disabled={learningBusyKey !== null}
-                          className={BUTTON_ACCENT_GHOST}
-                        >
-                          {learningBusyKey === `test-${draft.draft_id}` ? "Testing..." : "Test Mode"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void publishDraft(draft.draft_id)}
-                          disabled={learningBusyKey !== null || draft.review_status !== "approved"}
-                          className={BUTTON_PRIMARY}
-                        >
-                          {learningBusyKey === `publish-${draft.draft_id}` ? "Publishing..." : "Publish"}
-                        </button>
-                      </div>
-                    </article>
-                  ))
-                )}
-              </div>
-            </section>
-          </div>
-
-          <div className="space-y-6 lg:col-span-3">
-            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
-              <h2 className="text-lg font-semibold">Workers</h2>
-              <p className="mb-3 text-xs text-slate-400">Availability and assignment at a glance.</p>
-
-              {errors.machines ? (
-                <p className="text-sm text-rose-300">{errors.machines}</p>
-              ) : machines.length === 0 ? (
-                <p className="text-sm text-slate-400">No workers detected.</p>
-              ) : (
-                <div className="space-y-3">
-                  {machines.map((machine, index) => {
-                    const isSelected = !!machine.machine_uuid && machine.machine_uuid === targetMachineUuid;
-                    return (
-                      <div
-                        key={machine.machine_uuid ?? `machine-${index}`}
-                        className={
-                          isSelected
-                            ? "rounded-xl border border-cyan-400/50 bg-slate-900 p-3"
-                            : "rounded-xl border border-slate-800 bg-slate-900/60 p-3"
-                        }
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            {renamingMachineUuid === machine.machine_uuid ? (
-                              <div className="flex items-center gap-1.5">
-                                <input
-                                  autoFocus
-                                  value={renameValue}
-                                  onChange={(e) => setRenameValue(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") void renameWorker(machine.machine_uuid ?? "", renameValue);
-                                    if (e.key === "Escape") setRenamingMachineUuid(null);
-                                  }}
-                                  className="w-full rounded border border-cyan-500/50 bg-slate-800 px-2 py-1 text-sm text-slate-100 outline-none focus:ring-1 focus:ring-cyan-500/50"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => void renameWorker(machine.machine_uuid ?? "", renameValue)}
-                                  className="shrink-0 rounded bg-cyan-600 px-2 py-1 text-[11px] text-white hover:bg-cyan-500"
-                                >
-                                  Save
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setRenamingMachineUuid(null)}
-                                  className="shrink-0 text-slate-500 hover:text-slate-300"
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-1.5">
-                                <p className="text-sm font-medium">{machine.machine_name ?? machine.worker_name ?? "Unknown worker"}</p>
-                                <button
-                                  type="button"
-                                  title="Rename worker"
-                                  onClick={() => { setRenamingMachineUuid(machine.machine_uuid ?? null); setRenameValue(machine.machine_name ?? ""); }}
-                                  className="text-slate-600 hover:text-slate-300 transition"
-                                >
-                                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 112.828 2.828L11.828 15.828a2 2 0 01-1.414.586H9v-2a2 2 0 01.586-1.414z" />
-                                  </svg>
-                                </button>
-                                <button
-                                  type="button"
-                                  title="Remove worker"
-                                  onClick={() => { if (confirm(`Remove "${machine.machine_name ?? "this worker"}" from the list?`)) void deleteWorker(machine.machine_uuid ?? ""); }}
-                                  className="text-slate-600 hover:text-rose-400 transition"
-                                >
-                                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4h6v3M3 7h18" />
-                                  </svg>
-                                </button>
-                              </div>
-                            )}
-                            <p className="mt-1 text-[11px] text-slate-500">{shortTaskId(machine.machine_uuid)}</p>
-                          </div>
-                          <span className={`rounded-full px-2.5 py-1 text-[11px] ${workerStatusClasses(machine)}`}>
-                            {workerStatusText(machine)}
-                          </span>
-                        </div>
-
-                        {machine.current_task_id ? (
-                          <p className="mt-2 text-xs text-slate-400">Current task: {shortTaskId(machine.current_task_id)}</p>
-                        ) : (
-                          <p className="mt-2 text-xs text-slate-500">No active task assigned.</p>
-                        )}
-
-                        <button
-                          type="button"
-                          onClick={() => setTargetMachineUuid(machine.machine_uuid ?? "")}
-                          disabled={!machine.machine_uuid}
-                          className="mt-3 w-full rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-cyan-400/70 hover:bg-cyan-500/10 hover:text-cyan-200 disabled:opacity-40"
-                        >
-                          {isSelected ? "Selected for assignment" : "Select worker"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-400">
-                Health: {errors.health ? "Unavailable" : health?.status ?? "Unknown"}
-              </div>
-            </section>
-
-            {/* ── Worker Updates ── */}
-            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold">Worker Updates</h2>
-                  <p className="text-xs text-slate-400">
-                    Manage releases and push updates to worker machines.
-                    {workerDeployStatus?.active_release_version && (
-                      <span className="ml-2 text-cyan-400">Active: v{workerDeployStatus.active_release_version}</span>
-                    )}
-                  </p>
-                </div>
-                <button type="button" onClick={() => void loadBrainPanels()} className={BUTTON_SECONDARY}>
-                  Refresh
-                </button>
-              </div>
-
-              {releasesFeedback && (
-                <div
-                  className={`mb-3 rounded-lg px-3 py-2 text-xs ${releasesFeedback.kind === "success" ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}
-                >
-                  {releasesFeedback.message}
-                </div>
-              )}
-
-              {/* Worker update status table */}
-              {workerDeployStatus && workerDeployStatus.workers.length > 0 && (
-                <div className="mb-5">
-                  <p className="mb-2 text-xs font-medium text-slate-400">Worker Status</p>
-                  <div className="overflow-x-auto rounded-xl border border-slate-800">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b border-slate-800 text-left text-slate-500">
-                          <th className="px-3 py-2 font-medium">Worker</th>
-                          <th className="px-3 py-2 font-medium">Version</th>
-                          <th className="px-3 py-2 font-medium">Update Status</th>
-                          <th className="px-3 py-2 font-medium">Target</th>
-                          <th className="px-3 py-2 font-medium"></th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/70">
-                        {workerDeployStatus.workers.map((w) => (
-                          <tr key={w.machine_uuid} className="text-slate-300">
-                            <td className="px-3 py-2 font-medium">{w.machine_name ?? shortTaskId(w.machine_uuid)}</td>
-                            <td className="px-3 py-2 font-mono">{w.worker_version ?? "-"}</td>
-                            <td className="px-3 py-2">
-                              {w.update_status ? (
-                                <span className={`rounded-full px-2 py-0.5 ${updateStatusClasses(w.update_status)}`}>
-                                  {w.update_status}
-                                </span>
-                              ) : (
-                                <span className="text-slate-600">—</span>
-                              )}
-                              {w.update_error && (
-                                <p className="mt-0.5 truncate text-[10px] text-rose-400" title={w.update_error}>
-                                  {w.update_error}
-                                </p>
-                              )}
-                            </td>
-                            <td className="px-3 py-2 font-mono text-slate-500">{w.update_target_version ?? "—"}</td>
-                            <td className="px-3 py-2">
-                              <button
-                                type="button"
-                                onClick={() => void deployToWorkers([w.machine_uuid])}
-                                disabled={deployBusy || !workerDeployStatus.active_release_version}
-                                className={BUTTON_ACCENT_GHOST}
-                              >
-                                Deploy
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Bulk deploy controls */}
-                  <div className="mt-3 flex flex-wrap items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => void deployToWorkers()}
-                      disabled={deployBusy || !workerDeployStatus.active_release_version}
-                      className={BUTTON_PRIMARY}
-                    >
-                      {deployBusy ? "Deploying…" : "Deploy to All Workers"}
-                    </button>
-                    <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-400">
-                      <input
-                        type="checkbox"
-                        checked={deployForce}
-                        onChange={(e) => setDeployForce(e.target.checked)}
-                        className="accent-cyan-400"
-                      />
-                      Force (re-deploy even if up to date)
-                    </label>
-                    <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-400">
-                      <input
-                        type="checkbox"
-                        checked={deployIdleOnly}
-                        onChange={(e) => setDeployIdleOnly(e.target.checked)}
-                        className="accent-cyan-400"
-                      />
-                      Idle workers only
-                    </label>
-                  </div>
-                </div>
-              )}
-
-              {/* Releases list */}
-              {workerReleases.length > 0 && (
-                <div className="mb-5">
-                  <p className="mb-2 text-xs font-medium text-slate-400">Available Releases</p>
-                  <div className="space-y-2">
-                    {workerReleases.map((release) => (
-                      <div
-                        key={release.id}
-                        className={`rounded-xl border p-3 ${release.is_active ? "border-cyan-400/40 bg-cyan-500/5" : "border-slate-800 bg-slate-900/60"}`}
-                      >
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono text-sm font-semibold text-slate-100">
-                                v{release.version}
-                              </span>
-                              {release.is_active && (
-                                <span className="rounded-full bg-cyan-500/20 px-2 py-0.5 text-[10px] font-medium text-cyan-300 border border-cyan-400/30">
-                                  Active
-                                </span>
-                              )}
-                              <span className="rounded-full bg-slate-700/60 px-2 py-0.5 text-[10px] text-slate-400 border border-slate-600/40">
-                                {release.channel}
-                              </span>
-                            </div>
-                            <p className="mt-0.5 text-[11px] text-slate-500">{toDisplayTime(release.upload_time)}</p>
-                            {release.release_notes && (
-                              <p className="mt-1 text-xs text-slate-400">{release.release_notes}</p>
-                            )}
-                            {release.package_sha256 && (
-                              <p className="mt-0.5 font-mono text-[10px] text-slate-600" title={release.package_sha256}>
-                                sha256: {release.package_sha256.slice(0, 16)}…
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {!release.is_active && (
-                              <button
-                                type="button"
-                                onClick={() => void activateRelease(release.id)}
-                                disabled={releaseBusyKey !== null}
-                                className={BUTTON_ACCENT_GHOST}
-                              >
-                                {releaseBusyKey === `activate-${release.id}` ? "…" : "Activate"}
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => void deleteRelease(release.id)}
-                              disabled={releaseBusyKey !== null}
-                              className={BUTTON_DANGER}
-                            >
-                              {releaseBusyKey === `delete-${release.id}` ? "…" : "Delete"}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Upload new release form */}
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-                <p className="mb-3 text-xs font-medium text-slate-400">Publish New Release</p>
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="mb-1 block text-[11px] text-slate-500">Version</label>
-                      <input
-                        type="text"
-                        placeholder="0.3.22"
-                        value={releaseUploadVersion}
-                        onChange={(e) => setReleaseUploadVersion(e.target.value)}
-                        className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:border-cyan-400/60 focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-[11px] text-slate-500">Channel</label>
-                      <select
-                        value={releaseUploadChannel}
-                        onChange={(e) => setReleaseUploadChannel(e.target.value)}
-                        className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 focus:border-cyan-400/60 focus:outline-none"
-                      >
-                        <option value="optional">optional</option>
-                        <option value="required">required</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] text-slate-500">Release Notes</label>
-                    <textarea
-                      rows={2}
-                      placeholder="What changed in this release…"
-                      value={releaseUploadNotes}
-                      onChange={(e) => setReleaseUploadNotes(e.target.value)}
-                      className="w-full resize-none rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:border-cyan-400/60 focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] text-slate-500">Package (.zip)</label>
-                    <input
-                      type="file"
-                      accept=".zip"
-                      onChange={(e) => setReleaseUploadFile(e.target.files?.[0] ?? null)}
-                      className="w-full text-xs text-slate-400 file:mr-3 file:rounded file:border-0 file:bg-slate-700 file:px-2.5 file:py-1 file:text-xs file:text-slate-200 file:cursor-pointer"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void uploadRelease()}
-                    disabled={releaseUploadBusy || !releaseUploadVersion.trim() || !releaseUploadFile}
-                    className={BUTTON_PRIMARY}
-                  >
-                    {releaseUploadBusy ? "Uploading…" : "Publish Release"}
-                  </button>
-                </div>
-              </div>
-            </section>
-
-            <section className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-lg shadow-black/25">
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold">Audit Trail</h2>
-                  <p className="text-xs text-slate-400">Recent command history and outcomes.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void loadBrainPanels()}
-                  className={BUTTON_SECONDARY}
-                >
-                  Refresh
-                </button>
-              </div>
-
-              {errors.audit ? (
-                <p className="text-sm text-rose-300">{errors.audit}</p>
-              ) : auditEntries.length === 0 ? (
-                <p className="text-sm text-slate-400">No command history yet.</p>
-              ) : (
-                <div className="max-h-[520px] space-y-2 overflow-auto pr-1">
-                  {auditEntries.map((entry, index) => (
-                    <article key={`audit-${index}`} className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                      <p className="text-xs text-slate-500">{toDisplayTime(entry.timestamp)}</p>
-                      <p className="mt-1 text-sm text-slate-200">{entry.original_user_text ?? "-"}</p>
-                      <p className="mt-2 text-xs text-slate-400">
-                        Intent: <span className="text-slate-300">{entry.interpreted_intent ?? "-"}</span>
-                        {" · "}
-                        Workflow: <span className="text-slate-300">{entry.selected_workflow ?? "-"}</span>
-                      </p>
-                      <p className="mt-1 text-xs text-slate-400">
-                        Worker: <span className="text-slate-300">{entry.selected_worker ?? "-"}</span>
-                        {" · "}
-                        Task: <span className="text-slate-300">{entry.queued_task_id ?? "-"}</span>
-                      </p>
-                      <p className="mt-2 text-sm text-slate-300">{entry.after_execution ?? "No outcome recorded."}</p>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-          </div>
-        </section>
+          {/* System health footer */}
+          <SystemHealthFooter
+            healthy={!errors.health && (health?.status ?? "").toLowerCase() === "ok"}
+            statusText={errors.health ? "Connection error" : "All systems operational"}
+            coreVersion={`v${process.env.NEXT_PUBLIC_APP_VERSION ?? "0.3.32"}`}
+            lastUpdated={lastUpdated}
+            onRefresh={() => { void loadDashboardData(); void loadBrainPanels(); }}
+          />
+        </div>
       </div>
 
-      {/* ── Recovery Queue Panel ─────────────────────────────────────────── */}
-      <div className="mt-6 px-4 max-w-[1600px] mx-auto">
-        <RecoveryPanel apiBase={getApiBase()} />
-      </div>
-
-      {/* ── Recovery Analytics Panel ─────────────────────────────────────── */}
-      <div className="mt-6 px-4 max-w-[1600px] mx-auto">
-        <RecoveryAnalyticsPanel apiBase={getApiBase()} />
-      </div>
-
-      {/* ── Bill Voice Controls ─────────────────────────────────────────── */}
-      <div className="mt-6 px-4 max-w-[1600px] mx-auto">
-        <BillVoiceControls voice={billVoice} />
-      </div>
-      </div>{/* /desktop hidden lg:block */}
-
-      {/* ── Mobile Lightweight Interface (hidden on desktop) ──────────────── */}
+      {/* ── Mobile Lightweight Interface (hidden on desktop) ─────────────── */}
       <div className="block lg:hidden">
         <MobileDashboard
           mobileView={mobileView}
@@ -3473,277 +2440,132 @@ export default function Home() {
           setTtsEnabled={setTtsEnabled}
           startListening={startListening}
           stopListening={stopListening}
-          onRetry={(task) => void retryFailedTask(task as Task)}
+          onRetry={(task) => void retryFailedTask(task)}
           onResolve={(taskId) => void resolveHumanHelpTask(taskId)}
-          onClearAlert={(alertId) => setAlerts((prev) => prev.filter((a) => a.id !== alertId))}
+          onClearAlert={(id) => setAlerts((a) => a.filter((alert) => alert.id !== id))}
           onClearAll={() => setAlerts([])}
           onRequestNotifications={() => void requestNotificationPermission()}
         />
+        <MobileNav
+          activeView={mobileView}
+          onNavigate={setMobileView}
+          urgentCount={humanHelpTasks.length + failedTasks.length}
+        />
       </div>
 
-      {/* Teaching Mode Floating Overlay */}
-      {teachingSessionDraftId !== null && (
-        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2">
-          {teachingOverlayOpen && (
-            <div className="w-80 overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-950/95 shadow-2xl shadow-black/70 backdrop-blur-sm">
-              {/* Header */}
-              <div className={`flex items-center justify-between border-b border-slate-800/80 px-4 py-3 ${teachingStatusRing}`}>
-                <div className="flex items-center gap-2">
-                  <span className={`h-2 w-2 flex-shrink-0 rounded-full ${teachingStatusDot}`} />
-                  <span className="text-xs font-semibold text-slate-100">Teaching Mode Active</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setTeachingOverlayOpen(false)}
-                  className="ml-2 text-slate-500 transition hover:text-slate-200"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              {/* Workflow info */}
-              <div className="border-b border-slate-800/60 px-4 py-3">
-                <p className="truncate text-sm font-semibold text-slate-100">
-                  {teachingActiveDraft?.workflow_name ?? "—"}
-                </p>
-                <div className="mt-1.5 flex items-center gap-3 text-xs text-slate-400">
-                  <span>
-                    Status:{" "}
-                    <span
-                      className={
-                        teachingStatus === "step_captured"
-                          ? "text-emerald-300"
-                          : teachingStatus === "waiting_clarification"
-                            ? "text-cyan-300"
-                            : teachingStatus === "paused"
-                              ? "text-slate-400"
-                              : "text-amber-300"
-                      }
-                    >
-                      {teachingStatusLabel}
-                    </span>
-                  </span>
-                  <span className="text-slate-600">·</span>
-                  <span>
-                    Steps: <span className="text-slate-200">{teachingActiveDraft?.steps?.length ?? 0}</span>
-                  </span>
-                </div>
-              </div>
-
-              {/* Last captured strip */}
-              {(teachingActiveDraft?.steps?.length ?? 0) > 0 && (() => {
-                const lastStep = teachingActiveDraft!.steps![teachingActiveDraft!.steps!.length - 1];
-                return (
-                  <div className="border-b border-slate-800/60 bg-slate-900/40 px-4 py-2">
-                    <p className="text-[10px] uppercase tracking-wider text-slate-500">Last Captured</p>
-                    <p className="mt-0.5 truncate text-xs text-slate-200">{lastStep.step_name}</p>
-                    <p className="truncate text-[10px] text-slate-500">
-                      {lastStep.action}
-                      {" · "}
-                      {lastStep.selector || lastStep.url || "—"}
-                    </p>
-                  </div>
-                );
-              })()}
-
-              {/* Observation Browser launcher */}
-              <div className="border-b border-slate-800/60 px-4 py-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                    Observation Browser
-                  </p>
-                  {teachingLaunchStatus === "running" && (
-                    <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300">
-                      Running · PID {teachingLaunchPid}
-                    </span>
-                  )}
-                  {teachingLaunchStatus === "error" && (
-                    <span className="rounded-full border border-rose-400/30 bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-300">
-                      Launch failed
-                    </span>
-                  )}
-                </div>
-                {/* Worker selector */}
-                <select
-                  value={teachingTargetWorkerUuid}
-                  onChange={(e) => setTeachingTargetWorkerUuid(e.target.value)}
-                  className="mb-2 w-full rounded-lg border border-slate-700 bg-slate-900/80 px-2.5 py-1.5 text-xs text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-1 focus:ring-cyan-500/30"
-                >
-                  <option value="">— Select worker (opens browser here) —</option>
-                  {machines
-                    .filter((m) => m.online)
-                    .map((m) => (
-                      <option key={m.machine_uuid} value={m.machine_uuid}>
-                        {m.machine_name} {m.status === "busy" ? "(busy)" : "(idle)"}
-                      </option>
-                    ))}
-                </select>
-                <input
-                  type="text"
-                  value={teachingStartUrl}
-                  onChange={(e) => setTeachingStartUrl(e.target.value)}
-                  placeholder="https://start-url.com (optional)"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-2.5 py-1.5 text-xs text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-1 focus:ring-cyan-500/30"
-                />
-                <button
-                  type="button"
-                  onClick={() => void launchTeachBrowser()}
-                  disabled={teachingLaunchStatus === "launching" || !teachingTargetWorkerUuid}
-                  className="mt-2 w-full rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {teachingLaunchStatus === "launching" ? "Launching\u2026" : "Launch Observation Browser"}
-                </button>
-                <p className="mt-1.5 text-[10px] text-slate-500">
-                  Select the worker whose computer will open the browser. Steps are captured and sent back to this draft.
-                </p>
-              </div>
-
-              {/* Q&A body */}
-              <div className="px-4 py-3">
-                {teachingCurrentQuestion && !teachingCurrentQuestion.teaching_complete ? (
-                  <div>
-                    <div className="mb-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-400">
-                        Step {teachingCurrentQuestion.step_order}: {teachingCurrentQuestion.step_name}
-                      </p>
-                      {teachingCurrentQuestion.steps_remaining > 0 && (
-                        <p className="mt-0.5 text-[10px] text-slate-500">
-                          {teachingCurrentQuestion.steps_remaining} step
-                          {teachingCurrentQuestion.steps_remaining !== 1 ? "s" : ""} remaining after this
-                        </p>
-                      )}
-                    </div>
-                    <div className="max-h-56 space-y-3 overflow-y-auto pr-1">
-                      {teachingCurrentQuestion.questions.map((q, qi) => (
-                        <div key={`tq-${qi}`}>
-                          <p className="text-[11px] leading-relaxed text-slate-300">{q.question}</p>
-                          {q.current_value && !teachingAnswers[q.field] && (
-                            <p className="mt-0.5 text-[10px] italic text-slate-500">Current: {q.current_value}</p>
-                          )}
-                          {q.options.length > 0 ? (
-                            <div className="mt-1.5 flex flex-wrap gap-1.5">
-                              {q.options.map((opt) => (
-                                <button
-                                  key={opt}
-                                  type="button"
-                                  onClick={() => setTeachingAnswers((prev) => ({ ...prev, [q.field]: opt }))}
-                                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
-                                    (teachingAnswers[q.field] ?? q.current_value) === opt
-                                      ? "bg-cyan-500 text-slate-950 shadow shadow-cyan-500/30"
-                                      : "border border-slate-700 bg-slate-900 text-slate-300 hover:border-cyan-400/50 hover:text-cyan-200"
-                                  }`}
-                                >
-                                  {opt}
-                                </button>
-                              ))}
-                            </div>
-                          ) : (
-                            <input
-                              type="text"
-                              value={teachingAnswers[q.field] ?? q.current_value ?? ""}
-                              onChange={(e) =>
-                                setTeachingAnswers((prev) => ({ ...prev, [q.field]: e.target.value }))
-                              }
-                              className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-900/80 px-2.5 py-1.5 text-xs text-slate-100 outline-none transition focus:border-cyan-400/70 focus:ring-1 focus:ring-cyan-500/30"
-                            />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void submitTeachingAnswers()}
-                      disabled={learningBusyKey !== null}
-                      className="mt-3 w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 shadow shadow-cyan-500/20 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {learningBusyKey?.startsWith("teach-submit") ? "Saving\u2026" : "Submit Answers \u2192"}
-                    </button>
-                  </div>
-                ) : teachingCurrentQuestion?.teaching_complete ? (
-                  <div className="py-3 text-center">
-                    <p className="text-xl">✓</p>
-                    <p className="mt-1 text-sm font-semibold text-emerald-300">All steps taught</p>
-                    <p className="mt-1 text-xs text-slate-400">Review the draft and publish when ready.</p>
-                  </div>
-                ) : (
-                  <div className="py-1">
-                    <p className="text-xs leading-relaxed text-slate-400">
-                      {teachingActiveDraft?.learning_path === "demonstration"
-                        ? "Demonstration mode — steps are captured as you perform actions in the browser."
-                        : "Start the teaching loop to answer enrichment questions for each step."}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => void loadTeachingQuestion(teachingSessionDraftId)}
-                      disabled={learningBusyKey !== null || (teachingActiveDraft?.steps?.length ?? 0) === 0}
-                      className="mt-3 w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 shadow shadow-cyan-500/20 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {(teachingActiveDraft?.steps?.length ?? 0) === 0
-                        ? "No steps — use Plain English path first"
-                        : learningBusyKey?.startsWith("teach-load")
-                          ? "Loading\u2026"
-                          : "Start Teaching Loop"}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Footer */}
-              <div className="flex flex-wrap gap-2 rounded-b-2xl border-t border-slate-800/60 px-4 py-3">
-                <button
-                  type="button"
-                  onClick={pauseResumeTeaching}
-                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-[11px] text-slate-300 transition hover:border-amber-400/50 hover:text-amber-300"
-                >
-                  {teachingStatus === "paused" ? "Resume" : "Pause"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void finishTeachingSession()}
-                  className="rounded-lg border border-rose-400/20 bg-rose-500/5 px-3 py-1.5 text-[11px] text-rose-300 transition hover:bg-rose-500/15"
-                >
-                  Finish Teaching
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Floating pill badge */}
+      {teachingSessionDraftId ? (
+        <div className="fixed bottom-4 right-4 z-[70] flex max-w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-3">
           <button
             type="button"
-            onClick={() => setTeachingOverlayOpen((prev) => !prev)}
-            className={`flex items-center gap-2.5 rounded-full border px-4 py-2.5 shadow-lg shadow-black/50 backdrop-blur-sm transition hover:scale-[1.03] active:scale-100 ${teachingStatusRing}`}
+            onClick={() => {
+              setTeachingOverlayOpen(true);
+              logTeachOverlay("manual overlay open requested", { session_id: teachingSessionDraftId });
+            }}
+            className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-100 shadow-lg shadow-cyan-950/40 hover:bg-cyan-500/25"
           >
-            <span className={`h-2 w-2 flex-shrink-0 rounded-full ${teachingStatusDot}`} />
-            <span className="whitespace-nowrap text-xs font-semibold text-slate-100">Teaching Mode</span>
-            {teachingActiveDraft && (
-              <span className="max-w-[7rem] truncate text-xs text-slate-400">
-                {teachingActiveDraft.workflow_name}
-              </span>
-            )}
-            <span className="rounded-full bg-slate-800/80 px-1.5 py-0.5 text-[10px] font-medium text-slate-300">
-              {teachingActiveDraft?.steps?.length ?? 0}
-            </span>
-            <svg
-              className={`h-3 w-3 flex-shrink-0 text-slate-500 transition-transform ${teachingOverlayOpen ? "rotate-180" : ""}`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
+            Open Teaching Overlay
           </button>
-        </div>
-      )}
 
-      {/* ── Mobile Bottom Navigation ─────────────────────────────────────── */}
-      <MobileNav
-        activeView={mobileView}
-        onNavigate={setMobileView}
-        urgentCount={humanHelpTasks.length + failedTasks.length}
-      />
+          {teachingOverlayOpen ? (
+            <section className="w-full rounded-2xl border border-cyan-400/30 bg-slate-950/95 p-4 text-slate-100 shadow-2xl shadow-slate-950/60 backdrop-blur">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teach Overlay Mounted</p>
+                  <h2 className="mt-1 text-lg font-semibold text-white">Interactive Teach Mode</h2>
+                  <p className="mt-1 text-xs text-slate-400">The overlay stays available even if voice is unavailable.</p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTeachingOverlayOpen(false)}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500 hover:text-white"
+                  >
+                    Hide
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void finishTeachingSession()}
+                    className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200 hover:bg-rose-500/20"
+                  >
+                    End Session
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-3">
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">session_id</span><div className="mt-1 break-all text-cyan-100">{teachingSessionDraftId}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current task_id</span><div className="mt-1 break-all text-cyan-100">{teachingOverlayTaskId ?? "pending"}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">question loaded</span><div className="mt-1 text-cyan-100">{String(Boolean(teachingOverlayQuestion?.question))}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">voice enabled</span><div className="mt-1 text-cyan-100">{String(teachingOverlayVoiceEnabled)}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">launch status</span><div className="mt-1 text-cyan-100">{teachingLaunchStatus ?? "idle"}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current step</span><div className="mt-1 text-cyan-100">{String(teachingOverlayQuestion?.step_order ?? 0)}</div></div>
+              </div>
+
+              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Observation Question</p>
+                    <p className="mt-1 text-sm text-slate-300">
+                      {teachingOverlayQuestion?.question?.category
+                        ? `${teachingOverlayQuestion.question.category} · ${teachingOverlayQuestion.question.trigger_type ?? "prompt"}`
+                        : "Waiting for the observed browser to generate a question."}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => teachingSessionDraftId && void loadTeachOverlayQuestion(teachingSessionDraftId)}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-cyan-400/40 hover:text-cyan-100"
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                <p className="mt-3 min-h-12 text-sm font-medium leading-6 text-white">
+                  {teachingOverlayQuestion?.question?.question ?? "No question yet. Start demonstrating steps in the observed browser and this panel will poll for the next prompt."}
+                </p>
+
+                {teachingOverlayError ? (
+                  <p className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{teachingOverlayError}</p>
+                ) : null}
+
+                <textarea
+                  value={teachingOverlayAnswer}
+                  onChange={(event) => setTeachingOverlayAnswer(event.target.value)}
+                  placeholder="Type the employee answer here. Voice is optional and not required for the overlay to work."
+                  className="mt-3 min-h-28 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+                />
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void submitTeachOverlayAnswer("answer")}
+                    disabled={!teachingOverlayQuestion?.question || teachingOverlayBusyKey !== null}
+                    className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-emerald-950 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Submit Answer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitTeachOverlayAnswer("skip")}
+                    disabled={!teachingOverlayQuestion?.question || teachingOverlayBusyKey !== null}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Skip Question
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void toggleTeachOverlayPause()}
+                    disabled={teachingOverlayBusyKey !== null}
+                    className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {teachingOverlayQuestion?.observation_questions_paused ? "Resume Questions" : "Pause Questions"}
+                  </button>
+                </div>
+              </div>
+            </section>
+          ) : null}
+        </div>
+      ) : null}
     </main>
   );
 }

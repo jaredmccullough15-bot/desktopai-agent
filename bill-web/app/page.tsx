@@ -245,6 +245,26 @@ type TeachingSessionQuestion = {
   steps_remaining: number;
 };
 
+type TeachOverlayPrompt = {
+  prompt_id: string;
+  question: string;
+  category?: string;
+  question_type?: string;
+  trigger_type?: string;
+  system_context?: Record<string, unknown>;
+};
+
+type TeachOverlayQuestionResponse = {
+  session_id: string;
+  workflow_id?: string;
+  tenant_id?: string;
+  question?: TeachOverlayPrompt | null;
+  step_order: number;
+  teaching_complete: boolean;
+  observation_questions_paused: boolean;
+  observation_skip_all_questions: boolean;
+};
+
 const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
 const COMMAND_CENTER_VOICE_PREF_KEY = "bill.command-center.voice.enabled";
 
@@ -386,6 +406,11 @@ export default function Home() {
   const [teachingStatus, setTeachingStatus] = useState<"watching" | "step_captured" | "waiting_clarification" | "paused">("watching");
   const [teachingCurrentQuestion, setTeachingCurrentQuestion] = useState<TeachingSessionQuestion | null>(null);
   const [teachingAnswers, setTeachingAnswers] = useState<Record<string, string>>({});
+  const [teachingOverlayQuestion, setTeachingOverlayQuestion] = useState<TeachOverlayQuestionResponse | null>(null);
+  const [teachingOverlayAnswer, setTeachingOverlayAnswer] = useState("");
+  const [teachingOverlayTaskId, setTeachingOverlayTaskId] = useState<string | null>(null);
+  const [teachingOverlayBusyKey, setTeachingOverlayBusyKey] = useState<string | null>(null);
+  const [teachingOverlayError, setTeachingOverlayError] = useState<string | null>(null);
   const [teachingStartUrl, setTeachingStartUrl] = useState<string>("");
   const [teachingTargetWorkerUuid, setTeachingTargetWorkerUuid] = useState<string>("");
   const [teachingLaunchStatus, setTeachingLaunchStatus] = useState<null | "launching" | "running" | "error">(null);
@@ -432,6 +457,10 @@ export default function Home() {
 
   const selectedMachine = machines.find((machine) => machine.machine_uuid === targetMachineUuid) ?? null;
 
+  const logTeachOverlay = useCallback((message: string, details?: Record<string, unknown>) => {
+    console.info("[teach-overlay]", message, details ?? {});
+  }, []);
+
   // ── Voice (Phase 4) ──────────────────────────────────────────────────────────
   const { isSupported: voiceSupported, isListening, isSpeaking, ttsEnabled, setTtsEnabled, startListening, stopListening, speak } = useVoice({
     onTranscript: (text) => {
@@ -447,6 +476,9 @@ export default function Home() {
   const lastSpokenHashRef = useRef<string>("");
   const lastSpokenAtRef = useRef<number>(0);
   const lastVoiceEventRef = useRef<{ eventType: string; at: number }>({ eventType: "", at: 0 });
+  const teachingOverlayVoiceEnabled = Boolean(
+    commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured,
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1856,16 +1888,154 @@ export default function Home() {
     }
   };
 
+  const loadTeachOverlayQuestion = useCallback(
+    async (draftId: string, options?: { silent?: boolean }) => {
+      if (!draftId) {
+        return;
+      }
+      if (!options?.silent) {
+        setTeachingOverlayBusyKey(`overlay-load-${draftId}`);
+      }
+      try {
+        const apiBase = getApiBase();
+        if (!apiBase) {
+          throw new Error("NEXT_PUBLIC_API_BASE is not set");
+        }
+        logTeachOverlay("next question requested", { session_id: draftId });
+        const response = await fetch(`${apiBase}/api/teach-sessions/${draftId}/questions/next`);
+        const body = (await response.json()) as TeachOverlayQuestionResponse | { detail?: string };
+        if (!response.ok) {
+          throw new Error((body as { detail?: string }).detail ?? `Overlay question fetch failed (${response.status})`);
+        }
+        const nextQuestion = body as TeachOverlayQuestionResponse;
+        setTeachingOverlayQuestion(nextQuestion);
+        setTeachingOverlayAnswer((current) => (
+          nextQuestion.question?.prompt_id === teachingOverlayQuestion?.question?.prompt_id ? current : ""
+        ));
+        setTeachingOverlayError(null);
+        logTeachOverlay("overlay question loaded", {
+          session_id: draftId,
+          question_loaded: Boolean(nextQuestion.question),
+          paused: nextQuestion.observation_questions_paused,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        setTeachingOverlayError(message);
+        logTeachOverlay("overlay question request failed", { session_id: draftId, error: message });
+      } finally {
+        if (!options?.silent) {
+          setTeachingOverlayBusyKey(null);
+        }
+      }
+    },
+    [logTeachOverlay, teachingOverlayQuestion?.question?.prompt_id],
+  );
+
   const startTeachingSession = async (draftId: string) => {
+    logTeachOverlay("teach mode started", { session_id: draftId, target_worker_uuid: teachingTargetWorkerUuid || null });
     setTeachingSessionDraftId(draftId);
     setTeachingOverlayOpen(true);
     setTeachingStatus("watching");
     setTeachingCurrentQuestion(null);
     setTeachingAnswers({});
+    setTeachingOverlayQuestion(null);
+    setTeachingOverlayAnswer("");
+    setTeachingOverlayTaskId(null);
+    setTeachingOverlayError(null);
     setTeachingLaunchStatus(null);
     setTeachingLaunchPid(null);
     await loadTeachingQuestion(draftId);
+    await loadTeachOverlayQuestion(draftId);
     await launchTeachBrowser(draftId);
+  };
+
+  const submitTeachOverlayAnswer = async (action: "answer" | "skip") => {
+    if (!teachingSessionDraftId) {
+      return;
+    }
+    const prompt = teachingOverlayQuestion?.question;
+    if (!prompt) {
+      await loadTeachOverlayQuestion(teachingSessionDraftId);
+      return;
+    }
+
+    setTeachingOverlayBusyKey(`overlay-${action}-${teachingSessionDraftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const endpoint = action === "answer"
+        ? `${apiBase}/api/teach-sessions/${teachingSessionDraftId}/answers`
+        : `${apiBase}/api/teach-sessions/${teachingSessionDraftId}/questions/skip`;
+      const payload = {
+        prompt_id: prompt.prompt_id,
+        step_order: teachingOverlayQuestion?.step_order ?? 0,
+        answer: teachingOverlayAnswer,
+        response_mode: "text",
+        question_type: prompt.question_type,
+        trigger_type: prompt.trigger_type,
+        question_frequency: "medium",
+        system_context: prompt.system_context ?? {},
+      };
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = (await response.json()) as { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Overlay ${action} failed (${response.status})`);
+      }
+      logTeachOverlay(action === "answer" ? "answer submitted" : "question skipped", {
+        session_id: teachingSessionDraftId,
+        task_id: teachingOverlayTaskId,
+        prompt_id: prompt.prompt_id,
+      });
+      setTeachingOverlayAnswer("");
+      setTeachingOverlayError(null);
+      await loadTeachOverlayQuestion(teachingSessionDraftId, { silent: true });
+      await loadBrainPanels();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setTeachingOverlayError(message);
+      logTeachOverlay("answer submission failed", { session_id: teachingSessionDraftId, error: message });
+    } finally {
+      setTeachingOverlayBusyKey(null);
+    }
+  };
+
+  const toggleTeachOverlayPause = async () => {
+    if (!teachingSessionDraftId) {
+      return;
+    }
+    const shouldResume = Boolean(teachingOverlayQuestion?.observation_questions_paused);
+    setTeachingOverlayBusyKey(`overlay-pause-${teachingSessionDraftId}`);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const response = await fetch(`${apiBase}/api/teach-sessions/${teachingSessionDraftId}/questions/pause`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume: shouldResume, question_frequency: "medium" }),
+      });
+      const body = (await response.json()) as { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Overlay pause toggle failed (${response.status})`);
+      }
+      logTeachOverlay(shouldResume ? "questions resumed" : "questions paused", {
+        session_id: teachingSessionDraftId,
+      });
+      await loadTeachOverlayQuestion(teachingSessionDraftId, { silent: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setTeachingOverlayError(message);
+      logTeachOverlay("pause toggle failed", { session_id: teachingSessionDraftId, error: message });
+    } finally {
+      setTeachingOverlayBusyKey(null);
+    }
   };
 
   const submitTeachingAnswers = async () => {
@@ -1930,6 +2100,10 @@ export default function Home() {
     setTeachingOverlayOpen(false);
     setTeachingCurrentQuestion(null);
     setTeachingAnswers({});
+    setTeachingOverlayQuestion(null);
+    setTeachingOverlayAnswer("");
+    setTeachingOverlayTaskId(null);
+    setTeachingOverlayError(null);
     setTeachingStatus("watching");
     await loadBrainPanels();
   };
@@ -1954,10 +2128,16 @@ export default function Home() {
           }),
         },
       );
-      const data = (await res.json()) as { pid?: number; status?: string; detail?: string };
+      const data = (await res.json()) as { pid?: number; status?: string; detail?: string; task_id?: string };
       if (!res.ok) throw new Error(data.detail ?? `Launch failed (${res.status})`);
       setTeachingLaunchPid(data.pid ?? null);
+      setTeachingOverlayTaskId(data.task_id ?? null);
       setTeachingLaunchStatus("running");
+      logTeachOverlay("overlay should open", {
+        session_id: draftId,
+        task_id: data.task_id ?? null,
+        launch_status: data.status ?? "running",
+      });
     } catch (err) {
       setTeachingLaunchStatus("error");
       setFeedback(
@@ -1965,6 +2145,10 @@ export default function Home() {
         "error",
         `Browser launch failed: ${err instanceof Error ? err.message : "Unknown error"}`,
       );
+      logTeachOverlay("teach mode launch failed", {
+        session_id: draftId,
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
     }
   };
 
@@ -1975,6 +2159,26 @@ export default function Home() {
     const id = setInterval(() => { void loadBrainPanels(); }, 2000);
     return () => clearInterval(id);
   }, [teachingSessionDraftId]);
+
+  useEffect(() => {
+    if (!teachingSessionDraftId || !teachingOverlayOpen) {
+      return;
+    }
+    logTeachOverlay("overlay component mounted", {
+      session_id: teachingSessionDraftId,
+      task_id: teachingOverlayTaskId,
+    });
+  }, [logTeachOverlay, teachingOverlayOpen, teachingOverlayTaskId, teachingSessionDraftId]);
+
+  useEffect(() => {
+    if (!teachingSessionDraftId) {
+      return;
+    }
+    const id = setInterval(() => {
+      void loadTeachOverlayQuestion(teachingSessionDraftId, { silent: true });
+    }, 3000);
+    return () => clearInterval(id);
+  }, [loadTeachOverlayQuestion, teachingSessionDraftId]);
 
   // Flash "step_captured" when the Playwright script appends a new step
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2248,6 +2452,120 @@ export default function Home() {
           urgentCount={humanHelpTasks.length + failedTasks.length}
         />
       </div>
+
+      {teachingSessionDraftId ? (
+        <div className="fixed bottom-4 right-4 z-[70] flex max-w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              setTeachingOverlayOpen(true);
+              logTeachOverlay("manual overlay open requested", { session_id: teachingSessionDraftId });
+            }}
+            className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-100 shadow-lg shadow-cyan-950/40 hover:bg-cyan-500/25"
+          >
+            Open Teaching Overlay
+          </button>
+
+          {teachingOverlayOpen ? (
+            <section className="w-full rounded-2xl border border-cyan-400/30 bg-slate-950/95 p-4 text-slate-100 shadow-2xl shadow-slate-950/60 backdrop-blur">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teach Overlay Mounted</p>
+                  <h2 className="mt-1 text-lg font-semibold text-white">Interactive Teach Mode</h2>
+                  <p className="mt-1 text-xs text-slate-400">The overlay stays available even if voice is unavailable.</p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTeachingOverlayOpen(false)}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500 hover:text-white"
+                  >
+                    Hide
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void finishTeachingSession()}
+                    className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200 hover:bg-rose-500/20"
+                  >
+                    End Session
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-3">
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">session_id</span><div className="mt-1 break-all text-cyan-100">{teachingSessionDraftId}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current task_id</span><div className="mt-1 break-all text-cyan-100">{teachingOverlayTaskId ?? "pending"}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">question loaded</span><div className="mt-1 text-cyan-100">{String(Boolean(teachingOverlayQuestion?.question))}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">voice enabled</span><div className="mt-1 text-cyan-100">{String(teachingOverlayVoiceEnabled)}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">launch status</span><div className="mt-1 text-cyan-100">{teachingLaunchStatus ?? "idle"}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current step</span><div className="mt-1 text-cyan-100">{String(teachingOverlayQuestion?.step_order ?? 0)}</div></div>
+              </div>
+
+              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Observation Question</p>
+                    <p className="mt-1 text-sm text-slate-300">
+                      {teachingOverlayQuestion?.question?.category
+                        ? `${teachingOverlayQuestion.question.category} · ${teachingOverlayQuestion.question.trigger_type ?? "prompt"}`
+                        : "Waiting for the observed browser to generate a question."}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => teachingSessionDraftId && void loadTeachOverlayQuestion(teachingSessionDraftId)}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-cyan-400/40 hover:text-cyan-100"
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                <p className="mt-3 min-h-12 text-sm font-medium leading-6 text-white">
+                  {teachingOverlayQuestion?.question?.question ?? "No question yet. Start demonstrating steps in the observed browser and this panel will poll for the next prompt."}
+                </p>
+
+                {teachingOverlayError ? (
+                  <p className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{teachingOverlayError}</p>
+                ) : null}
+
+                <textarea
+                  value={teachingOverlayAnswer}
+                  onChange={(event) => setTeachingOverlayAnswer(event.target.value)}
+                  placeholder="Type the employee answer here. Voice is optional and not required for the overlay to work."
+                  className="mt-3 min-h-28 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+                />
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void submitTeachOverlayAnswer("answer")}
+                    disabled={!teachingOverlayQuestion?.question || teachingOverlayBusyKey !== null}
+                    className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-emerald-950 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Submit Answer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitTeachOverlayAnswer("skip")}
+                    disabled={!teachingOverlayQuestion?.question || teachingOverlayBusyKey !== null}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Skip Question
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void toggleTeachOverlayPause()}
+                    disabled={teachingOverlayBusyKey !== null}
+                    className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {teachingOverlayQuestion?.observation_questions_paused ? "Resume Questions" : "Pause Questions"}
+                  </button>
+                </div>
+              </div>
+            </section>
+          ) : null}
+        </div>
+      ) : null}
     </main>
   );
 }
