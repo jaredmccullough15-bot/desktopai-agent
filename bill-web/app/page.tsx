@@ -263,6 +263,7 @@ type TeachOverlayQuestionResponse = {
   teaching_complete: boolean;
   observation_questions_paused: boolean;
   observation_skip_all_questions: boolean;
+  steps_recorded?: number;
 };
 
 const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
@@ -2494,12 +2495,24 @@ export default function Home() {
 
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-3">
                 <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">session_id</span><div className="mt-1 break-all text-cyan-100">{teachingSessionDraftId}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current task_id</span><div className="mt-1 break-all text-cyan-100">{teachingOverlayTaskId ?? "pending"}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">task_id</span><div className="mt-1 break-all text-cyan-100">{teachingOverlayTaskId ?? "pending"}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">steps recorded</span><div className={`mt-1 font-bold ${(teachingOverlayQuestion?.steps_recorded ?? 0) > 0 ? "text-emerald-400" : "text-amber-400"}`}>{teachingOverlayQuestion?.steps_recorded ?? 0}</div></div>
                 <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">question loaded</span><div className="mt-1 text-cyan-100">{String(Boolean(teachingOverlayQuestion?.question))}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">voice enabled</span><div className="mt-1 text-cyan-100">{String(teachingOverlayVoiceEnabled)}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">launch status</span><div className="mt-1 text-cyan-100">{teachingLaunchStatus ?? "idle"}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">launch status</span><div className={`mt-1 font-bold ${teachingLaunchStatus === "running" ? "text-emerald-400" : teachingLaunchStatus === "error" ? "text-rose-400" : "text-amber-400"}`}>{teachingLaunchStatus ?? "idle"}</div></div>
                 <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current step</span><div className="mt-1 text-cyan-100">{String(teachingOverlayQuestion?.step_order ?? 0)}</div></div>
               </div>
+
+              {teachingLaunchStatus === "error" ? (
+                <div className="mt-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                  <p className="font-semibold">Browser launch failed.</p>
+                  <p className="mt-1 text-xs">Make sure the Jarvis Worker is running on your computer and a valid Worker UUID and Start URL are set in the Teach Bill form.</p>
+                </div>
+              ) : teachingLaunchStatus === "running" && (teachingOverlayQuestion?.steps_recorded ?? 0) === 0 ? (
+                <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                  <p className="font-semibold">⚠ No steps recorded yet.</p>
+                  <p className="mt-1 text-xs">The task has been queued. The worker will open a <strong>separate Chromium browser window</strong> on the worker computer. Perform your workflow in <em>that</em> browser — actions done here in the dashboard are not captured.</p>
+                </div>
+              ) : null}
 
               <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/70 p-3">
                 <div className="flex items-center justify-between gap-3">
@@ -2521,7 +2534,7 @@ export default function Home() {
                 </div>
 
                 <p className="mt-3 min-h-12 text-sm font-medium leading-6 text-white">
-                  {teachingOverlayQuestion?.question?.question ?? "No question yet. Start demonstrating steps in the observed browser and this panel will poll for the next prompt."}
+                  {teachingOverlayQuestion?.question?.question ?? "No question yet. Perform your workflow in the launched Chromium browser on the worker machine — questions will appear here automatically."}
                 </p>
 
                 {teachingOverlayError ? (
