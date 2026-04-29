@@ -208,7 +208,7 @@ _LISTENER_JS = r"""
         panel.style.boxShadow = '0 16px 40px rgba(15,23,42,0.35)';
         panel.style.zIndex = '2147483647';
         panel.style.fontFamily = 'Segoe UI, Arial, sans-serif';
-        panel.style.display = 'none';
+        panel.style.display = 'block';
         panel.style.overflow = 'hidden';
         panel.innerHTML = [
             '<div style="padding:12px 14px;border-bottom:1px solid rgba(148,163,184,0.2);display:flex;justify-content:space-between;align-items:center;gap:8px;">',
@@ -223,6 +223,7 @@ _LISTENER_JS = r"""
             '  <div id="bill-observation-context" style="font-size:12px;color:#94a3b8;"></div>',
             '  <textarea id="bill-observation-answer" placeholder="Type what you are doing and why..." style="width:100%;min-height:92px;resize:vertical;border-radius:10px;border:1px solid rgba(148,163,184,0.35);background:#0f172a;color:#f8fafc;padding:10px 12px;font:inherit;"></textarea>',
             '  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">',
+            '    <button id="bill-observation-speak-question" style="background:#0ea5e9;color:#e0f2fe;border:none;border-radius:999px;padding:8px 12px;cursor:pointer;">Speak Question</button>',
             '    <button id="bill-observation-voice" style="background:#1d4ed8;color:#eff6ff;border:none;border-radius:999px;padding:8px 12px;cursor:pointer;">Speak Answer</button>',
             '    <label style="font-size:12px;color:#cbd5e1;display:flex;align-items:center;gap:6px;">Frequency',
             '      <select id="bill-observation-frequency" style="background:#0f172a;color:#f8fafc;border:1px solid rgba(148,163,184,0.35);border-radius:8px;padding:4px 8px;">',
@@ -252,7 +253,8 @@ _LISTENER_JS = r"""
             frequency: 'medium',
             responseMode: 'text',
             recognition: null,
-            listening: false
+            listening: false,
+            speakingQuestion: false
         };
 
         var els = {
@@ -263,6 +265,7 @@ _LISTENER_JS = r"""
             answer: panel.querySelector('#bill-observation-answer'),
             status: panel.querySelector('#bill-observation-status'),
             pause: panel.querySelector('#bill-observation-pause'),
+            speakQuestion: panel.querySelector('#bill-observation-speak-question'),
             voice: panel.querySelector('#bill-observation-voice'),
             submit: panel.querySelector('#bill-observation-submit'),
             known: panel.querySelector('#bill-observation-known'),
@@ -278,12 +281,27 @@ _LISTENER_JS = r"""
 
         function renderPrompt(prompt) {
             state.activePrompt = prompt || null;
-            if (!prompt || state.skipAll) {
-                els.panel.style.display = 'none';
+            if (state.skipAll) {
+                els.panel.style.display = 'block';
+                els.trigger.textContent = 'questions skipped';
+                els.question.textContent = 'Observation questions are skipped for this session.';
+                els.context.textContent = '';
+                els.answer.value = '';
+                updateStatus('Click Pause to resume questions later if needed.');
                 return;
             }
             els.panel.style.display = 'block';
-            els.trigger.textContent = (prompt.trigger_type || '').replace(/_/g, ' ');
+            if (!prompt) {
+                els.trigger.textContent = 'observation mode';
+                els.question.textContent = 'Bill is observing your workflow. Questions will appear as you work.';
+                els.context.textContent = window.location.href || '';
+                els.answer.value = '';
+                updateStatus('Continue the workflow. You can type notes anytime.');
+                return;
+            }
+            var category = String(prompt.category || '').replace(/_/g, ' ');
+            var trigger = String(prompt.trigger_type || '').replace(/_/g, ' ');
+            els.trigger.textContent = category ? (category + ' - ' + trigger) : trigger;
             els.question.textContent = prompt.question || 'What are you checking here?';
             var systemName = (prompt.system_context || {}).system || (prompt.system_context || {}).host || '';
             var pathName = (prompt.system_context || {}).path || '';
@@ -291,11 +309,12 @@ _LISTENER_JS = r"""
             els.answer.value = '';
             state.responseMode = 'text';
             updateStatus(state.paused ? 'Questions are paused for this session.' : 'You can answer, skip, or come back later.');
+            setTimeout(function () { void speakCurrentQuestion(); }, 0);
         }
 
         function showNextPrompt() {
             if (state.paused || state.skipAll) {
-                els.panel.style.display = 'none';
+                renderPrompt(null);
                 return;
             }
             if (state.activePrompt) {
@@ -303,10 +322,57 @@ _LISTENER_JS = r"""
                 return;
             }
             if (!state.promptQueue.length) {
-                els.panel.style.display = 'none';
+                renderPrompt(null);
                 return;
             }
             renderPrompt(state.promptQueue.shift());
+        }
+
+        async function speakCurrentQuestion() {
+            if (state.speakingQuestion) { return; }
+            var questionText = state.activePrompt && state.activePrompt.question
+                ? String(state.activePrompt.question)
+                : String(els.question.textContent || '');
+            if (!questionText.trim()) { return; }
+            state.speakingQuestion = true;
+            try {
+                var apiBase = String(window.__billTeachApiBase || '').replace(/\/$/, '');
+                if (apiBase) {
+                    var res = await fetch(apiBase + '/api/voice/speak', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            text: questionText,
+                            emotion: 'helpful',
+                            style_profile: 'default',
+                            context: { event: 'observation_question' }
+                        })
+                    });
+                    if (res.ok) {
+                        var blob = await res.blob();
+                        var audioUrl = URL.createObjectURL(blob);
+                        var audio = new Audio(audioUrl);
+                        audio.onended = function () { URL.revokeObjectURL(audioUrl); };
+                        audio.onerror = function () { URL.revokeObjectURL(audioUrl); };
+                        await audio.play();
+                        updateStatus('Question spoken by Bill voice.');
+                        state.speakingQuestion = false;
+                        return;
+                    }
+                }
+                if (window.speechSynthesis) {
+                    var utterance = new SpeechSynthesisUtterance(questionText);
+                    utterance.rate = 1;
+                    utterance.pitch = 1;
+                    window.speechSynthesis.cancel();
+                    window.speechSynthesis.speak(utterance);
+                    updateStatus('Question spoken locally.');
+                }
+            } catch (err) {
+                updateStatus('Question voice unavailable. Workflow capture continues.');
+            } finally {
+                state.speakingQuestion = false;
+            }
         }
 
         function emitAnswer(action) {
@@ -419,6 +485,7 @@ _LISTENER_JS = r"""
             });
             updateStatus('Question frequency updated to ' + els.frequency.value + '.');
         });
+        els.speakQuestion.addEventListener('click', function () { void speakCurrentQuestion(); });
         els.voice.addEventListener('click', startVoiceCapture);
 
         window.__billObservationPanel = {
@@ -438,6 +505,8 @@ _LISTENER_JS = r"""
                 els.panel.style.display = 'none';
             }
         };
+
+        renderPrompt(null);
 
         return window.__billObservationPanel;
     }
@@ -810,6 +879,7 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
             raise RuntimeError(f"Unable to launch Chromium for teach session: {exc}") from exc
 
         context = browser.new_context(viewport=None)
+        context.add_init_script(f"window.__billTeachApiBase = {json.dumps(api_base.rstrip('/'))};")
         context.add_init_script(_LISTENER_JS)
 
         page = context.new_page()
