@@ -272,9 +272,37 @@ type TeachOverlayPrompt = {
   prompt_id: string;
   question: string;
   category?: string;
+  purpose?: string;
+  expected_answer_shape?: string;
   question_type?: string;
   trigger_type?: string;
+  parent_question_id?: string | null;
+  follow_up_count?: number;
+  max_follow_ups?: number;
+  clarity_score?: number | null;
+  accepted?: boolean;
+  learned_fact?: string | null;
+  structured_output?: Record<string, unknown> | null;
   system_context?: Record<string, unknown>;
+};
+
+type TeachOverlaySettings = {
+  auto_speak_questions?: boolean;
+  max_follow_ups_per_question?: number;
+  min_seconds_between_questions?: number;
+  do_not_ask_while_user_typing?: boolean;
+  question_frequency_mode?: "training" | "assisted" | "production";
+  pause_until?: number | null;
+};
+
+type TeachAnswerSubmitResponse = {
+  status?: string;
+  conversation_state?: string;
+  clarity_score?: number | null;
+  missing_information?: string[];
+  accepted?: boolean;
+  suggested_follow_up_question?: string | null;
+  learned_rule_preview?: Record<string, unknown> | null;
 };
 
 type TeachOverlayQuestionResponse = {
@@ -287,6 +315,8 @@ type TeachOverlayQuestionResponse = {
   observation_questions_paused: boolean;
   observation_skip_all_questions: boolean;
   steps_recorded?: number;
+  conversation_state?: string;
+  settings?: TeachOverlaySettings;
 };
 
 const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
@@ -435,6 +465,15 @@ export default function Home() {
   const [teachingOverlayTaskId, setTeachingOverlayTaskId] = useState<string | null>(null);
   const [teachingOverlayBusyKey, setTeachingOverlayBusyKey] = useState<string | null>(null);
   const [teachingOverlayError, setTeachingOverlayError] = useState<string | null>(null);
+  const [teachingOverlayConversationState, setTeachingOverlayConversationState] = useState<string>("idle");
+  const [teachingOverlayClarityScore, setTeachingOverlayClarityScore] = useState<number | null>(null);
+  const [teachingOverlayMissingInfo, setTeachingOverlayMissingInfo] = useState<string[]>([]);
+  const [teachingOverlayAccepted, setTeachingOverlayAccepted] = useState<boolean | null>(null);
+  const [teachingOverlayFollowUpText, setTeachingOverlayFollowUpText] = useState<string | null>(null);
+  const [teachingOverlayLearnedRulePreview, setTeachingOverlayLearnedRulePreview] = useState<Record<string, unknown> | null>(null);
+  const [teachingOverlayAutoSpeakQuestions, setTeachingOverlayAutoSpeakQuestions] = useState<boolean>(true);
+  const [teachingOverlayFrequencyMode, setTeachingOverlayFrequencyMode] = useState<"training" | "assisted" | "production">("assisted");
+  const [teachingOverlayLastTypingAt, setTeachingOverlayLastTypingAt] = useState<number>(0);
   const [teachingOverlayDictating, setTeachingOverlayDictating] = useState(false);
   const [teachingOverlaySpeechSupported, setTeachingOverlaySpeechSupported] = useState(false);
   const [teachingStartUrl, setTeachingStartUrl] = useState<string>("");
@@ -501,6 +540,7 @@ export default function Home() {
   const [lastCommandResponseText, setLastCommandResponseText] = useState<string>("");
   const lastSpokenHashRef = useRef<string>("");
   const lastSpokenAtRef = useRef<number>(0);
+  const lastTeachOverlaySpokenPromptRef = useRef<string>("");
   const lastVoiceEventRef = useRef<{ eventType: string; at: number }>({ eventType: "", at: 0 });
   const teachRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const teachingOverlayVoiceEnabled = Boolean(
@@ -1947,6 +1987,13 @@ export default function Home() {
         }
         const nextQuestion = body as TeachOverlayQuestionResponse;
         setTeachingOverlayQuestion(nextQuestion);
+        setTeachingOverlayConversationState(nextQuestion.conversation_state ?? (nextQuestion.question ? "asking_question" : "idle"));
+        if (typeof nextQuestion.settings?.auto_speak_questions === "boolean") {
+          setTeachingOverlayAutoSpeakQuestions(Boolean(nextQuestion.settings.auto_speak_questions));
+        }
+        if (nextQuestion.settings?.question_frequency_mode && ["training", "assisted", "production"].includes(nextQuestion.settings.question_frequency_mode)) {
+          setTeachingOverlayFrequencyMode(nextQuestion.settings.question_frequency_mode);
+        }
         setTeachingOverlayAnswer((current) => (
           nextQuestion.question?.prompt_id === teachingOverlayQuestion?.question?.prompt_id ? current : ""
         ));
@@ -1969,6 +2016,29 @@ export default function Home() {
     [logTeachOverlay, teachingOverlayQuestion?.question?.prompt_id],
   );
 
+  const updateTeachOverlaySettings = useCallback(
+    async (sessionId: string, settingsPatch: Record<string, unknown>) => {
+      if (!sessionId) return;
+      const apiBase = getApiBase();
+      if (!apiBase) return;
+      try {
+        const response = await fetch(`${apiBase}/api/teach-sessions/${sessionId}/settings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(settingsPatch),
+        });
+        if (!response.ok) {
+          const body = (await response.json()) as { detail?: string };
+          throw new Error(body.detail ?? `Update settings failed (${response.status})`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        setTeachingOverlayError(message);
+      }
+    },
+    [],
+  );
+
   const startTeachingSession = async (draftId: string) => {
     logTeachOverlay("teach mode started", { session_id: draftId, target_worker_uuid: teachingTargetWorkerUuid || null });
     setTeachingSessionDraftId(draftId);
@@ -1980,8 +2050,23 @@ export default function Home() {
     setTeachingOverlayAnswer("");
     setTeachingOverlayTaskId(null);
     setTeachingOverlayError(null);
+    setTeachingOverlayConversationState("asking_question");
+    setTeachingOverlayClarityScore(null);
+    setTeachingOverlayMissingInfo([]);
+    setTeachingOverlayAccepted(null);
+    setTeachingOverlayFollowUpText(null);
+    setTeachingOverlayLearnedRulePreview(null);
+    setTeachingOverlayAutoSpeakQuestions(true);
+    setTeachingOverlayFrequencyMode("assisted");
     setTeachingLaunchStatus(null);
     setTeachingLaunchPid(null);
+    await updateTeachOverlaySettings(draftId, {
+      auto_speak_questions: true,
+      question_frequency_mode: "assisted",
+      max_follow_ups_per_question: 2,
+      min_seconds_between_questions: 20,
+      do_not_ask_while_user_typing: true,
+    });
     await loadTeachingQuestion(draftId);
     await loadTeachOverlayQuestion(draftId);
     await launchTeachBrowser(draftId);
@@ -2021,9 +2106,28 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const body = (await response.json()) as { detail?: string };
+      const body = (await response.json()) as TeachAnswerSubmitResponse & { detail?: string };
       if (!response.ok) {
         throw new Error(body.detail ?? `Overlay ${action} failed (${response.status})`);
+      }
+      setTeachingOverlayConversationState(body.conversation_state ?? "waiting_for_answer");
+      setTeachingOverlayClarityScore(typeof body.clarity_score === "number" ? body.clarity_score : null);
+      setTeachingOverlayMissingInfo(Array.isArray(body.missing_information) ? body.missing_information : []);
+      setTeachingOverlayAccepted(typeof body.accepted === "boolean" ? body.accepted : null);
+      setTeachingOverlayFollowUpText(body.suggested_follow_up_question ?? null);
+      setTeachingOverlayLearnedRulePreview((body.learned_rule_preview ?? null) as Record<string, unknown> | null);
+      if (body.accepted === true && teachingOverlayAutoSpeakQuestions) {
+        void billVoice.speakText({
+          text: "Got it. I will remember that.",
+          emotion: "helpful",
+          style_profile: commandVoiceStyleProfile,
+        });
+      } else if (body.accepted === false && teachingOverlayAutoSpeakQuestions) {
+        void billVoice.speakText({
+          text: "I think I understand part of that, but I need one detail clarified.",
+          emotion: "helpful",
+          style_profile: commandVoiceStyleProfile,
+        });
       }
       logTeachOverlay(action === "answer" ? "answer submitted" : "question skipped", {
         session_id: teachingSessionDraftId,
@@ -2248,6 +2352,12 @@ export default function Home() {
     setTeachingOverlayAnswer("");
     setTeachingOverlayTaskId(null);
     setTeachingOverlayError(null);
+    setTeachingOverlayConversationState("idle");
+    setTeachingOverlayClarityScore(null);
+    setTeachingOverlayMissingInfo([]);
+    setTeachingOverlayAccepted(null);
+    setTeachingOverlayFollowUpText(null);
+    setTeachingOverlayLearnedRulePreview(null);
     setTeachingStatus("watching");
     await loadBrainPanels();
   };
@@ -2323,6 +2433,39 @@ export default function Home() {
     }, 3000);
     return () => clearInterval(id);
   }, [loadTeachOverlayQuestion, teachingSessionDraftId]);
+
+  useEffect(() => {
+    const prompt = teachingOverlayQuestion?.question;
+    if (!teachingOverlayOpen || !prompt || !teachingOverlayAutoSpeakQuestions) {
+      return;
+    }
+    const promptId = String(prompt.prompt_id || "");
+    if (!promptId) {
+      return;
+    }
+    if (lastTeachOverlaySpokenPromptRef.current === promptId) {
+      return;
+    }
+    const minSeconds = Number(teachingOverlayQuestion?.settings?.min_seconds_between_questions ?? 20);
+    const now = Date.now();
+    if (now - lastSpokenAtRef.current < minSeconds * 1000) {
+      return;
+    }
+    const doNotAskWhileTyping = Boolean(teachingOverlayQuestion?.settings?.do_not_ask_while_user_typing ?? true);
+    if (doNotAskWhileTyping && now - teachingOverlayLastTypingAt < 1800) {
+      return;
+    }
+    void speakTeachOverlayQuestion().then(() => {
+      lastTeachOverlaySpokenPromptRef.current = promptId;
+      lastSpokenAtRef.current = Date.now();
+    });
+  }, [
+    speakTeachOverlayQuestion,
+    teachingOverlayAutoSpeakQuestions,
+    teachingOverlayLastTypingAt,
+    teachingOverlayOpen,
+    teachingOverlayQuestion,
+  ]);
 
   // Flash "step_captured" when the Playwright script appends a new step
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2695,9 +2838,82 @@ export default function Home() {
                   </button>
                 </div>
 
+                <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                  <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={teachingOverlayAutoSpeakQuestions}
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        setTeachingOverlayAutoSpeakQuestions(enabled);
+                        if (teachingSessionDraftId) {
+                          void updateTeachOverlaySettings(teachingSessionDraftId, { auto_speak_questions: enabled });
+                        }
+                      }}
+                    />
+                    Auto-speak questions
+                  </label>
+                  <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                    <span>Frequency</span>
+                    <select
+                      value={teachingOverlayFrequencyMode}
+                      onChange={(event) => {
+                        const next = event.target.value as "training" | "assisted" | "production";
+                        setTeachingOverlayFrequencyMode(next);
+                        if (teachingSessionDraftId) {
+                          void updateTeachOverlaySettings(teachingSessionDraftId, { question_frequency_mode: next });
+                        }
+                      }}
+                      className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                    >
+                      <option value="training">Training</option>
+                      <option value="assisted">Assisted</option>
+                      <option value="production">Production</option>
+                    </select>
+                  </label>
+                </div>
+
                 <p className="mt-3 min-h-12 text-sm font-medium leading-6 text-white">
                   {teachingOverlayQuestion?.question?.question ?? "No question yet. Perform your workflow in the launched Chromium browser on the worker machine — questions will appear here automatically."}
                 </p>
+
+                {teachingOverlayQuestion?.question?.purpose ? (
+                  <p className="mt-2 text-xs text-slate-400">Purpose: {teachingOverlayQuestion.question.purpose}</p>
+                ) : null}
+                {teachingOverlayQuestion?.question?.expected_answer_shape ? (
+                  <p className="mt-1 text-xs text-slate-400">Expected: {teachingOverlayQuestion.question.expected_answer_shape}</p>
+                ) : null}
+
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-cyan-100">
+                    State: {teachingOverlayConversationState}
+                  </span>
+                  {teachingOverlayClarityScore !== null ? (
+                    <span className="rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-slate-200">
+                      Clarity: {teachingOverlayClarityScore}
+                    </span>
+                  ) : null}
+                  {teachingOverlayAccepted === true ? (
+                    <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-emerald-200">Answer accepted</span>
+                  ) : null}
+                  {teachingOverlayAccepted === false ? (
+                    <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-200">Bill needs clarification</span>
+                  ) : null}
+                </div>
+
+                {teachingOverlayMissingInfo.length > 0 ? (
+                  <p className="mt-2 text-xs text-amber-200">Missing: {teachingOverlayMissingInfo.join("; ")}</p>
+                ) : null}
+                {teachingOverlayFollowUpText ? (
+                  <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                    Follow-up: {teachingOverlayFollowUpText}
+                  </p>
+                ) : null}
+                {teachingOverlayLearnedRulePreview ? (
+                  <p className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                    Learned rule preview: {JSON.stringify(teachingOverlayLearnedRulePreview)}
+                  </p>
+                ) : null}
 
                 {teachingOverlayError ? (
                   <p className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{teachingOverlayError}</p>
@@ -2705,7 +2921,10 @@ export default function Home() {
 
                 <textarea
                   value={teachingOverlayAnswer}
-                  onChange={(event) => setTeachingOverlayAnswer(event.target.value)}
+                  onChange={(event) => {
+                    setTeachingOverlayAnswer(event.target.value);
+                    setTeachingOverlayLastTypingAt(Date.now());
+                  }}
                   placeholder="Type the employee answer here. Voice is optional and not required for the overlay to work."
                   className="mt-3 min-h-28 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
                 />
