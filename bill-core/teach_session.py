@@ -646,7 +646,7 @@ def _extract_observation_prompt(result: dict[str, Any] | None) -> tuple[dict[str
 
 # ── Session runner ────────────────────────────────────────────────────────────
 
-def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> dict[str, Any]:
+def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> None:
     sep = "=" * 62
     print(f"\n{sep}")
     print(f"  Bill Teach Mode — Observation Session")
@@ -665,8 +665,6 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
     last_url: list[str] = [""]
     step_num: list[int] = [0]
     step_lock = threading.Lock()
-    launch_command = "playwright.chromium.launch(headless=False, args=['--start-maximized', '--disable-infobars'])"
-    browser_launch_succeeded = False
     observation_settings = _load_observation_settings(api_base)
 
     # ── Background thread drains HTTP posts so Playwright's event
@@ -824,23 +822,15 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
                 _show_prompt_on_pages(prompt, observation_settings)
 
     with sync_playwright() as pw:
-        print(f"  [teach] final Chrome launch command: {launch_command}")
-        try:
-            browser = pw.chromium.launch(
-                headless=False,
-                args=["--start-maximized", "--disable-infobars"],
-            )
-        except Exception as exc:
-            print(f"  [teach] browser launch succeeded: False ({exc})", file=sys.stderr)
-            raise RuntimeError(f"Unable to launch Chromium for teach session: {exc}") from exc
-
+        browser = pw.chromium.launch(
+            headless=False,
+            args=["--start-maximized", "--disable-infobars"],
+        )
         context = browser.new_context(viewport=None)
         context.add_init_script(f"window.__billTeachApiBase = {json.dumps(api_base.rstrip('/'))};")
         context.add_init_script(_LISTENER_JS)
 
         page = context.new_page()
-        browser_launch_succeeded = True
-        print("  [teach] browser launch succeeded: True")
         attach_page(page)
         _apply_observation_settings_to_pages(observation_settings)
 
@@ -879,15 +869,6 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
         total = step_num[0]
     print(f"\n  Session complete. {total} steps captured.")
     print(f"  Open the Bill dashboard to review, enrich, and publish the draft.\n")
-    return {
-        "status": "completed",
-        "draft_id": draft_id,
-        "api_base": api_base,
-        "start_url": start_url or "",
-        "final_chrome_launch_command": launch_command,
-        "browser_launch_succeeded": browser_launch_succeeded,
-        "steps_captured": total,
-    }
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

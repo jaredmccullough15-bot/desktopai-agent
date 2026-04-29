@@ -1940,6 +1940,8 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         "teach_conversation_state": "idle",
         "teach_session_settings": {
             "auto_speak_questions": True,
+            "voice_provider": "elevenlabs",
+            "browser_tts_enabled": False,
             "max_follow_ups_per_question": 2,
             "min_seconds_between_questions": 20,
             "do_not_ask_while_user_typing": True,
@@ -1949,12 +1951,21 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         "teach_session_memory": {
             "learned_navigation_rules": [],
             "learned_identity_rules": [],
+            "learned_carrier_rules": [],
+            "learned_aor_rules": [],
+            "learned_crm_rules": [],
+            "learned_success_verification_rules": [],
             "learned_validation_rules": [],
             "learned_decision_rules": [],
             "learned_action_rules": [],
             "unclear_items": [],
         },
         "teach_session_history": [],
+        "teach_current_stage": "unknown",
+        "teach_current_url": "",
+        "teach_current_domain": "",
+        "teach_last_trigger_event": "unknown",
+        "teach_last_question_at": None,
     }
 
 
@@ -2004,6 +2015,8 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
         "teach_conversation_state": str(item.get("teach_conversation_state") or "idle"),
         "teach_session_settings": dict(item.get("teach_session_settings") or {
             "auto_speak_questions": True,
+            "voice_provider": "elevenlabs",
+            "browser_tts_enabled": False,
             "max_follow_ups_per_question": 2,
             "min_seconds_between_questions": 20,
             "do_not_ask_while_user_typing": True,
@@ -2013,12 +2026,21 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
         "teach_session_memory": dict(item.get("teach_session_memory") or {
             "learned_navigation_rules": [],
             "learned_identity_rules": [],
+            "learned_carrier_rules": [],
+            "learned_aor_rules": [],
+            "learned_crm_rules": [],
+            "learned_success_verification_rules": [],
             "learned_validation_rules": [],
             "learned_decision_rules": [],
             "learned_action_rules": [],
             "unclear_items": [],
         }),
         "teach_session_history": [dict(x) for x in (item.get("teach_session_history") or []) if isinstance(x, dict)],
+        "teach_current_stage": str(item.get("teach_current_stage") or "unknown"),
+        "teach_current_url": str(item.get("teach_current_url") or ""),
+        "teach_current_domain": str(item.get("teach_current_domain") or ""),
+        "teach_last_trigger_event": str(item.get("teach_last_trigger_event") or "unknown"),
+        "teach_last_question_at": item.get("teach_last_question_at"),
     }
 
 
@@ -4130,6 +4152,8 @@ def _frequency_from_mode(mode: str) -> str:
 def _teach_settings_for_draft(draft: dict[str, Any]) -> dict[str, Any]:
     settings = dict(draft.get("teach_session_settings") or {})
     settings.setdefault("auto_speak_questions", True)
+    settings.setdefault("voice_provider", "elevenlabs")
+    settings.setdefault("browser_tts_enabled", False)
     settings.setdefault("max_follow_ups_per_question", 2)
     settings.setdefault("min_seconds_between_questions", 20)
     settings.setdefault("do_not_ask_while_user_typing", True)
@@ -4142,6 +4166,10 @@ def _teach_memory_for_draft(draft: dict[str, Any]) -> dict[str, Any]:
     memory = dict(draft.get("teach_session_memory") or {})
     memory.setdefault("learned_navigation_rules", [])
     memory.setdefault("learned_identity_rules", [])
+    memory.setdefault("learned_carrier_rules", [])
+    memory.setdefault("learned_aor_rules", [])
+    memory.setdefault("learned_crm_rules", [])
+    memory.setdefault("learned_success_verification_rules", [])
     memory.setdefault("learned_validation_rules", [])
     memory.setdefault("learned_decision_rules", [])
     memory.setdefault("learned_action_rules", [])
@@ -4163,15 +4191,257 @@ def _category_for_trigger(trigger: str) -> str:
 
 
 def _memory_bucket_for_category(category: str) -> str:
-    if category in {"navigation_reasoning", "carrier_selection", "carrier_validation"}:
+    if category in {"navigation_reasoning"}:
         return "learned_navigation_rules"
     if category in {"identity_verification", "data_source"}:
         return "learned_identity_rules"
+    if category in {"carrier_selection", "carrier_validation"}:
+        return "learned_carrier_rules"
+    if category in {"healthsherpa_aor"}:
+        return "learned_aor_rules"
+    if category in {"crm_action"}:
+        return "learned_crm_rules"
     if category in {"success_verification", "safety_rule"}:
-        return "learned_validation_rules"
-    if category in {"classification", "exception_handling", "healthsherpa_aor"}:
+        return "learned_success_verification_rules"
+    if category in {"classification", "exception_handling"}:
         return "learned_decision_rules"
     return "learned_action_rules"
+
+
+def _is_crm_host(host: str) -> bool:
+    lowered = str(host or "").lower()
+    crm_tokens = ["keap", "infusionsoft", "hubspot", "salesforce", "pipedrive", "zoho", "crm"]
+    return any(token in lowered for token in crm_tokens)
+
+
+def _is_carrier_host(host: str) -> bool:
+    lowered = str(host or "").lower()
+    if not lowered:
+        return False
+    if "trackvia" in lowered or "healthsherpa" in lowered or _is_crm_host(lowered):
+        return False
+    carrier_tokens = [
+        "ambetter",
+        "anthem",
+        "aetna",
+        "cigna",
+        "uhc",
+        "uhone",
+        "bcbs",
+        "bluecross",
+        "carrier",
+        "member",
+        "policy",
+    ]
+    return any(token in lowered for token in carrier_tokens)
+
+
+def _domain_family_from_host(host: str) -> str:
+    lowered = str(host or "").lower()
+    if "trackvia" in lowered:
+        return "trackvia"
+    if "healthsherpa" in lowered:
+        return "healthsherpa"
+    if _is_crm_host(lowered):
+        return "crm"
+    if _is_carrier_host(lowered):
+        return "carrier"
+    return "unknown"
+
+
+def _build_step_text_blob(step: dict[str, Any]) -> str:
+    return " ".join(
+        [
+            str(step.get("step_name") or ""),
+            str(step.get("description") or ""),
+            str(step.get("selector") or ""),
+            str(step.get("value") or ""),
+            str(step.get("option") or ""),
+            str((step.get("system_context") or {}).get("element_label") or ""),
+            str((step.get("system_context") or {}).get("path") or ""),
+        ]
+    ).lower()
+
+
+def _build_stage_signals(step: dict[str, Any], previous_step: dict[str, Any] | None) -> dict[str, Any]:
+    current_context = dict(step.get("system_context") or {})
+    previous_context = dict((previous_step or {}).get("system_context") or {})
+    current_host = str(current_context.get("host") or "").strip().lower()
+    previous_host = str(previous_context.get("host") or "").strip().lower()
+    current_domain = _domain_family_from_host(current_host)
+    previous_domain = _domain_family_from_host(previous_host)
+    label_blob = _build_step_text_blob(step)
+
+    carrier_hint = any(token in label_blob for token in ["carrier", "book", "policy", "member", "portal"])
+    client_hint = any(token in label_blob for token in ["client", "household", "subscriber", "member", "employee"])
+    aor_hint = "aor" in label_blob or "agent of record" in label_blob
+    crm_hint = any(token in label_blob for token in ["crm", "keap", "contact", "infusionsoft"])
+    verification_hint = any(token in label_blob for token in ["verify", "verified", "confirmation", "completed", "success"])
+    exception_hint = any(token in label_blob for token in ["not found", "missing", "error", "mismatch", "unable"])
+
+    return {
+        "current_url": str(current_context.get("url") or step.get("url") or ""),
+        "current_host": current_host,
+        "current_domain": current_domain,
+        "previous_domain": previous_domain,
+        "system_switch_event": bool(current_domain != "unknown" and previous_domain != "unknown" and current_domain != previous_domain),
+        "switch_trackvia_to_carrier": previous_domain == "trackvia" and current_domain == "carrier",
+        "trackvia_page_detected": current_domain == "trackvia" or "trackvia" in label_blob,
+        "carrier_domain_detected": current_domain == "carrier",
+        "healthsherpa_domain_detected": current_domain == "healthsherpa",
+        "crm_domain_detected": current_domain == "crm",
+        "carrier_field_detected": carrier_hint,
+        "client_record_detected": client_hint,
+        "selected_action": str(step.get("action") or "").strip().lower(),
+        "selected_action_is_crm": bool(current_domain == "crm" or crm_hint),
+        "previous_carrier_lookup_not_found": bool(previous_domain == "carrier" and "not found" in _build_step_text_blob(previous_step or {})),
+        "verification_hint": verification_hint,
+        "exception_hint": exception_hint,
+        "aor_hint": aor_hint,
+    }
+
+
+def _detect_workflow_stage(step: dict[str, Any], previous_step: dict[str, Any] | None) -> str:
+    signals = _build_stage_signals(step, previous_step)
+    blob = _build_step_text_blob(step)
+    domain = str(signals.get("current_domain") or "unknown")
+
+    if bool(signals.get("exception_hint")):
+        return "exception_handling"
+    if domain == "trackvia":
+        return "trackvia_client_selection"
+    if domain == "carrier":
+        if any(token in blob for token in ["paid", "active", "status", "effective", "term", "validation", "check"]):
+            return "carrier_validation"
+        return "carrier_portal_selection"
+    if domain == "healthsherpa" or bool(signals.get("aor_hint")):
+        return "healthsherpa_aor_check"
+    if domain == "crm":
+        if any(token in blob for token in ["search", "lookup", "find", "contact", "match"]):
+            return "crm_contact_lookup"
+        return "crm_action"
+    if bool(signals.get("verification_hint")):
+        return "action_verification"
+    return "unknown"
+
+
+def _unknown_stage_prompt(draft_id: str, step_order: int, system_context: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        "prompt_id": str(uuid4()),
+        "draft_id": draft_id,
+        "step_order": int(step_order or 0),
+        "question": "What system are we in right now, and what are you trying to accomplish on this page?",
+        "question_type": "workflow_context",
+        "trigger_type": "unknown_stage",
+        "category": "workflow_context",
+        "purpose": "Establish current workflow stage before asking specific downstream questions.",
+        "expected_answer_shape": "Current system + immediate goal for this page.",
+        "allowed_stages": ["unknown"],
+        "required_context": ["current_system_or_goal"],
+        "priority": 100,
+        "already_answered_key": "workflow_context",
+        "conversation_state": "asking_question",
+        "parent_question_id": None,
+        "follow_up_count": 0,
+        "max_follow_ups": 1,
+        "clarity_score": None,
+        "accepted": False,
+        "learned_fact": None,
+        "structured_output": None,
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat(),
+        "next_question_reason": reason,
+        "system_context": dict(system_context or {}),
+    }
+
+
+def _question_policy_for_category(category: str, trigger: str) -> dict[str, Any]:
+    policy_map: dict[str, dict[str, Any]] = {
+        "navigation_reasoning": {
+            "allowed_stages": ["trackvia_client_selection", "carrier_portal_selection"],
+            "required_context": ["trackvia_page_detected", "client_record_detected", "carrier_field_detected", "switch_trackvia_to_carrier"],
+            "required_context_mode": "any",
+            "priority": 95,
+            "already_answered_key": "learned_navigation_rules",
+        },
+        "carrier_selection": {
+            "allowed_stages": ["trackvia_client_selection", "carrier_portal_selection"],
+            "required_context": ["trackvia_page_detected", "carrier_field_detected", "switch_trackvia_to_carrier"],
+            "required_context_mode": "any",
+            "priority": 92,
+            "already_answered_key": "learned_carrier_rules",
+        },
+        "carrier_validation": {
+            "allowed_stages": ["carrier_portal_selection", "carrier_validation"],
+            "required_context": ["carrier_domain_detected"],
+            "required_context_mode": "all",
+            "priority": 90,
+            "already_answered_key": "learned_carrier_rules",
+        },
+        "healthsherpa_aor": {
+            "allowed_stages": ["healthsherpa_aor_check", "exception_handling"],
+            "required_context": ["healthsherpa_domain_detected", "previous_carrier_lookup_not_found"],
+            "required_context_mode": "any",
+            "priority": 88,
+            "already_answered_key": "learned_aor_rules",
+        },
+        "crm_action": {
+            "allowed_stages": ["crm_contact_lookup", "crm_action"],
+            "required_context": ["crm_domain_detected", "selected_action_is_crm"],
+            "required_context_mode": "any",
+            "priority": 89,
+            "already_answered_key": "learned_crm_rules",
+        },
+        "success_verification": {
+            "allowed_stages": ["action_verification", "crm_action", "carrier_validation"],
+            "required_context": ["verification_hint", "crm_domain_detected", "carrier_domain_detected"],
+            "required_context_mode": "any",
+            "priority": 80,
+            "already_answered_key": "learned_success_verification_rules",
+        },
+        "classification": {
+            "allowed_stages": ["carrier_validation", "healthsherpa_aor_check", "crm_action", "action_verification", "exception_handling"],
+            "required_context": ["client_record_detected", "carrier_domain_detected", "healthsherpa_domain_detected", "crm_domain_detected"],
+            "required_context_mode": "any",
+            "priority": 78,
+            "already_answered_key": "learned_decision_rules",
+        },
+        "exception_handling": {
+            "allowed_stages": ["exception_handling"],
+            "required_context": ["exception_hint"],
+            "required_context_mode": "all",
+            "priority": 82,
+            "already_answered_key": "learned_action_rules",
+        },
+        "data_source": {
+            "allowed_stages": ["trackvia_client_selection", "carrier_validation", "crm_contact_lookup"],
+            "required_context": ["trackvia_page_detected", "carrier_domain_detected", "crm_domain_detected"],
+            "required_context_mode": "any",
+            "priority": 70,
+            "already_answered_key": "learned_identity_rules",
+        },
+    }
+    policy = dict(policy_map.get(category) or {})
+    if not policy:
+        policy = {
+            "allowed_stages": ["trackvia_client_selection", "carrier_validation", "healthsherpa_aor_check", "crm_action", "exception_handling", "action_verification"],
+            "required_context": [],
+            "required_context_mode": "any",
+            "priority": 60,
+            "already_answered_key": "learned_action_rules",
+        }
+    policy["trigger_event"] = trigger
+    return policy
+
+
+def _required_context_satisfied(policy: dict[str, Any], signals: dict[str, Any]) -> bool:
+    required = [str(item) for item in (policy.get("required_context") or []) if str(item)]
+    if not required:
+        return True
+    mode = str(policy.get("required_context_mode") or "any").strip().lower()
+    if mode == "all":
+        return all(bool(signals.get(key)) for key in required)
+    return any(bool(signals.get(key)) for key in required)
 
 
 def _purpose_expected_for_category(category: str, trigger: str) -> tuple[str, str]:
@@ -4338,6 +4608,9 @@ def _observation_prompt_for_trigger(
     step_order: int,
     trigger: str,
     system_context: dict[str, Any],
+    stage: str,
+    policy: dict[str, Any],
+    reason: str,
 ) -> dict[str, Any]:
     question_map = {
         "system_switch": "check",
@@ -4362,6 +4635,13 @@ def _observation_prompt_for_trigger(
         "category": category,
         "purpose": purpose,
         "expected_answer_shape": expected_shape,
+        "allowed_stages": list(policy.get("allowed_stages") or []),
+        "trigger_event": str(policy.get("trigger_event") or trigger),
+        "required_context": list(policy.get("required_context") or []),
+        "priority": int(policy.get("priority") or 50),
+        "already_answered_key": str(policy.get("already_answered_key") or ""),
+        "stage": stage,
+        "next_question_reason": reason,
         "conversation_state": "asking_question",
         "parent_question_id": None,
         "follow_up_count": 0,
@@ -4387,44 +4667,121 @@ def _build_observation_prompts(updated: dict[str, Any], step: dict[str, Any], pr
     updated["observation_question_frequency"] = frequency
     explicit_triggers = [str(item).strip() for item in (step.get("observation_triggers") or []) if str(item).strip()]
     triggers = explicit_triggers or _detect_observation_triggers(previous_step, step)
+    stage = _detect_workflow_stage(step, previous_step)
+    signals = _build_stage_signals(step, previous_step)
+    last_trigger = triggers[0] if triggers else "unknown_pattern"
+
+    updated["teach_current_stage"] = stage
+    updated["teach_last_trigger_event"] = last_trigger
+    updated["teach_current_domain"] = str(signals.get("current_domain") or "")
+    updated["teach_current_url"] = str(signals.get("current_url") or "")
 
     memory = _teach_memory_for_draft(updated)
     blocked_categories: set[str] = set()
     if memory.get("learned_navigation_rules"):
         blocked_categories.add("navigation_reasoning")
-        blocked_categories.add("carrier_selection")
     if memory.get("learned_identity_rules"):
-        blocked_categories.add("identity_verification")
         blocked_categories.add("data_source")
-    if memory.get("learned_validation_rules"):
+    if memory.get("learned_carrier_rules"):
+        blocked_categories.add("carrier_selection")
+        blocked_categories.add("carrier_validation")
+    if memory.get("learned_aor_rules"):
+        blocked_categories.add("healthsherpa_aor")
+    if memory.get("learned_crm_rules"):
+        blocked_categories.add("crm_action")
+    if memory.get("learned_success_verification_rules"):
         blocked_categories.add("success_verification")
     if memory.get("learned_decision_rules"):
         blocked_categories.add("classification")
 
-    prompts = [
-        _observation_prompt_for_trigger(
-            draft_id=str(updated.get("draft_id") or ""),
-            step_order=int(step.get("step_order") or 0),
-            trigger=trigger,
-            system_context=dict(step.get("system_context") or {}),
-        )
-        for trigger in triggers
-        if _prompt_allowed_for_trigger(trigger, frequency)
-        and _category_for_trigger(trigger) not in blocked_categories
-    ]
+    if stage == "unknown":
+        return [
+            _unknown_stage_prompt(
+                draft_id=str(updated.get("draft_id") or ""),
+                step_order=int(step.get("step_order") or 0),
+                system_context=dict(step.get("system_context") or {}),
+                reason="Stage is unknown, so asking broad context before downstream workflow questions.",
+            )
+        ]
 
-    if not prompts:
-        prompts = [
+    prompts: list[dict[str, Any]] = []
+    for trigger in triggers:
+        if not _prompt_allowed_for_trigger(trigger, frequency):
+            continue
+        category = _category_for_trigger(trigger)
+        if category in blocked_categories:
+            continue
+        policy = _question_policy_for_category(category, trigger)
+        allowed_stages = [str(item) for item in (policy.get("allowed_stages") or []) if str(item)]
+        if allowed_stages and stage not in allowed_stages:
+            continue
+        if not _required_context_satisfied(policy, signals):
+            continue
+
+        reason = (
+            f"stage={stage}; trigger={trigger}; context_ok=true; allowed={','.join(allowed_stages) or 'any'}"
+        )
+        prompts.append(
             _observation_prompt_for_trigger(
                 draft_id=str(updated.get("draft_id") or ""),
                 step_order=int(step.get("step_order") or 0),
-                trigger="unknown_pattern",
+                trigger=trigger,
                 system_context=dict(step.get("system_context") or {}),
+                stage=stage,
+                policy=policy,
+                reason=reason,
             )
-        ]
+        )
+
+    if not prompts:
+        if stage in {"exception_handling", "action_verification"}:
+            fallback_policy = _question_policy_for_category("exception_handling", "unknown_pattern")
+            prompts = [
+                _observation_prompt_for_trigger(
+                    draft_id=str(updated.get("draft_id") or ""),
+                    step_order=int(step.get("step_order") or 0),
+                    trigger="unknown_pattern",
+                    system_context=dict(step.get("system_context") or {}),
+                    stage=stage,
+                    policy=fallback_policy,
+                    reason=f"Fallback question for stage {stage}.",
+                )
+            ]
+        else:
+            return []
+
+    prompts.sort(key=lambda item: int(item.get("priority") or 0), reverse=True)
     if frequency != "high" and prompts:
         return [prompts[0]]
     return prompts[:2]
+
+
+def _parse_iso_timestamp(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _can_serve_new_question(draft: dict[str, Any], prompt: dict[str, Any], settings: dict[str, Any]) -> tuple[bool, str]:
+    if str(prompt.get("status") or "pending") != "pending":
+        return False, "No pending prompt available."
+
+    if prompt.get("asked_at"):
+        return True, "Pending prompt is waiting for an answer."
+
+    min_seconds = max(0, int(settings.get("min_seconds_between_questions") or 0))
+    last_asked = _parse_iso_timestamp(draft.get("teach_last_question_at"))
+    if last_asked is not None and min_seconds > 0:
+        elapsed = (datetime.utcnow() - last_asked.replace(tzinfo=None)).total_seconds()
+        if elapsed < min_seconds:
+            wait_for = int(max(1, min_seconds - elapsed))
+            return False, f"Question throttle active ({wait_for}s remaining)."
+
+    return True, "Stage and context checks passed."
 
 
 def _next_pending_observation_prompt(draft: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -4544,13 +4901,53 @@ def _append_history(updated: dict[str, Any], record: dict[str, Any]) -> None:
 
 @app.get("/api/teach-sessions/{session_id}/questions/next")
 def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
-    idx, draft = _find_workflow_draft(session_id)
-    if draft is None or idx is None:
+    draft_idx, draft = _find_workflow_draft(session_id)
+    if draft is None or draft_idx is None:
         raise HTTPException(status_code=404, detail="Teach session not found")
 
     settings = _teach_settings_for_draft(draft)
     step, prompt = _next_pending_observation_prompt(draft)
     steps_recorded = len([s for s in (draft.get("steps") or []) if isinstance(s, dict)])
+    next_question_reason = "No pending prompt yet."
+
+    if step is not None and prompt is not None:
+        allowed, reason = _can_serve_new_question(draft, prompt, settings)
+        next_question_reason = reason
+        if not allowed:
+            prompt = None
+            step = None
+        else:
+            prompt_with_ask_state = dict(prompt)
+            if not prompt_with_ask_state.get("asked_at"):
+                prompt_with_ask_state["asked_at"] = datetime.utcnow().isoformat()
+                updated = dict(draft)
+                updated["teach_last_question_at"] = prompt_with_ask_state["asked_at"]
+                updated["teach_conversation_state"] = "waiting_for_answer"
+                steps = [dict(s) for s in (updated.get("steps") or []) if isinstance(s, dict)]
+                for step_idx, candidate in enumerate(steps):
+                    if int(candidate.get("step_order") or 0) != int((step or {}).get("step_order") or 0):
+                        continue
+                    prompts = [dict(item) for item in (candidate.get("observation_questions") or []) if isinstance(item, dict)]
+                    for prompt_idx, item in enumerate(prompts):
+                        if str(item.get("prompt_id") or "") == str(prompt.get("prompt_id") or ""):
+                            prompts[prompt_idx] = prompt_with_ask_state
+                            break
+                    candidate["observation_questions"] = prompts
+                    steps[step_idx] = candidate
+                    break
+                updated["steps"] = steps
+                updated["updated_at"] = datetime.utcnow().isoformat()
+                draft = updated
+                workflow_learning_drafts[draft_idx] = updated
+                _save_workflow_learning_drafts()
+            prompt = prompt_with_ask_state
+            if not prompt.get("next_question_reason"):
+                prompt["next_question_reason"] = reason
+
+    current_stage = str(draft.get("teach_current_stage") or "unknown")
+    current_url = str(draft.get("teach_current_url") or "")
+    current_domain = str(draft.get("teach_current_domain") or "")
+    last_trigger_event = str(draft.get("teach_last_trigger_event") or "unknown")
     return {
         "session_id": session_id,
         "workflow_id": str(draft.get("published_workflow_name") or draft.get("workflow_name") or ""),
@@ -4562,6 +4959,11 @@ def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
         "observation_skip_all_questions": bool(draft.get("observation_skip_all_questions", False)),
         "steps_recorded": steps_recorded,
         "conversation_state": str(draft.get("teach_conversation_state") or "idle"),
+        "current_stage": current_stage,
+        "current_url": current_url,
+        "current_domain": current_domain,
+        "last_trigger_event": last_trigger_event,
+        "next_question_reason": str((prompt or {}).get("next_question_reason") or next_question_reason),
         "settings": settings,
     }
 
@@ -4871,6 +5273,11 @@ def update_teach_session_settings(session_id: str, payload: dict = Body(default=
         settings["do_not_ask_while_user_typing"] = bool(body.get("do_not_ask_while_user_typing"))
     if "question_frequency_mode" in body:
         settings["question_frequency_mode"] = str(body.get("question_frequency_mode") or "assisted").strip().lower()
+    if "voice_provider" in body:
+        provider = str(body.get("voice_provider") or "elevenlabs").strip().lower()
+        settings["voice_provider"] = provider if provider in {"elevenlabs", "none"} else "elevenlabs"
+    if "browser_tts_enabled" in body:
+        settings["browser_tts_enabled"] = bool(body.get("browser_tts_enabled"))
     if "pause_minutes" in body:
         minutes = max(0, int(body.get("pause_minutes") or 0))
         settings["pause_until"] = (datetime.utcnow().timestamp() + (minutes * 60)) if minutes else None

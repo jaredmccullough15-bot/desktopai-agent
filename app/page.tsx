@@ -288,6 +288,8 @@ type TeachOverlayPrompt = {
 
 type TeachOverlaySettings = {
   auto_speak_questions?: boolean;
+  voice_provider?: "elevenlabs" | "none";
+  browser_tts_enabled?: boolean;
   max_follow_ups_per_question?: number;
   min_seconds_between_questions?: number;
   do_not_ask_while_user_typing?: boolean;
@@ -316,6 +318,11 @@ type TeachOverlayQuestionResponse = {
   observation_skip_all_questions: boolean;
   steps_recorded?: number;
   conversation_state?: string;
+  current_stage?: string;
+  current_url?: string;
+  current_domain?: string;
+  last_trigger_event?: string;
+  next_question_reason?: string;
   settings?: TeachOverlaySettings;
 };
 
@@ -541,6 +548,7 @@ export default function Home() {
   const lastSpokenHashRef = useRef<string>("");
   const lastSpokenAtRef = useRef<number>(0);
   const lastTeachOverlaySpokenPromptRef = useRef<string>("");
+  const lastTeachOverlaySpeakInFlightRef = useRef<string>("");
   const lastVoiceEventRef = useRef<{ eventType: string; at: number }>({ eventType: "", at: 0 });
   const teachRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const teachingOverlayVoiceEnabled = Boolean(
@@ -554,7 +562,7 @@ export default function Home() {
       webkitSpeechRecognition?: SpeechRecognitionCtor;
     };
     setTeachingOverlaySpeechSupported(
-      Boolean(window.speechSynthesis) && Boolean(speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition),
+      Boolean(speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition),
     );
   }, []);
 
@@ -2062,6 +2070,8 @@ export default function Home() {
     setTeachingLaunchPid(null);
     await updateTeachOverlaySettings(draftId, {
       auto_speak_questions: true,
+      voice_provider: "elevenlabs",
+      browser_tts_enabled: false,
       question_frequency_mode: "assisted",
       max_follow_ups_per_question: 2,
       min_seconds_between_questions: 20,
@@ -2180,46 +2190,69 @@ export default function Home() {
     }
   };
 
-  const speakTeachOverlayQuestion = useCallback(async () => {
+  const speakTeachOverlayQuestion = useCallback(async (options?: { isAuto?: boolean }): Promise<boolean> => {
     const text = teachingOverlayQuestion?.question?.question?.trim();
+    const promptId = String(teachingOverlayQuestion?.question?.prompt_id || "");
     if (!text) {
-      return;
+      return false;
     }
+    const provider = String(teachingOverlayQuestion?.settings?.voice_provider || "elevenlabs").trim().toLowerCase();
 
-    // Prefer Bill voice when configured; otherwise use browser TTS fallback.
-    if (teachingOverlayVoiceEnabled) {
-      const played = await billVoice.speakText({
-        text,
-        emotion: commandVoiceEmotion,
-        style_profile: commandVoiceStyleProfile,
-        task_id: teachingOverlayTaskId ?? undefined,
-        context: {
-          source: "teach_overlay_question",
-          session_id: teachingSessionDraftId,
-          prompt_id: teachingOverlayQuestion?.question?.prompt_id,
-        },
+    logTeachOverlay("auto_speak_requested", {
+      provider,
+      question_id: promptId,
+      auto: Boolean(options?.isAuto),
+      skipped_duplicate: false,
+      browser_tts_disabled: true,
+    });
+
+    if (provider !== "elevenlabs") {
+      logTeachOverlay("auto_speak_requested", {
+        provider,
+        question_id: promptId,
+        auto: Boolean(options?.isAuto),
+        skipped_duplicate: true,
+        browser_tts_disabled: true,
       });
-      if (played) {
-        return;
-      }
+      return false;
     }
 
-    if (typeof window === "undefined" || !window.speechSynthesis) {
-      setTeachingOverlayError("Voice playback is not supported in this browser.");
-      return;
+    if (!teachingOverlayVoiceEnabled) {
+      setTeachingOverlayError("ElevenLabs voice is not configured for this session.");
+      return false;
     }
 
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    utterance.onstart = () => setTeachingOverlayError(null);
-    utterance.onerror = () => setTeachingOverlayError("Browser voice playback failed.");
-    window.speechSynthesis.speak(utterance);
+    const played = await billVoice.speakText({
+      text,
+      emotion: commandVoiceEmotion,
+      style_profile: commandVoiceStyleProfile,
+      task_id: teachingOverlayTaskId ?? undefined,
+      context: {
+        source: "teach_overlay_question",
+        session_id: teachingSessionDraftId,
+        prompt_id: promptId,
+        auto: Boolean(options?.isAuto),
+      },
+    });
+
+    logTeachOverlay("auto_speak_requested", {
+      provider: "elevenlabs",
+      question_id: promptId,
+      auto: Boolean(options?.isAuto),
+      skipped_duplicate: false,
+      browser_tts_disabled: true,
+      played,
+    });
+
+    if (!played) {
+      setTeachingOverlayError("ElevenLabs voice playback failed.");
+    }
+    return played;
   }, [
     billVoice,
     commandVoiceEmotion,
     commandVoiceStyleProfile,
+    logTeachOverlay,
     teachingOverlayQuestion,
     teachingOverlayTaskId,
     teachingOverlayVoiceEnabled,
@@ -2435,15 +2468,21 @@ export default function Home() {
   }, [loadTeachOverlayQuestion, teachingSessionDraftId]);
 
   useEffect(() => {
-    const prompt = teachingOverlayQuestion?.question;
-    if (!teachingOverlayOpen || !prompt || !teachingOverlayAutoSpeakQuestions) {
-      return;
-    }
-    const promptId = String(prompt.prompt_id || "");
-    if (!promptId) {
+    const promptId = String(teachingOverlayQuestion?.question?.prompt_id || "");
+    if (!teachingOverlayOpen || !promptId || !teachingOverlayAutoSpeakQuestions) {
       return;
     }
     if (lastTeachOverlaySpokenPromptRef.current === promptId) {
+      logTeachOverlay("auto_speak_requested", {
+        provider: String(teachingOverlayQuestion?.settings?.voice_provider || "elevenlabs"),
+        question_id: promptId,
+        auto: true,
+        skipped_duplicate: true,
+        browser_tts_disabled: true,
+      });
+      return;
+    }
+    if (lastTeachOverlaySpeakInFlightRef.current === promptId) {
       return;
     }
     const minSeconds = Number(teachingOverlayQuestion?.settings?.min_seconds_between_questions ?? 20);
@@ -2455,16 +2494,29 @@ export default function Home() {
     if (doNotAskWhileTyping && now - teachingOverlayLastTypingAt < 1800) {
       return;
     }
-    void speakTeachOverlayQuestion().then(() => {
-      lastTeachOverlaySpokenPromptRef.current = promptId;
-      lastSpokenAtRef.current = Date.now();
-    });
+    lastTeachOverlaySpeakInFlightRef.current = promptId;
+    void speakTeachOverlayQuestion({ isAuto: true })
+      .then((played) => {
+        if (played) {
+          lastTeachOverlaySpokenPromptRef.current = promptId;
+          lastSpokenAtRef.current = Date.now();
+        }
+      })
+      .finally(() => {
+        if (lastTeachOverlaySpeakInFlightRef.current === promptId) {
+          lastTeachOverlaySpeakInFlightRef.current = "";
+        }
+      });
   }, [
+    logTeachOverlay,
     speakTeachOverlayQuestion,
     teachingOverlayAutoSpeakQuestions,
     teachingOverlayLastTypingAt,
     teachingOverlayOpen,
-    teachingOverlayQuestion,
+    teachingOverlayQuestion?.question?.prompt_id,
+    teachingOverlayQuestion?.settings?.do_not_ask_while_user_typing,
+    teachingOverlayQuestion?.settings?.min_seconds_between_questions,
+    teachingOverlayQuestion?.settings?.voice_provider,
   ]);
 
   // Flash "step_captured" when the Playwright script appends a new step
@@ -2786,6 +2838,10 @@ export default function Home() {
                 <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">question loaded</span><div className="mt-1 text-cyan-100">{String(Boolean(teachingOverlayQuestion?.question))}</div></div>
                 <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">launch status</span><div className={`mt-1 font-bold ${teachingLaunchStatus === "running" ? "text-emerald-400" : teachingLaunchStatus === "error" ? "text-rose-400" : "text-amber-400"}`}>{teachingLaunchStatus ?? "idle"}</div></div>
                 <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current step</span><div className="mt-1 text-cyan-100">{String(teachingOverlayQuestion?.step_order ?? 0)}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current_stage</span><div className="mt-1 text-cyan-100">{teachingOverlayQuestion?.current_stage ?? "unknown"}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current_domain</span><div className="mt-1 text-cyan-100">{teachingOverlayQuestion?.current_domain ?? ""}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">last_trigger_event</span><div className="mt-1 text-cyan-100">{teachingOverlayQuestion?.last_trigger_event ?? "unknown"}</div></div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current_url</span><div className="mt-1 break-all text-cyan-100">{teachingOverlayQuestion?.current_url ?? ""}</div></div>
               </div>
 
               {teachingLaunchStatus === "error" ? (
@@ -2882,6 +2938,9 @@ export default function Home() {
                 ) : null}
                 {teachingOverlayQuestion?.question?.expected_answer_shape ? (
                   <p className="mt-1 text-xs text-slate-400">Expected: {teachingOverlayQuestion.question.expected_answer_shape}</p>
+                ) : null}
+                {teachingOverlayQuestion?.next_question_reason ? (
+                  <p className="mt-1 text-xs text-slate-500">Reason: {teachingOverlayQuestion.next_question_reason}</p>
                 ) : null}
 
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
