@@ -106,6 +106,29 @@ type BrainTaskRef = {
   status?: string;
 };
 
+type SpeechRecognitionResultLike = {
+  isFinal: boolean;
+  0: { transcript: string };
+};
+
+type SpeechRecognitionEventLike = {
+  resultIndex: number;
+  results: ArrayLike<SpeechRecognitionResultLike>;
+};
+
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
 type BrainCommandResponse = {
   recognized_intent?: string;
   command?: string;
@@ -412,6 +435,8 @@ export default function Home() {
   const [teachingOverlayTaskId, setTeachingOverlayTaskId] = useState<string | null>(null);
   const [teachingOverlayBusyKey, setTeachingOverlayBusyKey] = useState<string | null>(null);
   const [teachingOverlayError, setTeachingOverlayError] = useState<string | null>(null);
+  const [teachingOverlayDictating, setTeachingOverlayDictating] = useState(false);
+  const [teachingOverlaySpeechSupported, setTeachingOverlaySpeechSupported] = useState(false);
   const [teachingStartUrl, setTeachingStartUrl] = useState<string>("");
   const [teachingTargetWorkerUuid, setTeachingTargetWorkerUuid] = useState<string>("");
   const [teachingLaunchStatus, setTeachingLaunchStatus] = useState<null | "launching" | "running" | "error">(null);
@@ -477,9 +502,21 @@ export default function Home() {
   const lastSpokenHashRef = useRef<string>("");
   const lastSpokenAtRef = useRef<number>(0);
   const lastVoiceEventRef = useRef<{ eventType: string; at: number }>({ eventType: "", at: 0 });
+  const teachRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const teachingOverlayVoiceEnabled = Boolean(
     commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured,
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const speechWindow = window as Window & {
+      SpeechRecognition?: SpeechRecognitionCtor;
+      webkitSpeechRecognition?: SpeechRecognitionCtor;
+    };
+    setTeachingOverlaySpeechSupported(
+      Boolean(window.speechSynthesis) && Boolean(speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition),
+    );
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2039,6 +2076,112 @@ export default function Home() {
     }
   };
 
+  const speakTeachOverlayQuestion = useCallback(async () => {
+    const text = teachingOverlayQuestion?.question?.question?.trim();
+    if (!text) {
+      return;
+    }
+
+    // Prefer Bill voice when configured; otherwise use browser TTS fallback.
+    if (teachingOverlayVoiceEnabled) {
+      const played = await billVoice.speakText({
+        text,
+        emotion: commandVoiceEmotion,
+        style_profile: commandVoiceStyleProfile,
+        task_id: teachingOverlayTaskId ?? undefined,
+        context: {
+          source: "teach_overlay_question",
+          session_id: teachingSessionDraftId,
+          prompt_id: teachingOverlayQuestion?.question?.prompt_id,
+        },
+      });
+      if (played) {
+        return;
+      }
+    }
+
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      setTeachingOverlayError("Voice playback is not supported in this browser.");
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.onstart = () => setTeachingOverlayError(null);
+    utterance.onerror = () => setTeachingOverlayError("Browser voice playback failed.");
+    window.speechSynthesis.speak(utterance);
+  }, [
+    billVoice,
+    commandVoiceEmotion,
+    commandVoiceStyleProfile,
+    teachingOverlayQuestion,
+    teachingOverlayTaskId,
+    teachingOverlayVoiceEnabled,
+    teachingSessionDraftId,
+  ]);
+
+  const toggleTeachOverlayDictation = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (teachingOverlayDictating) {
+      teachRecognitionRef.current?.stop();
+      setTeachingOverlayDictating(false);
+      return;
+    }
+
+    const speechWindow = window as Window & {
+      SpeechRecognition?: SpeechRecognitionCtor;
+      webkitSpeechRecognition?: SpeechRecognitionCtor;
+    };
+    const RecognitionCtor = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+
+    if (!RecognitionCtor) {
+      setTeachingOverlayError("Speech-to-text is not supported in this browser.");
+      return;
+    }
+
+    const recognition = new RecognitionCtor();
+    teachRecognitionRef.current = recognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognition.onresult = (event) => {
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        transcript += event.results[i][0]?.transcript ?? "";
+      }
+      if (!transcript.trim()) {
+        return;
+      }
+      setTeachingOverlayAnswer((current) => {
+        const base = current.trimEnd();
+        return base ? `${base} ${transcript.trim()}` : transcript.trim();
+      });
+      setTeachingOverlayError(null);
+    };
+    recognition.onerror = (event) => {
+      setTeachingOverlayError(`Dictation failed${event?.error ? `: ${event.error}` : ""}`);
+      setTeachingOverlayDictating(false);
+    };
+    recognition.onend = () => {
+      setTeachingOverlayDictating(false);
+    };
+    recognition.start();
+    setTeachingOverlayDictating(true);
+    setTeachingOverlayError(null);
+  }, [teachingOverlayDictating]);
+
+  useEffect(() => {
+    if (!teachingSessionDraftId && teachRecognitionRef.current) {
+      teachRecognitionRef.current.stop();
+      setTeachingOverlayDictating(false);
+    }
+  }, [teachingSessionDraftId]);
+
   const submitTeachingAnswers = async () => {
     if (!teachingSessionDraftId || !teachingCurrentQuestion || learningBusyKey) {
       return;
@@ -2530,6 +2673,25 @@ export default function Home() {
                     className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-cyan-400/40 hover:text-cyan-100"
                   >
                     Refresh
+                  </button>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void speakTeachOverlayQuestion()}
+                    disabled={!teachingOverlayQuestion?.question}
+                    className="rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Speak Question
+                  </button>
+                  <button
+                    type="button"
+                    onClick={toggleTeachOverlayDictation}
+                    disabled={!teachingOverlaySpeechSupported}
+                    className="rounded-lg border border-indigo-400/40 bg-indigo-500/10 px-3 py-2 text-sm text-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {teachingOverlayDictating ? "Stop Dictation" : "Start Dictation"}
                   </button>
                 </div>
 
