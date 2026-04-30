@@ -13,13 +13,13 @@ import re
 import subprocess
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
@@ -1958,6 +1958,10 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
             "learned_validation_rules": [],
             "learned_decision_rules": [],
             "learned_action_rules": [],
+            "answered_questions": [],
+            "answered_intents": [],
+            "unknown_stage_context_keys": [],
+            "category_cooldowns": {},
             "unclear_items": [],
         },
         "teach_session_history": [],
@@ -1966,6 +1970,9 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         "teach_current_domain": "",
         "teach_last_trigger_event": "unknown",
         "teach_last_question_at": None,
+        "teach_wait_for_progress_until": None,
+        "teach_wait_for_progress_expires_at": None,
+        "teach_wait_progress_baseline": {},
     }
 
 
@@ -2019,6 +2026,8 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
             "browser_tts_enabled": False,
             "max_follow_ups_per_question": 2,
             "min_seconds_between_questions": 20,
+            "accepted_answer_cooldown_seconds": 45,
+            "wait_for_progress_timeout_seconds": 60,
             "do_not_ask_while_user_typing": True,
             "question_frequency_mode": "assisted",
             "pause_until": None,
@@ -2033,6 +2042,10 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
             "learned_validation_rules": [],
             "learned_decision_rules": [],
             "learned_action_rules": [],
+            "answered_questions": [],
+            "answered_intents": [],
+            "unknown_stage_context_keys": [],
+            "category_cooldowns": {},
             "unclear_items": [],
         }),
         "teach_session_history": [dict(x) for x in (item.get("teach_session_history") or []) if isinstance(x, dict)],
@@ -2041,6 +2054,9 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
         "teach_current_domain": str(item.get("teach_current_domain") or ""),
         "teach_last_trigger_event": str(item.get("teach_last_trigger_event") or "unknown"),
         "teach_last_question_at": item.get("teach_last_question_at"),
+        "teach_wait_for_progress_until": item.get("teach_wait_for_progress_until"),
+        "teach_wait_for_progress_expires_at": item.get("teach_wait_for_progress_expires_at"),
+        "teach_wait_progress_baseline": dict(item.get("teach_wait_progress_baseline") or {}),
     }
 
 
@@ -4156,6 +4172,8 @@ def _teach_settings_for_draft(draft: dict[str, Any]) -> dict[str, Any]:
     settings.setdefault("browser_tts_enabled", False)
     settings.setdefault("max_follow_ups_per_question", 2)
     settings.setdefault("min_seconds_between_questions", 20)
+    settings.setdefault("accepted_answer_cooldown_seconds", 45)
+    settings.setdefault("wait_for_progress_timeout_seconds", 60)
     settings.setdefault("do_not_ask_while_user_typing", True)
     settings.setdefault("question_frequency_mode", "assisted")
     settings.setdefault("pause_until", None)
@@ -4173,8 +4191,178 @@ def _teach_memory_for_draft(draft: dict[str, Any]) -> dict[str, Any]:
     memory.setdefault("learned_validation_rules", [])
     memory.setdefault("learned_decision_rules", [])
     memory.setdefault("learned_action_rules", [])
+    memory.setdefault("answered_questions", [])
+    memory.setdefault("answered_intents", [])
+    memory.setdefault("unknown_stage_context_keys", [])
+    memory.setdefault("category_cooldowns", {})
     memory.setdefault("unclear_items", [])
     return memory
+
+
+def _question_text_hash(text: str) -> str:
+    return hashlib.sha1(str(text or "").strip().lower().encode("utf-8")).hexdigest()[:16]
+
+
+def _prompt_question_id(prompt: dict[str, Any]) -> str:
+    explicit = str(prompt.get("question_id") or "").strip()
+    if explicit:
+        return explicit
+    return str(prompt.get("prompt_id") or "").strip()
+
+
+def _prompt_answered_key(prompt: dict[str, Any]) -> str:
+    explicit = str(prompt.get("answered_key") or "").strip()
+    if explicit:
+        return explicit
+    legacy = str(prompt.get("already_answered_key") or "").strip()
+    if legacy:
+        return legacy
+    category = str(prompt.get("category") or "unknown").strip().lower()
+    purpose = str(prompt.get("purpose") or "general").strip().lower().replace(" ", "_")
+    return f"{category}.{purpose}"
+
+
+def _unknown_stage_scope_key(system_context: dict[str, Any]) -> str:
+    ctx = dict(system_context or {})
+    host = str(ctx.get("host") or "").strip().lower()
+    raw_url = str(ctx.get("url") or "").strip()
+    path = ""
+    if raw_url:
+        try:
+            path = str(urlparse(raw_url).path or "").strip().lower()
+        except Exception:
+            path = ""
+    if not path:
+        path = str(ctx.get("path") or "").strip().lower()
+    return f"{host}|{path}"
+
+
+def _current_progress_snapshot(draft: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "url": str(draft.get("teach_current_url") or ""),
+        "domain": str(draft.get("teach_current_domain") or ""),
+        "stage": str(draft.get("teach_current_stage") or "unknown"),
+        "step_count": len([s for s in (draft.get("steps") or []) if isinstance(s, dict)]),
+    }
+
+
+def _consume_wait_for_progress_if_ready(updated: dict[str, Any], force: bool = False) -> tuple[bool, str]:
+    state = str(updated.get("teach_conversation_state") or "idle")
+    if state != "answer_accepted_waiting_for_progress":
+        return False, "wait_for_progress inactive"
+
+    if force:
+        updated["teach_conversation_state"] = "asking_question"
+        return False, "manual ask-next override"
+
+    now = datetime.utcnow()
+    cooldown_until = _parse_iso_timestamp(updated.get("teach_wait_for_progress_until"))
+    hard_expires = _parse_iso_timestamp(updated.get("teach_wait_for_progress_expires_at"))
+    baseline = dict(updated.get("teach_wait_progress_baseline") or {})
+    current = _current_progress_snapshot(updated)
+
+    progress_changed = False
+    if str(current.get("url") or "") and str(current.get("url") or "") != str(baseline.get("url") or ""):
+        progress_changed = True
+    if str(current.get("domain") or "") and str(current.get("domain") or "") != str(baseline.get("domain") or ""):
+        progress_changed = True
+    if str(current.get("stage") or "") and str(current.get("stage") or "") != str(baseline.get("stage") or ""):
+        progress_changed = True
+    if int(current.get("step_count") or 0) >= int(baseline.get("step_count") or 0) + 2:
+        progress_changed = True
+
+    if progress_changed:
+        updated["teach_conversation_state"] = "asking_question"
+        logger.info("teach wait_for_progress released: progress_detected current=%s baseline=%s", current, baseline)
+        return False, "Progress detected; ready for next question."
+
+    if hard_expires is not None and now >= hard_expires.replace(tzinfo=None):
+        updated["teach_conversation_state"] = "asking_question"
+        logger.info("teach wait_for_progress released: timeout_reached current=%s baseline=%s", current, baseline)
+        return False, "Wait-for-progress timeout expired; asking next question."
+
+    if cooldown_until is not None and now < cooldown_until.replace(tzinfo=None):
+        seconds_left = int((cooldown_until.replace(tzinfo=None) - now).total_seconds())
+        return True, f"Cooling down after accepted answer ({max(1, seconds_left)}s remaining)."
+
+    return True, "Waiting for meaningful progress before next question."
+
+
+def _answered_tracking(memory: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
+    answered_questions = [dict(x) for x in (memory.get("answered_questions") or []) if isinstance(x, dict)]
+    question_ids = {str(x.get("question_id") or "").strip() for x in answered_questions if str(x.get("question_id") or "").strip()}
+    text_hashes = {str(x.get("question_text_hash") or "").strip() for x in answered_questions if str(x.get("question_text_hash") or "").strip()}
+    answered_keys = {
+        str(x).strip()
+        for x in (memory.get("answered_intents") or [])
+        if str(x).strip()
+    }
+    return question_ids, text_hashes, answered_keys
+
+
+def _is_prompt_already_answered(prompt: dict[str, Any], memory: dict[str, Any]) -> tuple[bool, str]:
+    answered_ids, answered_hashes, answered_keys = _answered_tracking(memory)
+    qid = _prompt_question_id(prompt)
+    qhash = _question_text_hash(str(prompt.get("question") or ""))
+    akey = _prompt_answered_key(prompt)
+
+    if qid and qid in answered_ids:
+        return True, f"duplicate question_id suppressed ({qid})"
+    if qhash and qhash in answered_hashes:
+        return True, f"duplicate question_text_hash suppressed ({qhash})"
+    if akey and akey in answered_keys:
+        return True, f"duplicate answered_key suppressed ({akey})"
+    return False, "not answered yet"
+
+
+def _is_category_on_cooldown(memory: dict[str, Any], category: str) -> tuple[bool, str]:
+    cooldowns = dict(memory.get("category_cooldowns") or {})
+    until = _parse_iso_timestamp(cooldowns.get(str(category or "")))
+    if until is None:
+        return False, "no category cooldown"
+    now = datetime.utcnow()
+    if now >= until.replace(tzinfo=None):
+        return False, "category cooldown expired"
+    seconds_left = int((until.replace(tzinfo=None) - now).total_seconds())
+    return True, f"category cooldown active ({max(1, seconds_left)}s remaining)"
+
+
+def _suppress_already_answered_pending_prompts(updated: dict[str, Any]) -> int:
+    memory = _teach_memory_for_draft(updated)
+    unknown_scope_keys = {
+        str(x).strip()
+        for x in (memory.get("unknown_stage_context_keys") or [])
+        if str(x).strip()
+    }
+    suppressed = 0
+    steps = [dict(s) for s in (updated.get("steps") or []) if isinstance(s, dict)]
+    for step_idx, step in enumerate(steps):
+        prompts = [dict(item) for item in (step.get("observation_questions") or []) if isinstance(item, dict)]
+        changed = False
+        for prompt_idx, prompt in enumerate(prompts):
+            if str(prompt.get("status") or "pending") != "pending":
+                continue
+            already, reason = _is_prompt_already_answered(prompt, memory)
+            if not already and str(prompt.get("trigger_type") or "") == "unknown_stage":
+                scope_key = _unknown_stage_scope_key(dict(prompt.get("system_context") or {}))
+                if scope_key in unknown_scope_keys:
+                    already = True
+                    reason = f"unknown-stage prompt already asked on this page ({scope_key})"
+            if not already:
+                continue
+            prompt["status"] = "suppressed"
+            prompt["suppressed_at"] = datetime.utcnow().isoformat()
+            prompt["suppressed_reason"] = reason
+            prompts[prompt_idx] = prompt
+            changed = True
+            suppressed += 1
+            logger.info("teach prompt suppressed: prompt_id=%s reason=%s", str(prompt.get("prompt_id") or ""), reason)
+        if changed:
+            step["observation_questions"] = prompts
+            steps[step_idx] = step
+    if suppressed > 0:
+        updated["steps"] = steps
+    return suppressed
 
 
 def _category_for_trigger(trigger: str) -> str:
@@ -4326,8 +4514,10 @@ def _detect_workflow_stage(step: dict[str, Any], previous_step: dict[str, Any] |
 
 
 def _unknown_stage_prompt(draft_id: str, step_order: int, system_context: dict[str, Any], reason: str) -> dict[str, Any]:
+    scope_key = _unknown_stage_scope_key(system_context)
     return {
         "prompt_id": str(uuid4()),
+        "question_id": f"unknown_stage:{scope_key}",
         "draft_id": draft_id,
         "step_order": int(step_order or 0),
         "question": "What system are we in right now, and what are you trying to accomplish on this page?",
@@ -4339,6 +4529,7 @@ def _unknown_stage_prompt(draft_id: str, step_order: int, system_context: dict[s
         "allowed_stages": ["unknown"],
         "required_context": ["current_system_or_goal"],
         "priority": 100,
+        "answered_key": f"workflow_context:{scope_key}",
         "already_answered_key": "workflow_context",
         "conversation_state": "asking_question",
         "parent_question_id": None,
@@ -4627,6 +4818,7 @@ def _observation_prompt_for_trigger(
     question = _question_text_for_category(category)
     return {
         "prompt_id": str(uuid4()),
+        "question_id": f"{category}:{trigger}:{stage}",
         "draft_id": draft_id,
         "step_order": int(step_order or 0),
         "question": question,
@@ -4639,6 +4831,7 @@ def _observation_prompt_for_trigger(
         "trigger_event": str(policy.get("trigger_event") or trigger),
         "required_context": list(policy.get("required_context") or []),
         "priority": int(policy.get("priority") or 50),
+        "answered_key": str(policy.get("already_answered_key") or ""),
         "already_answered_key": str(policy.get("already_answered_key") or ""),
         "stage": stage,
         "next_question_reason": reason,
@@ -4695,14 +4888,26 @@ def _build_observation_prompts(updated: dict[str, Any], step: dict[str, Any], pr
         blocked_categories.add("classification")
 
     if stage == "unknown":
-        return [
-            _unknown_stage_prompt(
-                draft_id=str(updated.get("draft_id") or ""),
-                step_order=int(step.get("step_order") or 0),
-                system_context=dict(step.get("system_context") or {}),
-                reason="Stage is unknown, so asking broad context before downstream workflow questions.",
-            )
-        ]
+        unknown_scope = _unknown_stage_scope_key(dict(step.get("system_context") or {}))
+        known_scopes = {
+            str(x).strip()
+            for x in (memory.get("unknown_stage_context_keys") or [])
+            if str(x).strip()
+        }
+        if unknown_scope in known_scopes:
+            logger.info("teach unknown-stage prompt skipped: scope_already_answered=%s", unknown_scope)
+            return []
+        prompt = _unknown_stage_prompt(
+            draft_id=str(updated.get("draft_id") or ""),
+            step_order=int(step.get("step_order") or 0),
+            system_context=dict(step.get("system_context") or {}),
+            reason="Stage is unknown, so asking broad context before downstream workflow questions.",
+        )
+        already, reason = _is_prompt_already_answered(prompt, memory)
+        if already:
+            logger.info("teach unknown-stage prompt skipped: %s", reason)
+            return []
+        return [prompt]
 
     prompts: list[dict[str, Any]] = []
     for trigger in triggers:
@@ -4718,35 +4923,47 @@ def _build_observation_prompts(updated: dict[str, Any], step: dict[str, Any], pr
         if not _required_context_satisfied(policy, signals):
             continue
 
+        cooldown_active, cooldown_reason = _is_category_on_cooldown(memory, category)
+        if cooldown_active:
+            logger.info("teach prompt skipped: category=%s reason=%s", category, cooldown_reason)
+            continue
+
         reason = (
             f"stage={stage}; trigger={trigger}; context_ok=true; allowed={','.join(allowed_stages) or 'any'}"
         )
-        prompts.append(
-            _observation_prompt_for_trigger(
-                draft_id=str(updated.get("draft_id") or ""),
-                step_order=int(step.get("step_order") or 0),
-                trigger=trigger,
-                system_context=dict(step.get("system_context") or {}),
-                stage=stage,
-                policy=policy,
-                reason=reason,
-            )
+        candidate = _observation_prompt_for_trigger(
+            draft_id=str(updated.get("draft_id") or ""),
+            step_order=int(step.get("step_order") or 0),
+            trigger=trigger,
+            system_context=dict(step.get("system_context") or {}),
+            stage=stage,
+            policy=policy,
+            reason=reason,
         )
+        already, already_reason = _is_prompt_already_answered(candidate, memory)
+        if already:
+            logger.info("teach prompt skipped: category=%s reason=%s", category, already_reason)
+            continue
+        prompts.append(candidate)
 
     if not prompts:
         if stage in {"exception_handling", "action_verification"}:
             fallback_policy = _question_policy_for_category("exception_handling", "unknown_pattern")
-            prompts = [
-                _observation_prompt_for_trigger(
-                    draft_id=str(updated.get("draft_id") or ""),
-                    step_order=int(step.get("step_order") or 0),
-                    trigger="unknown_pattern",
-                    system_context=dict(step.get("system_context") or {}),
-                    stage=stage,
-                    policy=fallback_policy,
-                    reason=f"Fallback question for stage {stage}.",
-                )
-            ]
+            fallback = _observation_prompt_for_trigger(
+                draft_id=str(updated.get("draft_id") or ""),
+                step_order=int(step.get("step_order") or 0),
+                trigger="unknown_pattern",
+                system_context=dict(step.get("system_context") or {}),
+                stage=stage,
+                policy=fallback_policy,
+                reason=f"Fallback question for stage {stage}.",
+            )
+            already, already_reason = _is_prompt_already_answered(fallback, memory)
+            if not already:
+                prompts = [fallback]
+            else:
+                logger.info("teach fallback prompt skipped: reason=%s", already_reason)
+                prompts = []
         else:
             return []
 
@@ -4879,8 +5096,14 @@ def _add_follow_up_prompt(prompt: dict[str, Any], question_text: str) -> dict[st
 def _record_learned_answer(updated: dict[str, Any], prompt: dict[str, Any], answer_text: str, structured_output: dict[str, Any]) -> None:
     memory = _teach_memory_for_draft(updated)
     bucket = _memory_bucket_for_category(str(prompt.get("category") or ""))
+    answered_key = _prompt_answered_key(prompt)
+    question_id = _prompt_question_id(prompt)
+    question_hash = _question_text_hash(str(prompt.get("question") or ""))
     entry = {
-        "question_id": str(prompt.get("prompt_id") or ""),
+        "question_id": question_id or str(prompt.get("prompt_id") or ""),
+        "prompt_id": str(prompt.get("prompt_id") or ""),
+        "question_text_hash": question_hash,
+        "answered_key": answered_key,
         "question_category": str(prompt.get("category") or ""),
         "question_purpose": str(prompt.get("purpose") or ""),
         "answer": answer_text,
@@ -4890,6 +5113,48 @@ def _record_learned_answer(updated: dict[str, Any], prompt: dict[str, Any], answ
     bucket_items = [dict(x) for x in (memory.get(bucket) or []) if isinstance(x, dict)]
     bucket_items.append(entry)
     memory[bucket] = bucket_items[-20:]
+
+    answered_questions = [dict(x) for x in (memory.get("answered_questions") or []) if isinstance(x, dict)]
+    answered_questions.append(
+        {
+            "question_id": entry["question_id"],
+            "prompt_id": entry["prompt_id"],
+            "question_text_hash": entry["question_text_hash"],
+            "answered_key": entry["answered_key"],
+            "category": entry["question_category"],
+            "step_order": int(prompt.get("step_order") or 0),
+            "timestamp": entry["timestamp"],
+        }
+    )
+    memory["answered_questions"] = answered_questions[-300:]
+
+    intents = [str(x).strip() for x in (memory.get("answered_intents") or []) if str(x).strip()]
+    if answered_key and answered_key not in intents:
+        intents.append(answered_key)
+    memory["answered_intents"] = intents[-300:]
+
+    if str(prompt.get("trigger_type") or "") == "unknown_stage":
+        scope_key = _unknown_stage_scope_key(dict(prompt.get("system_context") or {}))
+        scope_keys = [str(x).strip() for x in (memory.get("unknown_stage_context_keys") or []) if str(x).strip()]
+        if scope_key and scope_key not in scope_keys:
+            scope_keys.append(scope_key)
+        memory["unknown_stage_context_keys"] = scope_keys[-300:]
+
+    category = str(prompt.get("category") or "").strip()
+    if category:
+        settings = _teach_settings_for_draft(updated)
+        cooldown_seconds = max(0, int(settings.get("accepted_answer_cooldown_seconds") or 0))
+        if cooldown_seconds > 0:
+            cooldowns = dict(memory.get("category_cooldowns") or {})
+            cooldowns[category] = (datetime.utcnow() + timedelta(seconds=cooldown_seconds)).isoformat()
+            memory["category_cooldowns"] = cooldowns
+
+    logger.info(
+        "teach answer accepted: question_id=%s answered_key=%s category=%s",
+        entry["question_id"],
+        answered_key,
+        entry["question_category"],
+    )
     updated["teach_session_memory"] = memory
 
 
@@ -4900,18 +5165,33 @@ def _append_history(updated: dict[str, Any], record: dict[str, Any]) -> None:
 
 
 @app.get("/api/teach-sessions/{session_id}/questions/next")
-def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
+def get_teach_session_next_question(session_id: str, force: bool = Query(default=False)) -> dict[str, Any]:
     draft_idx, draft = _find_workflow_draft(session_id)
     if draft is None or draft_idx is None:
         raise HTTPException(status_code=404, detail="Teach session not found")
 
-    settings = _teach_settings_for_draft(draft)
-    step, prompt = _next_pending_observation_prompt(draft)
-    steps_recorded = len([s for s in (draft.get("steps") or []) if isinstance(s, dict)])
+    updated = dict(draft)
+    settings = _teach_settings_for_draft(updated)
+    updated["teach_session_settings"] = settings
+
+    blocked, blocked_reason = _consume_wait_for_progress_if_ready(updated, force=bool(force))
+    suppressed = _suppress_already_answered_pending_prompts(updated)
+    if suppressed > 0:
+        logger.info("teach pending prompts suppressed before next-question: count=%s", suppressed)
+
+    step, prompt = _next_pending_observation_prompt(updated)
+    steps_recorded = len([s for s in (updated.get("steps") or []) if isinstance(s, dict)])
     next_question_reason = "No pending prompt yet."
 
+    if blocked:
+        next_question_reason = blocked_reason
+        prompt = None
+        step = None
+    elif blocked_reason != "wait_for_progress inactive":
+        next_question_reason = blocked_reason
+
     if step is not None and prompt is not None:
-        allowed, reason = _can_serve_new_question(draft, prompt, settings)
+        allowed, reason = _can_serve_new_question(updated, prompt, settings)
         next_question_reason = reason
         if not allowed:
             prompt = None
@@ -4920,7 +5200,6 @@ def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
             prompt_with_ask_state = dict(prompt)
             if not prompt_with_ask_state.get("asked_at"):
                 prompt_with_ask_state["asked_at"] = datetime.utcnow().isoformat()
-                updated = dict(draft)
                 updated["teach_last_question_at"] = prompt_with_ask_state["asked_at"]
                 updated["teach_conversation_state"] = "waiting_for_answer"
                 steps = [dict(s) for s in (updated.get("steps") or []) if isinstance(s, dict)]
@@ -4937,12 +5216,14 @@ def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
                     break
                 updated["steps"] = steps
                 updated["updated_at"] = datetime.utcnow().isoformat()
-                draft = updated
-                workflow_learning_drafts[draft_idx] = updated
-                _save_workflow_learning_drafts()
             prompt = prompt_with_ask_state
             if not prompt.get("next_question_reason"):
                 prompt["next_question_reason"] = reason
+
+    if updated != draft:
+        workflow_learning_drafts[draft_idx] = updated
+        _save_workflow_learning_drafts()
+    draft = updated
 
     current_stage = str(draft.get("teach_current_stage") or "unknown")
     current_url = str(draft.get("teach_current_url") or "")
@@ -5068,9 +5349,24 @@ def _apply_observation_answer(session_id: str, payload: dict[str, Any]) -> dict[
                     }
                 )
                 if bool(evaluation.get("accepted")):
-                    updated["teach_conversation_state"] = "answer_accepted"
+                    now = datetime.utcnow()
+                    cooldown_seconds = max(0, int(settings.get("accepted_answer_cooldown_seconds") or 0))
+                    wait_timeout_seconds = max(0, int(settings.get("wait_for_progress_timeout_seconds") or 0))
+                    updated["teach_conversation_state"] = "answer_accepted_waiting_for_progress"
+                    updated["teach_wait_for_progress_until"] = (now + timedelta(seconds=cooldown_seconds)).isoformat() if cooldown_seconds > 0 else None
+                    updated["teach_wait_for_progress_expires_at"] = (now + timedelta(seconds=wait_timeout_seconds)).isoformat() if wait_timeout_seconds > 0 else None
+                    updated["teach_wait_progress_baseline"] = _current_progress_snapshot(updated)
+                    updated["teach_last_accepted_question_id"] = _prompt_question_id(prompt)
+                    updated["teach_last_accepted_answered_key"] = _prompt_answered_key(prompt)
                     learned_rule_preview = dict(evaluation.get("extracted_rule_candidate") or {})
                     _record_learned_answer(updated, prompt, answer_text, dict(evaluation.get("extracted_rule_candidate") or {}))
+                    logger.info(
+                        "teach entering wait_for_progress: session_id=%s question_id=%s answered_key=%s baseline=%s",
+                        session_id,
+                        _prompt_question_id(prompt),
+                        _prompt_answered_key(prompt),
+                        updated.get("teach_wait_progress_baseline") or {},
+                    )
                 else:
                     updated["teach_conversation_state"] = "asking_clarification"
                     max_follow = int(prompt.get("max_follow_ups") or settings.get("max_follow_ups_per_question") or 2)

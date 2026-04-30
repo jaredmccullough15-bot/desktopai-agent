@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MobileNav, { type MobileView } from "./components/MobileNav";
 import MobileDashboard from "./components/MobileDashboard";
 import AlertsPanel, { type AlertItem, type AlertKind, type HelpTask } from "./components/AlertsPanel";
@@ -554,6 +554,23 @@ export default function Home() {
   const teachingOverlayVoiceEnabled = Boolean(
     commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured,
   );
+  const teachingOverlayVoiceIssue = useMemo(() => {
+    if (!commandVoiceEnabled) {
+      return "Command Center voice is turned off.";
+    }
+    if (!billVoice.config) {
+      return billVoice.lastError
+        ? `Voice config check failed: ${billVoice.lastError}`
+        : "Voice config is still loading.";
+    }
+    if (!billVoice.config.voice_enabled) {
+      return "Backend voice is disabled (BILL_VOICE_ENABLED is false).";
+    }
+    if (!billVoice.config.configured) {
+      return billVoice.config.reason ?? "ElevenLabs API key/voice ID is missing.";
+    }
+    return null;
+  }, [billVoice.config, billVoice.lastError, commandVoiceEnabled]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1975,7 +1992,7 @@ export default function Home() {
   };
 
   const loadTeachOverlayQuestion = useCallback(
-    async (draftId: string, options?: { silent?: boolean }) => {
+    async (draftId: string, options?: { silent?: boolean; force?: boolean }) => {
       if (!draftId) {
         return;
       }
@@ -1988,7 +2005,8 @@ export default function Home() {
           throw new Error("NEXT_PUBLIC_API_BASE is not set");
         }
         logTeachOverlay("next question requested", { session_id: draftId });
-        const response = await fetch(`${apiBase}/api/teach-sessions/${draftId}/questions/next`);
+        const forceParam = options?.force ? "?force=true" : "";
+        const response = await fetch(`${apiBase}/api/teach-sessions/${draftId}/questions/next${forceParam}`);
         const body = (await response.json()) as TeachOverlayQuestionResponse | { detail?: string };
         if (!response.ok) {
           throw new Error((body as { detail?: string }).detail ?? `Overlay question fetch failed (${response.status})`);
@@ -2218,7 +2236,7 @@ export default function Home() {
     }
 
     if (!teachingOverlayVoiceEnabled) {
-      setTeachingOverlayError("ElevenLabs voice is not configured for this session.");
+      setTeachingOverlayError(`ElevenLabs voice is not configured for this session. ${teachingOverlayVoiceIssue ?? ""}`.trim());
       return false;
     }
 
@@ -2255,6 +2273,7 @@ export default function Home() {
     logTeachOverlay,
     teachingOverlayQuestion,
     teachingOverlayTaskId,
+    teachingOverlayVoiceIssue,
     teachingOverlayVoiceEnabled,
     teachingSessionDraftId,
   ]);
@@ -2868,7 +2887,7 @@ export default function Home() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => teachingSessionDraftId && void loadTeachOverlayQuestion(teachingSessionDraftId)}
+                    onClick={() => teachingSessionDraftId && void loadTeachOverlayQuestion(teachingSessionDraftId, { force: true })}
                     className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-cyan-400/40 hover:text-cyan-100"
                   >
                     Refresh
@@ -2959,6 +2978,12 @@ export default function Home() {
                     <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-200">Bill needs clarification</span>
                   ) : null}
                 </div>
+
+                {teachingOverlayConversationState === "answer_accepted_waiting_for_progress" ? (
+                  <p className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                    Got it. I'll wait while you continue.
+                  </p>
+                ) : null}
 
                 {teachingOverlayMissingInfo.length > 0 ? (
                   <p className="mt-2 text-xs text-amber-200">Missing: {teachingOverlayMissingInfo.join("; ")}</p>
