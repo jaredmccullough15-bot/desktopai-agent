@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import importlib.util
 import logging
 import os
@@ -22,6 +22,7 @@ from uuid import uuid4
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response
+from pydantic import BaseModel
 
 from error_explainer import (
     classify_error,
@@ -87,6 +88,17 @@ from schemas import (
     AppendStepRequest,
     TeachSessionStartRequest,
 )
+from conversational.schemas import ConversationRequest, ConversationResponse
+from conversational.conversation_service import conversation_service
+from conversational.execution_tracker import execution_tracker
+from conversational.playbook_draft_store import playbook_draft_store
+from conversational.playbook_generation_service import playbook_generation_service
+from conversational.playbook_review_service import playbook_review_service
+from conversational.teaching_conversation_models import TeachingChatRequest, TeachingChatResponse
+from conversational.teaching_conversation_service import teaching_conversation_service
+from conversational.task_understanding_service import task_understanding_service
+from conversational.task_understanding_store import task_understanding_store
+from task_service import configure_task_runtime, create_task_record
 
 # ---------------------------------------------------------------------------
 # Phase 1: DB mirror imports (non-breaking)
@@ -653,8 +665,8 @@ PROCEDURE_TEMPLATES: dict[str, dict] = {
             "strict_selectors_only": True,
             "mode": "interactive_visible",
             "attach_to_existing": True,
-            "require_existing_page": False,
-            "allow_launch_fallback": True,
+            "require_existing_page": True,
+            "allow_launch_fallback": False,
             "cdp_url": "http://127.0.0.1:9222",
             "start_url": "https://www.healthsherpa.com/agents/jared-chapdelaine-mccullough/clients?_agent_id=jared-chapdelaine-mccullough&ffm_applications[agent_archived]=not_archived&ffm_applications[plan_year][]=2026&ffm_applications[search]=true&term=&renewal=all&desc[]=created_at&agent_id=jared-chapdelaine-mccullough&page=1&per_page=10&exchange=onEx&include_shared_applications=false&include_all_applications=false",
             "view_button_selector": "#applications .MuiDataGrid-row button:has-text('View')||#applications .MuiDataGrid-row a:has-text('View')||#applications .MuiDataGrid-row [role='button']:has-text('View')||#applications [role='row'] button:has-text('View')||#applications [role='row'] a:has-text('View')||#applications [role='row'] [role='button']:has-text('View')||#applications tbody tr button:has-text('View')||#applications tbody tr a:has-text('View')||#applications tbody tr [role='button']:has-text('View')",
@@ -779,24 +791,15 @@ def _append_task_log(task: dict, message: str, level: str = "info") -> None:
 
 
 def _create_task_record(normalized_payload: dict) -> TaskCreateResponse:
-    task_id = str(uuid4())
-    task = {
-        "id": task_id,
-        "payload": normalized_payload,
-        "status": "queued",
-        "assigned_machine_uuid": None,
-        "result_json": None,
-        "error": None,
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
-        "completed_at": None,
-        "logs": [],
-    }
-    tasks.append(task)
-    _append_task_log(task, f"Task created with type={normalized_payload.get('task_type', 'unknown')}")
-    save_task_db(task)
-    logger.info("Task created: id=%s task_type=%s", task_id, normalized_payload.get("task_type", "unknown"))
-    return TaskCreateResponse(id=task_id, status="queued")
+    return create_task_record(normalized_payload)
+
+
+configure_task_runtime(
+    tasks_ref=tasks,
+    append_task_log=_append_task_log,
+    save_task_db=save_task_db,
+    logger=logger,
+)
 
 
 @app.get("/health")
@@ -807,6 +810,183 @@ def health() -> dict[str, str]:
 @app.get("/version")
 def version() -> dict[str, str]:
     return {"version": "0.1.0"}
+
+
+@app.post("/api/conversation/message", response_model=ConversationResponse)
+def conversation_message(request: ConversationRequest) -> ConversationResponse:
+    return conversation_service.handle_message(request)
+
+
+class TeachingStartRequest(BaseModel):
+    tenant_id: str
+    workflow_id: str
+    task_name: str
+
+
+class TeachingNoteRequest(BaseModel):
+    tenant_id: str
+    workflow_id: str
+    note: str
+
+
+class TeachingAnswerRequest(BaseModel):
+    tenant_id: str
+    workflow_id: str
+    question_id: str
+    answer: str
+
+
+class PlaybookDraftGenerateRequest(BaseModel):
+    tenant_id: str
+    workflow_id: str
+
+
+class PlaybookDraftStatusRequest(BaseModel):
+    tenant_id: str
+    workflow_id: str
+    draft_id: str
+
+
+class PlaybookDraftReviewRequest(BaseModel):
+    tenant_id: str
+    workflow_id: str
+    draft_id: str | None = None
+
+
+@app.post("/api/teaching/start")
+def teaching_start(request: TeachingStartRequest) -> dict[str, Any]:
+    return task_understanding_service.start_teaching(
+        tenant_id=request.tenant_id,
+        workflow_id=request.workflow_id,
+        task_name=request.task_name,
+    )
+
+
+@app.post("/api/teaching/note")
+def teaching_note(request: TeachingNoteRequest) -> dict[str, Any]:
+    return task_understanding_service.record_teaching_note(
+        tenant_id=request.tenant_id,
+        workflow_id=request.workflow_id,
+        note=request.note,
+    )
+
+
+@app.post("/api/teaching/answer")
+def teaching_answer(request: TeachingAnswerRequest) -> dict[str, Any]:
+    return task_understanding_service.answer_question(
+        tenant_id=request.tenant_id,
+        workflow_id=request.workflow_id,
+        question_id=request.question_id,
+        answer=request.answer,
+    )
+
+
+@app.post("/api/teaching/chat", response_model=TeachingChatResponse)
+def teaching_chat(request: TeachingChatRequest) -> TeachingChatResponse:
+    return teaching_conversation_service.chat(request)
+
+
+@app.post("/api/playbooks/draft/generate")
+def playbook_draft_generate(request: PlaybookDraftGenerateRequest) -> dict[str, Any]:
+    return playbook_generation_service.generate_draft(
+        tenant_id=request.tenant_id,
+        workflow_id=request.workflow_id,
+    )
+
+
+@app.get("/api/playbooks/draft/latest")
+def playbook_draft_latest(
+    tenant_id: str = Query(default="default"),
+    workflow_id: str = Query(...),
+) -> dict[str, Any]:
+    draft = playbook_draft_store.latest(tenant_id=tenant_id, workflow_id=workflow_id)
+    return {
+        "draft": draft.model_dump(mode="json") if draft else None,
+    }
+
+
+@app.get("/api/playbooks/draft/list")
+def playbook_draft_list(tenant_id: str = Query(default="default")) -> dict[str, Any]:
+    drafts = [draft.model_dump(mode="json") for draft in playbook_draft_store.list_by_tenant(tenant_id=tenant_id)]
+    return {
+        "tenant_id": tenant_id,
+        "count": len(drafts),
+        "drafts": drafts,
+    }
+
+
+@app.post("/api/playbooks/draft/approve")
+def playbook_draft_approve(request: PlaybookDraftStatusRequest) -> dict[str, Any]:
+    return playbook_generation_service.approve_draft(
+        tenant_id=request.tenant_id,
+        workflow_id=request.workflow_id,
+        draft_id=request.draft_id,
+    )
+
+
+@app.post("/api/playbooks/draft/reject")
+def playbook_draft_reject(request: PlaybookDraftStatusRequest) -> dict[str, Any]:
+    return playbook_generation_service.reject_draft(
+        tenant_id=request.tenant_id,
+        workflow_id=request.workflow_id,
+        draft_id=request.draft_id,
+    )
+
+
+@app.post("/api/playbooks/draft/review")
+def playbook_draft_review(request: PlaybookDraftReviewRequest) -> dict[str, Any]:
+    return playbook_review_service.review_draft(
+        tenant_id=request.tenant_id,
+        workflow_id=request.workflow_id,
+        draft_id=request.draft_id,
+    )
+
+
+@app.get("/api/playbooks/draft/review/latest")
+def playbook_draft_review_latest(
+    tenant_id: str = Query(default="default"),
+    workflow_id: str = Query(...),
+) -> dict[str, Any]:
+    return playbook_review_service.review_draft(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        draft_id=None,
+    )
+
+
+@app.get("/api/teaching/task")
+def teaching_task(
+    tenant_id: str = Query(default="default"),
+    workflow_id: str = Query(...),
+) -> dict[str, Any]:
+    task = task_understanding_store.get(tenant_id=tenant_id, workflow_id=workflow_id)
+    return {
+        "task": task.model_dump(mode="json") if task else None,
+    }
+
+
+@app.get("/api/teaching/tasks")
+def teaching_tasks(tenant_id: str = Query(default="default")) -> dict[str, Any]:
+    tasks = [task.model_dump(mode="json") for task in task_understanding_store.list_by_tenant(tenant_id=tenant_id)]
+    return {
+        "tenant_id": tenant_id,
+        "count": len(tasks),
+        "tasks": tasks,
+    }
+
+
+@app.get("/api/conversation/executions/recent")
+def conversation_recent_executions(
+    tenant_id: str = Query(default="default"),
+    limit: int = Query(default=10, ge=1, le=100),
+) -> dict[str, Any]:
+    records = [record.to_dict() for record in execution_tracker.get_recent(tenant_id=tenant_id, limit=limit)]
+    return {
+        "tenant_id": tenant_id,
+        "limit": limit,
+        "count": len(records),
+        "records": records,
+    }
 
 
 @app.post("/worker/register", response_model=WorkerRegisterResponse)
@@ -1170,15 +1350,22 @@ def run_procedure(procedure_name: str, payload: ProcedureRunRequest) -> TaskCrea
 
     try:
         return run_tenant_workflow(tenant_id=tenant_id, workflow_id=procedure_name, input_data=input_data)
-    except NameError as exc:
-        raise HTTPException(status_code=503, detail="Tenant runtime is unavailable") from exc
+    except NameError:
+        pass  # Tenant runtime not yet available -- fall through to procedure template
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Template-driven workflow not found for tenant={tenant_id} workflow={procedure_name}",
-        )
+        pass  # No tenant template for this procedure -- fall through to procedure template
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    # Fallback: create task directly from PROCEDURE_TEMPLATES (no tenant template required)
+    if procedure_name not in PROCEDURE_TEMPLATES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Procedure not found: {procedure_name}",
+        )
+    template_def = PROCEDURE_TEMPLATES[procedure_name]
+    task_payload = {**(template_def.get("payload") or {}), **input_data}
+    return _create_task_record(task_payload)
 
 
 def _worker_is_idle(machine: MachineRecord) -> bool:
