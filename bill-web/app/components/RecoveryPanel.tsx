@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import WebResilienceSnapshotCard, { type PageStateSnapshot } from "./WebResilienceSnapshotCard";
 
 // ΓöÇΓöÇ Types ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
@@ -41,6 +42,12 @@ export type RecoveryContext = {
   // control
   recovery_attempt_count?: number | null;
   can_submit_new_action?: boolean | null;
+  // web resilience phase 2 snapshot
+  page_state_snapshot?: PageStateSnapshot | null;
+  detected_modals?: string[] | null;
+  detected_overlays?: string[] | null;
+  failed_action?: string | null;
+  attempted_fallbacks?: string[] | null;
   // sub-objects
   actions?: RecoveryAction[];
   audit_trail?: RecoveryAuditEntry[];
@@ -119,6 +126,12 @@ type RecoveryContextApiResponse = {
   candidate_playbook_created?: boolean;
   learned_from_human_recovery?: boolean;
   audit_trail?: Array<Record<string, unknown>>;
+  // web resilience phase 2
+  page_state_snapshot?: Record<string, unknown> | null;
+  detected_modals?: string[] | null;
+  detected_overlays?: string[] | null;
+  failed_action?: string | null;
+  attempted_fallbacks?: string[] | null;
 };
 
 // ΓöÇΓöÇ Constants ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
@@ -285,6 +298,11 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
         is_auto_recovery: Boolean(data.is_auto_recovery),
         recovery_attempt_count: data.recovery_attempt_count ?? null,
         can_submit_new_action: data.can_submit_new_action ?? null,
+        page_state_snapshot: (data.page_state_snapshot as PageStateSnapshot) ?? null,
+        detected_modals: data.detected_modals ?? null,
+        detected_overlays: data.detected_overlays ?? null,
+        failed_action: data.failed_action ?? null,
+        attempted_fallbacks: data.attempted_fallbacks ?? null,
         actions: actionsRaw.map((item) => ({
           action_id: String(item.action_id ?? "") || undefined,
           action: String(item.action ?? "") || undefined,
@@ -673,6 +691,18 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
                   </p>
                   <p className="text-xs leading-relaxed text-rose-300">{recoveryContext.last_error}</p>
                 </div>
+              )}
+
+              {/* Web Resilience Snapshot Card */}
+              {(recoveryContext || loadingDetail) && (
+                <WebResilienceSnapshotCard
+                  loading={loadingDetail && !recoveryContext}
+                  pageStateSnapshot={recoveryContext?.page_state_snapshot}
+                  detectedModals={recoveryContext?.detected_modals}
+                  detectedOverlays={recoveryContext?.detected_overlays}
+                  failedAction={recoveryContext?.failed_action}
+                  attemptedFallbacks={recoveryContext?.attempted_fallbacks}
+                />
               )}
 
               {/* Checkpoint signals */}

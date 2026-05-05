@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 import importlib.util
 import logging
 import os
@@ -13,16 +13,15 @@ import re
 import subprocess
 import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response
-from pydantic import BaseModel
 
 from error_explainer import (
     classify_error,
@@ -87,18 +86,12 @@ from schemas import (
     TeachingSessionAnswerRequest,
     AppendStepRequest,
     TeachSessionStartRequest,
+    ObservationQuestionAnswerRequest,
+    ObservationQuestionAnswerResponse,
+    NavigationMapping,
+    NavigationRule,
+    NavigationRuleMapping,
 )
-from conversational.schemas import ConversationRequest, ConversationResponse
-from conversational.conversation_service import conversation_service
-from conversational.execution_tracker import execution_tracker
-from conversational.playbook_draft_store import playbook_draft_store
-from conversational.playbook_generation_service import playbook_generation_service
-from conversational.playbook_review_service import playbook_review_service
-from conversational.teaching_conversation_models import TeachingChatRequest, TeachingChatResponse
-from conversational.teaching_conversation_service import teaching_conversation_service
-from conversational.task_understanding_service import task_understanding_service
-from conversational.task_understanding_store import task_understanding_store
-from task_service import configure_task_runtime, create_task_record
 
 # ---------------------------------------------------------------------------
 # Phase 1: DB mirror imports (non-breaking)
@@ -296,6 +289,7 @@ INTERACTIONS_PATH = Path(os.getenv("BILL_CORE_INTERACTIONS") or (Path(__file__).
 CONVERSATION_PREFS_PATH = Path(os.getenv("BILL_CORE_CONVERSATION_PREFS") or (Path(__file__).resolve().parent / "conversation_preferences.json"))
 WORKFLOW_DRAFTS_PATH = Path(os.getenv("BILL_CORE_WORKFLOW_DRAFTS") or (Path(__file__).resolve().parent / "workflow_learning_drafts.json"))
 LEARNED_PROCEDURES_PATH = Path(os.getenv("BILL_CORE_LEARNED_PROCEDURES") or (Path(__file__).resolve().parent / "learned_procedure_templates.json"))
+NAVIGATION_RULES_PATH = Path(os.getenv("BILL_CORE_NAVIGATION_RULES") or (Path(__file__).resolve().parent / "navigation_rules_by_tenant.json"))
 
 DEFAULT_WORKFLOW_RECORDS: list[dict[str, Any]] = [
     {
@@ -343,6 +337,7 @@ def log_server_binding() -> None:
     logger.info("Loaded workflow learning drafts: %s", len(workflow_learning_drafts))
     logger.info("Loaded learned procedure templates: %s", len(learned_procedure_templates))
     logger.info("Loaded worker releases: %s (packages dir: %s)", len(worker_releases), WORKER_PACKAGES_DIR)
+    logger.info("Loaded navigation rules for %s tenant(s)", len(navigation_rules_by_tenant))
     active = _get_active_release()
     if active:
         logger.info("Active worker release: v%s id=%s channel=%s", active["version"], active["id"], active["channel"])
@@ -779,6 +774,41 @@ conversation_preferences: list[dict[str, Any]] = _load_json_list(CONVERSATION_PR
 workflow_learning_drafts: list[dict[str, Any]] = _load_json_list(WORKFLOW_DRAFTS_PATH, "workflow learning drafts")
 
 
+def _load_navigation_rules_by_tenant() -> dict[str, list[dict[str, Any]]]:
+    """Load navigation rules indexed by tenant_id."""
+    try:
+        if not NAVIGATION_RULES_PATH.exists():
+            logger.info("Navigation rules file does not exist: %s", NAVIGATION_RULES_PATH)
+            return {}
+        with open(NAVIGATION_RULES_PATH, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                logger.info("Navigation rules file is empty: %s", NAVIGATION_RULES_PATH)
+                return {}
+            data = json.loads(content)
+            if isinstance(data, dict):
+                return data
+            logger.warning("Navigation rules file is not a dict; treating as empty")
+            return {}
+    except Exception as error:
+        logger.warning("Failed to load navigation rules from %s: %s", NAVIGATION_RULES_PATH, error)
+        return {}
+
+
+def _save_navigation_rules_by_tenant() -> None:
+    """Save navigation rules indexed by tenant_id."""
+    try:
+        NAVIGATION_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(NAVIGATION_RULES_PATH, "w", encoding="utf-8") as f:
+            json.dump(navigation_rules_by_tenant, f, indent=2)
+        logger.debug("Saved navigation rules to %s", NAVIGATION_RULES_PATH)
+    except Exception as error:
+        logger.error("Failed to save navigation rules to %s: %s", NAVIGATION_RULES_PATH, error)
+
+
+navigation_rules_by_tenant: dict[str, list[dict[str, Any]]] = _load_navigation_rules_by_tenant()
+
+
 def _append_task_log(task: dict, message: str, level: str = "info") -> None:
     logs = task.setdefault("logs", [])
     logs.append(
@@ -791,15 +821,28 @@ def _append_task_log(task: dict, message: str, level: str = "info") -> None:
 
 
 def _create_task_record(normalized_payload: dict) -> TaskCreateResponse:
-    return create_task_record(normalized_payload)
+    normalized_payload = _ensure_smart_sherpa_batch_mode(normalized_payload)
+    if _is_smart_sherpa_payload(normalized_payload):
+        _log_smart_sherpa_final_payload(normalized_payload)
 
-
-configure_task_runtime(
-    tasks_ref=tasks,
-    append_task_log=_append_task_log,
-    save_task_db=save_task_db,
-    logger=logger,
-)
+    task_id = str(uuid4())
+    task = {
+        "id": task_id,
+        "payload": normalized_payload,
+        "status": "queued",
+        "assigned_machine_uuid": None,
+        "result_json": None,
+        "error": None,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+        "completed_at": None,
+        "logs": [],
+    }
+    tasks.append(task)
+    _append_task_log(task, f"Task created with type={normalized_payload.get('task_type', 'unknown')}")
+    save_task_db(task)
+    logger.info("Task created: id=%s task_type=%s", task_id, normalized_payload.get("task_type", "unknown"))
+    return TaskCreateResponse(id=task_id, status="queued")
 
 
 @app.get("/health")
@@ -810,183 +853,6 @@ def health() -> dict[str, str]:
 @app.get("/version")
 def version() -> dict[str, str]:
     return {"version": "0.1.0"}
-
-
-@app.post("/api/conversation/message", response_model=ConversationResponse)
-def conversation_message(request: ConversationRequest) -> ConversationResponse:
-    return conversation_service.handle_message(request)
-
-
-class TeachingStartRequest(BaseModel):
-    tenant_id: str
-    workflow_id: str
-    task_name: str
-
-
-class TeachingNoteRequest(BaseModel):
-    tenant_id: str
-    workflow_id: str
-    note: str
-
-
-class TeachingAnswerRequest(BaseModel):
-    tenant_id: str
-    workflow_id: str
-    question_id: str
-    answer: str
-
-
-class PlaybookDraftGenerateRequest(BaseModel):
-    tenant_id: str
-    workflow_id: str
-
-
-class PlaybookDraftStatusRequest(BaseModel):
-    tenant_id: str
-    workflow_id: str
-    draft_id: str
-
-
-class PlaybookDraftReviewRequest(BaseModel):
-    tenant_id: str
-    workflow_id: str
-    draft_id: str | None = None
-
-
-@app.post("/api/teaching/start")
-def teaching_start(request: TeachingStartRequest) -> dict[str, Any]:
-    return task_understanding_service.start_teaching(
-        tenant_id=request.tenant_id,
-        workflow_id=request.workflow_id,
-        task_name=request.task_name,
-    )
-
-
-@app.post("/api/teaching/note")
-def teaching_note(request: TeachingNoteRequest) -> dict[str, Any]:
-    return task_understanding_service.record_teaching_note(
-        tenant_id=request.tenant_id,
-        workflow_id=request.workflow_id,
-        note=request.note,
-    )
-
-
-@app.post("/api/teaching/answer")
-def teaching_answer(request: TeachingAnswerRequest) -> dict[str, Any]:
-    return task_understanding_service.answer_question(
-        tenant_id=request.tenant_id,
-        workflow_id=request.workflow_id,
-        question_id=request.question_id,
-        answer=request.answer,
-    )
-
-
-@app.post("/api/teaching/chat", response_model=TeachingChatResponse)
-def teaching_chat(request: TeachingChatRequest) -> TeachingChatResponse:
-    return teaching_conversation_service.chat(request)
-
-
-@app.post("/api/playbooks/draft/generate")
-def playbook_draft_generate(request: PlaybookDraftGenerateRequest) -> dict[str, Any]:
-    return playbook_generation_service.generate_draft(
-        tenant_id=request.tenant_id,
-        workflow_id=request.workflow_id,
-    )
-
-
-@app.get("/api/playbooks/draft/latest")
-def playbook_draft_latest(
-    tenant_id: str = Query(default="default"),
-    workflow_id: str = Query(...),
-) -> dict[str, Any]:
-    draft = playbook_draft_store.latest(tenant_id=tenant_id, workflow_id=workflow_id)
-    return {
-        "draft": draft.model_dump(mode="json") if draft else None,
-    }
-
-
-@app.get("/api/playbooks/draft/list")
-def playbook_draft_list(tenant_id: str = Query(default="default")) -> dict[str, Any]:
-    drafts = [draft.model_dump(mode="json") for draft in playbook_draft_store.list_by_tenant(tenant_id=tenant_id)]
-    return {
-        "tenant_id": tenant_id,
-        "count": len(drafts),
-        "drafts": drafts,
-    }
-
-
-@app.post("/api/playbooks/draft/approve")
-def playbook_draft_approve(request: PlaybookDraftStatusRequest) -> dict[str, Any]:
-    return playbook_generation_service.approve_draft(
-        tenant_id=request.tenant_id,
-        workflow_id=request.workflow_id,
-        draft_id=request.draft_id,
-    )
-
-
-@app.post("/api/playbooks/draft/reject")
-def playbook_draft_reject(request: PlaybookDraftStatusRequest) -> dict[str, Any]:
-    return playbook_generation_service.reject_draft(
-        tenant_id=request.tenant_id,
-        workflow_id=request.workflow_id,
-        draft_id=request.draft_id,
-    )
-
-
-@app.post("/api/playbooks/draft/review")
-def playbook_draft_review(request: PlaybookDraftReviewRequest) -> dict[str, Any]:
-    return playbook_review_service.review_draft(
-        tenant_id=request.tenant_id,
-        workflow_id=request.workflow_id,
-        draft_id=request.draft_id,
-    )
-
-
-@app.get("/api/playbooks/draft/review/latest")
-def playbook_draft_review_latest(
-    tenant_id: str = Query(default="default"),
-    workflow_id: str = Query(...),
-) -> dict[str, Any]:
-    return playbook_review_service.review_draft(
-        tenant_id=tenant_id,
-        workflow_id=workflow_id,
-        draft_id=None,
-    )
-
-
-@app.get("/api/teaching/task")
-def teaching_task(
-    tenant_id: str = Query(default="default"),
-    workflow_id: str = Query(...),
-) -> dict[str, Any]:
-    task = task_understanding_store.get(tenant_id=tenant_id, workflow_id=workflow_id)
-    return {
-        "task": task.model_dump(mode="json") if task else None,
-    }
-
-
-@app.get("/api/teaching/tasks")
-def teaching_tasks(tenant_id: str = Query(default="default")) -> dict[str, Any]:
-    tasks = [task.model_dump(mode="json") for task in task_understanding_store.list_by_tenant(tenant_id=tenant_id)]
-    return {
-        "tenant_id": tenant_id,
-        "count": len(tasks),
-        "tasks": tasks,
-    }
-
-
-@app.get("/api/conversation/executions/recent")
-def conversation_recent_executions(
-    tenant_id: str = Query(default="default"),
-    limit: int = Query(default=10, ge=1, le=100),
-) -> dict[str, Any]:
-    records = [record.to_dict() for record in execution_tracker.get_recent(tenant_id=tenant_id, limit=limit)]
-    return {
-        "tenant_id": tenant_id,
-        "limit": limit,
-        "count": len(records),
-        "records": records,
-    }
 
 
 @app.post("/worker/register", response_model=WorkerRegisterResponse)
@@ -1308,6 +1174,109 @@ def deploy_specific_release(release_id: str, payload: WorkerDeployRequest) -> Wo
     )
 
 
+_IDENTITY_FIELDS = ("client_name", "external_contact_id", "policy_number", "marketplace_id")
+
+
+def _normalize_run_mode(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _record_has_identity(record: dict[str, Any] | None) -> bool:
+    record = record or {}
+    return any(str(record.get(field) or "").strip() for field in _IDENTITY_FIELDS)
+
+
+def _payload_has_identity(payload: dict[str, Any] | None) -> bool:
+    payload = payload or {}
+    source_record = payload.get("source_record") if isinstance(payload.get("source_record"), dict) else {}
+    target_contact = payload.get("target_contact") if isinstance(payload.get("target_contact"), dict) else {}
+    if _record_has_identity(source_record) or _record_has_identity(target_contact):
+        return True
+    return any(str(payload.get(field) or "").strip() for field in _IDENTITY_FIELDS)
+
+
+def _is_explicit_smart_sherpa_batch_mode(
+    workflow_id: str,
+    payload: dict[str, Any] | None,
+    source_record: dict[str, Any] | None,
+    target_contact: dict[str, Any] | None,
+) -> bool:
+    if str(workflow_id or "").strip().lower() != "smart_sherpa_sync":
+        return False
+    payload = payload or {}
+    source_record = source_record or {}
+    target_contact = target_contact or {}
+    return any(
+        _normalize_run_mode(candidate) == "batch"
+        for candidate in (
+            payload.get("run_mode"),
+            source_record.get("run_mode"),
+            target_contact.get("run_mode"),
+        )
+    )
+
+
+def _is_smart_sherpa_payload(payload: dict[str, Any] | None) -> bool:
+    payload = payload or {}
+    workflow_hint = str(payload.get("workflow_id") or payload.get("workflow_name") or "").strip().lower()
+    task_type = str(payload.get("task_type") or "").strip().lower()
+    return workflow_hint == "smart_sherpa_sync" or task_type == "smart_sherpa_sync"
+
+
+def _normalize_smart_sherpa_runtime_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    if not _is_smart_sherpa_payload(normalized):
+        return normalized
+
+    normalized["task_type"] = "smart_sherpa_sync"
+    normalized["workflow_id"] = "smart_sherpa_sync"
+    normalized["workflow_name"] = "smart_sherpa_sync"
+    normalized["attach_to_existing"] = True
+    normalized["require_existing_page"] = True
+    normalized["allow_launch_fallback"] = False
+    normalized["browser_profile_policy"] = "attach_existing_debug"
+    return normalized
+
+
+def _log_smart_sherpa_final_payload(payload: dict[str, Any]) -> None:
+    source_record = payload.get("source_record") if isinstance(payload.get("source_record"), dict) else {}
+    target_contact = payload.get("target_contact") if isinstance(payload.get("target_contact"), dict) else {}
+    run_mode = (
+        _normalize_run_mode(payload.get("run_mode"))
+        or _normalize_run_mode(source_record.get("run_mode"))
+        or _normalize_run_mode(target_contact.get("run_mode"))
+        or "client"
+    )
+    logger.info(
+        "SMART_SHERPA_FINAL_PAYLOAD attach_to_existing=%s require_existing_page=%s allow_launch_fallback=%s run_mode=%s",
+        payload.get("attach_to_existing"),
+        payload.get("require_existing_page"),
+        payload.get("allow_launch_fallback"),
+        run_mode,
+    )
+
+
+def _ensure_smart_sherpa_batch_mode(payload: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = _normalize_smart_sherpa_runtime_payload(payload)
+    workflow_hint = str(normalized.get("workflow_id") or normalized.get("workflow_name") or "").strip().lower()
+    if workflow_hint != "smart_sherpa_sync":
+        return normalized
+
+    source_record = dict(normalized.get("source_record") or {})
+    target_contact = dict(normalized.get("target_contact") or {})
+    if _is_explicit_smart_sherpa_batch_mode("smart_sherpa_sync", normalized, source_record, target_contact):
+        return normalized
+    if _payload_has_identity(normalized):
+        return normalized
+
+    normalized["run_mode"] = "batch"
+    source_record["run_mode"] = "batch"
+    target_contact["run_mode"] = "batch"
+    normalized["source_record"] = source_record
+    normalized["target_contact"] = target_contact
+    return normalized
+
+
 @app.post("/api/tasks", response_model=TaskCreateResponse)
 async def create_task(payload: TaskCreateRequest, request: Request) -> TaskCreateResponse:
     normalized_payload = payload.normalized_payload()
@@ -1319,9 +1288,10 @@ async def create_task(payload: TaskCreateRequest, request: Request) -> TaskCreat
     tenant_id = str(normalized_payload.get("tenant_id") or "").strip()
     workflow_id = str(normalized_payload.get("workflow_id") or normalized_payload.get("workflow_name") or "").strip()
     if tenant_id and workflow_id:
+        normalized_payload = _ensure_smart_sherpa_batch_mode(normalized_payload)
         if not globals().get("_tenant_templates_available", False):
             raise HTTPException(status_code=503, detail="Tenant template runtime is unavailable")
-        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_id, input_data=normalized_payload)
+        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_id, input_data=normalized_payload).queued_task
 
     if str(normalized_payload.get("workflow_name") or "").strip():
         raise HTTPException(
@@ -1331,6 +1301,7 @@ async def create_task(payload: TaskCreateRequest, request: Request) -> TaskCreat
                 "Submit tenant_id/workflow_id or use /api/tenants/{tenant_id}/workflows/{workflow_id}/run"
             ),
         )
+
     return _create_task_record(normalized_payload)
 
 
@@ -1347,17 +1318,20 @@ def run_procedure(procedure_name: str, payload: ProcedureRunRequest) -> TaskCrea
         input_data["mode"] = payload.mode
     if payload.target_machine_uuid:
         input_data["target_machine_uuid"] = payload.target_machine_uuid
+    if str(procedure_name or "").strip().lower() == "smart_sherpa_sync":
+        input_data.setdefault("workflow_id", procedure_name)
+        input_data.setdefault("workflow_name", procedure_name)
+        input_data = _ensure_smart_sherpa_batch_mode(input_data)
 
     try:
-        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=procedure_name, input_data=input_data)
+        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=procedure_name, input_data=input_data).queued_task
     except NameError:
-        pass  # Tenant runtime not yet available -- fall through to procedure template
+        pass
     except FileNotFoundError:
-        pass  # No tenant template for this procedure -- fall through to procedure template
+        pass
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    # Fallback: create task directly from PROCEDURE_TEMPLATES (no tenant template required)
     if procedure_name not in PROCEDURE_TEMPLATES:
         raise HTTPException(
             status_code=404,
@@ -1503,6 +1477,34 @@ def _extract_name_with_patterns(command_text: str, patterns: list[str]) -> str |
     return None
 
 
+def _is_new_workflow_command(command_lower: str) -> bool:
+    phrases = (
+        "start a new workflow",
+        "start new workflow",
+        "create a new workflow",
+        "create new workflow",
+        "create a workflow",
+        "new workflow",
+        "teach this process",
+        "teach this workflow",
+        "start teaching this",
+        "teach this",
+    )
+    return any(phrase in command_lower for phrase in phrases)
+
+
+def _extract_workflow_name_from_conversation(command_text: str) -> str | None:
+    patterns = [
+        r"\b(?:workflow\s+)?called\s+([A-Za-z][A-Za-z0-9 _-]{1,80})",
+        r"\b(?:workflow\s+)?named\s+([A-Za-z][A-Za-z0-9 _-]{1,80})",
+        r"\bworkflow\s+([A-Za-z][A-Za-z0-9 _-]{1,80})",
+    ]
+    value = _extract_name_with_patterns(command_text, patterns)
+    if not value:
+        return None
+    return re.sub(r"\s+", "_", value.strip()).strip("_-")[:80] or None
+
+
 def _parse_command_parameters(command_text: str) -> dict[str, Any]:
     command_lower = command_text.lower()
     params: dict[str, Any] = {}
@@ -1570,9 +1572,13 @@ def _create_workflow_task(
     input_data = dict(extra_payload or {})
     if target_machine_uuid:
         input_data["target_machine_uuid"] = target_machine_uuid
+    if str(workflow_name or "").strip().lower() == "smart_sherpa_sync":
+        input_data.setdefault("workflow_id", workflow_name)
+        input_data.setdefault("workflow_name", workflow_name)
+        input_data = _ensure_smart_sherpa_batch_mode(input_data)
 
     try:
-        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_name, input_data=input_data)
+        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_name, input_data=input_data).queued_task
     except NameError as exc:
         raise HTTPException(status_code=503, detail="Tenant runtime is unavailable") from exc
     except FileNotFoundError:
@@ -1826,6 +1832,24 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
     if not recovery_strategy:
         recovery_strategy = "Retry once; if still failing, pause and require human review."
 
+    raw_system_context = step.get("system_context") or {}
+    system_context = dict(raw_system_context) if isinstance(raw_system_context, dict) else {}
+    observation_triggers = [
+        str(item).strip()
+        for item in (step.get("observation_triggers") or [])
+        if str(item).strip()
+    ]
+    observation_questions = [
+        dict(item)
+        for item in (step.get("observation_questions") or [])
+        if isinstance(item, dict)
+    ]
+    observation_answers = [
+        dict(item)
+        for item in (step.get("observation_answers") or [])
+        if isinstance(item, dict)
+    ]
+
     return {
         "step_order": int(step.get("step_order") or default_order),
         "name": str(step.get("name") or f"step_{default_order}"),
@@ -1850,12 +1874,11 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
         "recovery_strategy": recovery_strategy,
         # Keep legacy field for backwards compat
         "failure_behavior": recovery_strategy,
-        # Observation/teach-session metadata (preserve across normalize/save cycles)
         "event_type": str(step.get("event_type") or "").strip(),
-        "system_context": dict(step.get("system_context") or {}),
-        "observation_triggers": [str(x).strip() for x in (step.get("observation_triggers") or []) if str(x).strip()],
-        "observation_questions": [dict(x) for x in (step.get("observation_questions") or []) if isinstance(x, dict)],
-        "observation_answers": [dict(x) for x in (step.get("observation_answers") or []) if isinstance(x, dict)],
+        "system_context": system_context,
+        "observation_triggers": observation_triggers,
+        "observation_questions": observation_questions,
+        "observation_answers": observation_answers,
         "known_step": bool(step.get("known_step", False)),
     }
 
@@ -2124,42 +2147,9 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         "observation_question_frequency": "medium",
         "observation_questions_paused": False,
         "observation_skip_all_questions": False,
-        "teach_conversation_state": "idle",
-        "teach_session_settings": {
-            "auto_speak_questions": True,
-            "voice_provider": "elevenlabs",
-            "browser_tts_enabled": False,
-            "max_follow_ups_per_question": 2,
-            "min_seconds_between_questions": 20,
-            "do_not_ask_while_user_typing": True,
-            "question_frequency_mode": "assisted",
-            "pause_until": None,
-        },
-        "teach_session_memory": {
-            "learned_navigation_rules": [],
-            "learned_identity_rules": [],
-            "learned_carrier_rules": [],
-            "learned_aor_rules": [],
-            "learned_crm_rules": [],
-            "learned_success_verification_rules": [],
-            "learned_validation_rules": [],
-            "learned_decision_rules": [],
-            "learned_action_rules": [],
-            "answered_questions": [],
-            "answered_intents": [],
-            "unknown_stage_context_keys": [],
-            "category_cooldowns": {},
-            "unclear_items": [],
-        },
-        "teach_session_history": [],
-        "teach_current_stage": "unknown",
-        "teach_current_url": "",
-        "teach_current_domain": "",
-        "teach_last_trigger_event": "unknown",
-        "teach_last_question_at": None,
-        "teach_wait_for_progress_until": None,
-        "teach_wait_for_progress_expires_at": None,
-        "teach_wait_progress_baseline": {},
+        "rule_suggestions": [],
+        "workflow_annotations": [],
+        "training_memory": [],
     }
 
 
@@ -2203,47 +2193,12 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
         "review_status": str(item.get("review_status") or "draft").strip().lower(),
         "reviewer_notes": item.get("reviewer_notes"),
         "published_workflow_name": item.get("published_workflow_name"),
-        "observation_question_frequency": str(item.get("observation_question_frequency") or "medium"),
+        "observation_question_frequency": str(item.get("observation_question_frequency") or "medium").strip().lower() or "medium",
         "observation_questions_paused": bool(item.get("observation_questions_paused", False)),
         "observation_skip_all_questions": bool(item.get("observation_skip_all_questions", False)),
-        "teach_conversation_state": str(item.get("teach_conversation_state") or "idle"),
-        "teach_session_settings": dict(item.get("teach_session_settings") or {
-            "auto_speak_questions": True,
-            "voice_provider": "elevenlabs",
-            "browser_tts_enabled": False,
-            "max_follow_ups_per_question": 2,
-            "min_seconds_between_questions": 20,
-            "accepted_answer_cooldown_seconds": 45,
-            "wait_for_progress_timeout_seconds": 60,
-            "do_not_ask_while_user_typing": True,
-            "question_frequency_mode": "assisted",
-            "pause_until": None,
-        }),
-        "teach_session_memory": dict(item.get("teach_session_memory") or {
-            "learned_navigation_rules": [],
-            "learned_identity_rules": [],
-            "learned_carrier_rules": [],
-            "learned_aor_rules": [],
-            "learned_crm_rules": [],
-            "learned_success_verification_rules": [],
-            "learned_validation_rules": [],
-            "learned_decision_rules": [],
-            "learned_action_rules": [],
-            "answered_questions": [],
-            "answered_intents": [],
-            "unknown_stage_context_keys": [],
-            "category_cooldowns": {},
-            "unclear_items": [],
-        }),
-        "teach_session_history": [dict(x) for x in (item.get("teach_session_history") or []) if isinstance(x, dict)],
-        "teach_current_stage": str(item.get("teach_current_stage") or "unknown"),
-        "teach_current_url": str(item.get("teach_current_url") or ""),
-        "teach_current_domain": str(item.get("teach_current_domain") or ""),
-        "teach_last_trigger_event": str(item.get("teach_last_trigger_event") or "unknown"),
-        "teach_last_question_at": item.get("teach_last_question_at"),
-        "teach_wait_for_progress_until": item.get("teach_wait_for_progress_until"),
-        "teach_wait_for_progress_expires_at": item.get("teach_wait_for_progress_expires_at"),
-        "teach_wait_progress_baseline": dict(item.get("teach_wait_progress_baseline") or {}),
+        "rule_suggestions": [dict(x) for x in (item.get("rule_suggestions") or []) if isinstance(x, dict)],
+        "workflow_annotations": [dict(x) for x in (item.get("workflow_annotations") or []) if isinstance(x, dict)],
+        "training_memory": [dict(x) for x in (item.get("training_memory") or []) if isinstance(x, dict)],
     }
 
 
@@ -2376,6 +2331,377 @@ def _apply_step_teaching_answers(
     updated["teaching_complete"] = next_step is None
     updated["updated_at"] = datetime.utcnow().isoformat()
     return updated
+
+
+def _sanitize_observation_frequency(raw_value: Any) -> str:
+    value = str(raw_value or "medium").strip().lower()
+    if value not in {"low", "medium", "high"}:
+        return "medium"
+    return value
+
+
+def _build_system_context(url: str, provided: dict[str, Any] | None = None) -> dict[str, Any]:
+    context = dict(provided or {})
+    safe_url = str(url or "").strip()
+    if safe_url:
+        parsed = urlparse(safe_url)
+        host = (parsed.netloc or "").strip().lower()
+        context.setdefault("url", safe_url)
+        context.setdefault("host", host)
+        context.setdefault("system", host.split(":")[0] if host else "")
+        path = (parsed.path or "").strip()
+        if path:
+            context.setdefault("path", path)
+    return context
+
+
+def _detect_observation_triggers(previous_step: dict[str, Any] | None, step: dict[str, Any]) -> list[str]:
+    triggers: list[str] = []
+    current_context = dict(step.get("system_context") or {})
+    previous_context = dict((previous_step or {}).get("system_context") or {})
+    current_host = str(current_context.get("host") or "").strip().lower()
+    previous_host = str(previous_context.get("host") or "").strip().lower()
+    if current_host and previous_host and current_host != previous_host:
+        triggers.append("system_switch")
+        # Also mark as navigation trigger when system changes
+        triggers.append("domain_navigation")
+
+    action = str(step.get("action") or "").strip().lower()
+    label_blob = " ".join(
+        [
+            str(step.get("step_name") or ""),
+            str(step.get("description") or ""),
+            str(step.get("value") or ""),
+            str(step.get("option") or ""),
+            str((step.get("system_context") or {}).get("element_label") or ""),
+        ]
+    ).lower()
+
+    decision_terms = ["next", "continue", "submit", "save", "approve", "deny", "mark", "assign", "select"]
+    classification_terms = ["status", "result", "classification", "classify", "tag", "type", "outcome"]
+    navigation_terms = ["portal", "system", "go to", "navigate", "switch", "use", "carrier", "health", "trackvia", "crm"]
+
+    if action == "select_option" or any(term in label_blob for term in classification_terms):
+        triggers.append("classification_step")
+
+    if action in {"click_selector", "select_option"} and any(term in label_blob for term in decision_terms + classification_terms):
+        triggers.append("decision_point")
+
+    # Navigation-specific triggers
+    if action == "select_option" and any(term in label_blob for term in navigation_terms):
+        triggers.append("system_selection")
+
+    if action == "open_url":
+        triggers.append("domain_navigation")
+        if any(term in label_blob for term in decision_terms + navigation_terms):
+            triggers.append("navigation_decision")
+
+    if action in {"click_selector", "select_option"} and any(term in label_blob for term in navigation_terms):
+        triggers.append("navigation_decision")
+
+    if action == "manual_step" or (action != "open_url" and not str(step.get("selector") or "").strip()):
+        triggers.append("unknown_pattern")
+
+    ordered: list[str] = []
+    for trigger in triggers:
+        if trigger not in ordered:
+            ordered.append(trigger)
+    return ordered
+
+
+def _prompt_allowed_for_trigger(trigger: str, frequency: str) -> bool:
+    if frequency == "high":
+        return True
+    if frequency == "medium":
+        return trigger in {
+            "system_switch",
+            "decision_point",
+            "classification_step",
+            "unknown_pattern",
+            "domain_navigation",
+            "navigation_decision",
+        }
+    return trigger in {"system_switch", "unknown_pattern", "domain_navigation"}
+
+
+def _observation_prompt_for_trigger(
+    draft_id: str,
+    step_order: int,
+    trigger: str,
+    system_context: dict[str, Any],
+) -> dict[str, Any]:
+    question_map = {
+        "system_switch": (
+            "check",
+            "What are you checking here before switching systems?",
+        ),
+        "decision_point": (
+            "decision",
+            "What determines the next step?",
+        ),
+        "classification_step": (
+            "classification",
+            "How do you classify this result?",
+        ),
+        "unknown_pattern": (
+            "why_action",
+            "Why are you performing this action?",
+        ),
+        "system_selection": (
+            "navigation_which",
+            "What determines which system you use?",
+        ),
+        "domain_navigation": (
+            "navigation_why",
+            "How did you know to go to this system?",
+        ),
+        "navigation_decision": (
+            "navigation_source",
+            "Where does that information come from?",
+        ),
+    }
+    category_map = {
+        "system_switch": "navigation_reasoning",
+        "decision_point": "success_verification",
+        "classification_step": "carrier_validation",
+        "unknown_pattern": "crm_action",
+        "system_selection": "navigation_reasoning",
+        "domain_navigation": "navigation_reasoning",
+        "navigation_decision": "identity_verification",
+    }
+    question_type, question = question_map.get(trigger, ("check", "What are you checking here?"))
+    category = category_map.get(trigger, "success_verification")
+    return {
+        "prompt_id": str(uuid4()),
+        "draft_id": draft_id,
+        "step_order": step_order,
+        "trigger_type": trigger,
+        "question_type": question_type,
+        "category": category,
+        "question": question,
+        "system_context": dict(system_context or {}),
+        "status": "pending",
+        "can_skip": True,
+        "can_answer_later": True,
+        "voice_supported": True,
+    }
+
+
+def _build_static_audit_prompt(draft: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
+    categories = [
+        (
+            "navigation_reasoning",
+            "How did you decide to use this system/page for this step?",
+        ),
+        (
+            "identity_verification",
+            "What identity details do you verify before continuing?",
+        ),
+        (
+            "carrier_validation",
+            "How do you validate carrier or plan details at this point?",
+        ),
+        (
+            "healthsherpa_aor",
+            "Do you verify HealthSherpa AOR here? What confirms it?",
+        ),
+        (
+            "crm_action",
+            "What CRM action should be recorded after this step?",
+        ),
+        (
+            "success_verification",
+            "How do you confirm this step completed successfully?",
+        ),
+    ]
+    step_order = int(step.get("step_order") or 1)
+    category, question = categories[(max(step_order, 1) - 1) % len(categories)]
+    return {
+        "prompt_id": str(uuid4()),
+        "draft_id": str(draft.get("draft_id") or ""),
+        "step_order": step_order,
+        "trigger_type": "unknown_pattern",
+        "question_type": "check",
+        "category": category,
+        "question": question,
+        "system_context": dict(step.get("system_context") or {}),
+        "status": "pending",
+        "can_skip": True,
+        "can_answer_later": True,
+        "voice_supported": True,
+    }
+
+
+def _build_observation_prompts(
+    draft: dict[str, Any],
+    step: dict[str, Any],
+    previous_step: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if bool(step.get("known_step")):
+        return []
+
+    if bool(draft.get("observation_skip_all_questions")) or bool(draft.get("observation_questions_paused")):
+        return []
+
+    frequency = _sanitize_observation_frequency(
+        draft.get("observation_question_frequency")
+        or _get_conversation_preference("observation.question_frequency")
+    )
+    triggers = _detect_observation_triggers(previous_step, step)
+    prompts = [
+        _observation_prompt_for_trigger(
+            draft_id=str(draft.get("draft_id") or ""),
+            step_order=int(step.get("step_order") or 0),
+            trigger=trigger,
+            system_context=dict(step.get("system_context") or {}),
+        )
+        for trigger in triggers
+        if _prompt_allowed_for_trigger(trigger, frequency)
+    ]
+    if not prompts:
+        return [_build_static_audit_prompt(draft, step)]
+    if frequency != "high" and prompts:
+        return [prompts[0]]
+    return prompts[:2]
+
+
+def _extract_navigation_mapping(
+    step: dict[str, Any],
+    prompt: dict[str, Any],
+    answer_text: str,
+) -> NavigationMapping | None:
+    """Extract field → system mapping from a navigation question answer."""
+    cleaned = " ".join(str(answer_text or "").split())
+    if not cleaned:
+        return None
+    
+    trigger_type = str(prompt.get("trigger_type") or "").lower()
+    question_type = str(prompt.get("question_type") or "").lower()
+    system_context = dict(prompt.get("system_context") or step.get("system_context") or {})
+    
+    # Detect source field (what data determines the choice)
+    source_field = ""
+    source_field_match = re.search(
+        r"\b(?:from|from the|in|in the|check|look at)\s+(?:the\s+)?(\w+(?:\s+\w+)?)",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if source_field_match:
+        source_field = source_field_match.group(1).strip()
+    
+    # Detect source value (what the actual value is)
+    source_value = ""
+    if "carrier" in cleaned.lower():
+        source_value = "carrier"
+    elif "health" in cleaned.lower():
+        source_value = "health_plan"
+    elif "trackvia" in cleaned.lower():
+        source_value = "trackvia_match"
+    else:
+        # Try to extract a quoted value
+        quoted = re.search(r'["\']([^"\']+)["\']', cleaned)
+        if quoted:
+            source_value = quoted.group(1).strip()
+    
+    # Detect target system based on current host or answeredtext
+    target_system = ""
+    target_url = ""
+    current_host = str(system_context.get("host") or "").lower()
+    
+    # Map known systems
+    if "carrier" in cleaned.lower():
+        target_system = "carrier_portal"
+        target_url = "https://carrier.portal/*"
+    elif "health" in cleaned.lower():
+        target_system = "healthsherpa"
+        target_url = "https://www.healthsherpa.com/*"
+    elif "trackvia" in cleaned.lower():
+        target_system = "trackvia"
+        target_url = "https://trackvia.com/*"
+    elif "crm" in cleaned.lower() or "salesforce" in cleaned.lower():
+        target_system = "crm"
+        target_url = "https://salesforce.com/*"
+    elif current_host:
+        target_system = current_host.split(".")[0]  # e.g. "carrier" from "carrier.portal.com"
+        target_url = f"https://{current_host}/*"
+    
+    if not target_system or not source_field:
+        return None
+    
+    return {
+        "mapping_id": str(uuid4()),
+        "source_field": source_field,
+        "source_value": source_value or "variable",
+        "target_system": target_system,
+        "target_url_pattern": target_url,
+        "confidence": 0.9,
+        "learned_from_answers": 1,
+        "is_rule_always": True,
+        "captured_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _extract_observation_structures(
+    step: dict[str, Any],
+    prompt: dict[str, Any],
+    answer_text: str,
+    response_mode: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    cleaned = " ".join(str(answer_text or "").split())
+    condition = ""
+    outcome = ""
+
+    condition_match = re.search(r"\b(?:if|when|whenever|unless|based on)\b\s+(.*?)(?:\bthen\b|,|$)", cleaned, re.IGNORECASE)
+    if condition_match:
+        condition = condition_match.group(1).strip(" ,.")
+
+    outcome_match = re.search(r"\b(?:then|next|so|that means)\b\s+(.+)$", cleaned, re.IGNORECASE)
+    if outcome_match:
+        outcome = outcome_match.group(1).strip(" .")
+
+    if not condition:
+        condition = str(step.get("intent") or prompt.get("trigger_type") or "observed condition").strip()
+    if not outcome:
+        outcome = cleaned or str(step.get("step_name") or "observed outcome")
+
+    system_context = dict(prompt.get("system_context") or step.get("system_context") or {})
+    rule_candidate = {
+        "candidate_id": str(uuid4()),
+        "draft_id": str(prompt.get("draft_id") or ""),
+        "step_order": int(step.get("step_order") or 0),
+        "trigger_type": str(prompt.get("trigger_type") or ""),
+        "question_type": str(prompt.get("question_type") or ""),
+        "condition": condition,
+        "outcome": outcome,
+        "system_context": system_context,
+        "source": "interactive_observation",
+        "answer": cleaned,
+        "status": "candidate",
+        "captured_at": datetime.utcnow().isoformat(),
+    }
+    annotation = {
+        "annotation_id": str(uuid4()),
+        "step_order": int(step.get("step_order") or 0),
+        "question": str(prompt.get("question") or ""),
+        "question_type": str(prompt.get("question_type") or ""),
+        "trigger_type": str(prompt.get("trigger_type") or ""),
+        "note": cleaned,
+        "system_context": system_context,
+        "captured_at": datetime.utcnow().isoformat(),
+    }
+    memory_entry = {
+        "memory_id": str(uuid4()),
+        "kind": "observation_answer",
+        "step_order": int(step.get("step_order") or 0),
+        "question_type": str(prompt.get("question_type") or ""),
+        "trigger_type": str(prompt.get("trigger_type") or ""),
+        "summary": cleaned,
+        "response_mode": response_mode,
+        "system_context": system_context,
+        "captured_at": datetime.utcnow().isoformat(),
+    }
+    return rule_candidate, annotation, memory_entry
 
 
 def _normalize_all_workflow_drafts() -> None:
@@ -2562,6 +2888,180 @@ def _get_conversation_preference(key: str) -> Any:
         if str(item.get("key") or "") == key:
             return item.get("value")
     return None
+
+
+def _get_tenant_navigation_rules(tenant_id: str) -> list[dict[str, Any]]:
+    """Get navigation rules for a specific tenant."""
+    return navigation_rules_by_tenant.get(str(tenant_id).strip(), [])
+
+
+def _append_tenant_navigation_rule(tenant_id: str, rule: dict[str, Any]) -> None:
+    """Append a navigation rule to a tenant's rule set."""
+    tenant_key = str(tenant_id).strip()
+    navigation_rules_by_tenant.setdefault(tenant_key, [])
+    rule_copy = dict(rule)
+    navigation_rules_by_tenant[tenant_key].append(rule_copy)
+    _save_navigation_rules_by_tenant()
+
+
+def _merge_tenant_navigation_mappings(tenant_id: str, new_mappings: list[dict[str, Any]]) -> None:
+    """Merge new navigation mappings into a tenant's existing rules, updating confidence and counts."""
+    tenant_key = str(tenant_id).strip()
+    existing_rules = navigation_rules_by_tenant.setdefault(tenant_key, [])
+    
+    for new_mapping in new_mappings:
+        source_field = str(new_mapping.get("source_field", "")).strip().lower()
+        source_value = str(new_mapping.get("source_value", "")).strip().lower()
+        target_system = str(new_mapping.get("target_system", "")).strip().lower()
+        
+        # Find matching existing rule
+        matched = False
+        for existing_rule in existing_rules:
+            if (
+                str(existing_rule.get("source_field", "")).strip().lower() == source_field
+                and str(existing_rule.get("source_value", "")).strip().lower() == source_value
+                and str(existing_rule.get("target_system", "")).strip().lower() == target_system
+            ):
+                # Update confidence and count
+                existing_rule["learned_from_answers"] = int(existing_rule.get("learned_from_answers", 1)) + 1
+                existing_rule["confidence"] = min(1.0, float(existing_rule.get("confidence", 0.9)) + 0.05)
+                existing_rule["updated_at"] = datetime.utcnow().isoformat()
+                matched = True
+                break
+        
+        if not matched:
+            # Add as new mapping to rules
+            existing_rules.append(new_mapping)
+    
+    _save_navigation_rules_by_tenant()
+
+
+def _apply_navigation_rules(
+    tenant_id: str,
+    current_system: str,
+    step_context: dict[str, Any],
+    session_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Apply learned navigation rules to determine next system.
+    
+    Args:
+        tenant_id: Tenant identifier
+        current_system: Current system name
+        step_context: Context about the current step (field values, etc.)
+        session_state: Session state with run variables
+    
+    Returns:
+        Navigation destination {target_system, url_pattern, matched_rule_id} or None
+    """
+    tenant_rules = _get_tenant_navigation_rules(tenant_id)
+    if not tenant_rules:
+        return None
+    
+    session_state = session_state or {}
+    
+    # Try to match rules based on condition
+    for rule in tenant_rules:
+        if str(rule.get("status", "")).lower() != "candidate":
+            continue
+        
+        # Check if this rule's condition matches the current step context
+        condition = str(rule.get("condition", "")).lower()
+        source_field = str(rule.get("source_field", "")).lower() if "source_field" in rule else ""
+        target_system = str(rule.get("target_system", "")).lower()
+        
+        # Try to extract field name from condition (e.g., "carrier equals carrier" -> "carrier")
+        if not source_field and condition:
+            field_match = re.search(r"(\w+)\s+equals", condition)
+            if field_match:
+                source_field = field_match.group(1).lower()
+        
+        # Check if the field exists in step context or session state
+        if source_field:
+            field_value_step = str(step_context.get(source_field, "")).lower()
+            field_value_session = str(session_state.get(source_field, "")).lower()
+            
+            # Simple match: if we have the field and target system is valid, use it
+            if field_value_step or field_value_session:
+                confidence = float(rule.get("confidence", 0.9))
+                if confidence >= 0.7:  # Only apply rules with reasonable confidence
+                    return {
+                        "target_system": target_system,
+                        "url_pattern": str(rule.get("target_url_pattern", "")),
+                        "matched_rule_id": str(rule.get("rule_id", "")),
+                        "confidence": confidence,
+                    }
+    
+    return None
+
+
+def _validate_navigation_rules(
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Validate navigation rules and return warnings/issues.
+    
+    Checks for:
+    - Low-confidence rules
+    - Conflicting mappings
+    - Missing critical mappings
+    - Invalid target systems
+    """
+    tenant_rules = _get_tenant_navigation_rules(tenant_id)
+    warnings: list[str] = []
+    issues: list[str] = []
+    stats: dict[str, int] = {
+        "total_rules": len(tenant_rules),
+        "low_confidence_rules": 0,
+        "conflicting_rules": 0,
+        "validated_rules": 0,
+    }
+    
+    # Track unique source fields and their mappings
+    field_mappings: dict[str, set[str]] = {}
+    
+    for rule in tenant_rules:
+        if str(rule.get("status", "")).lower() != "candidate":
+            continue
+        
+        confidence = float(rule.get("confidence", 0.9))
+        if confidence < 0.8:
+            stats["low_confidence_rules"] += 1
+            warnings.append(
+                f"Low confidence rule: {rule.get('condition', 'unknown')} "
+                f"→ {rule.get('target_system', 'unknown')} (confidence: {confidence:.1%})"
+            )
+        else:
+            stats["validated_rules"] += 1
+        
+        # Check for conflicts (same source field → multiple systems)
+        source_field = str(rule.get("source_field", "")).lower()
+        if source_field:
+            target_sys = str(rule.get("target_system", "")).lower()
+            if source_field not in field_mappings:
+                field_mappings[source_field] = set()
+            
+            if field_mappings[source_field] and target_sys not in field_mappings[source_field]:
+                stats["conflicting_rules"] += 1
+                issues.append(
+                    f"Conflicting mappings for field '{source_field}': "
+                    f"maps to both {field_mappings[source_field]} and {target_sys}"
+                )
+            field_mappings[source_field].add(target_sys)
+    
+    # Warn about missing mappings for common navigation fields
+    common_fields = {"carrier", "health_plan", "marketplace", "system", "portal"}
+    for field in common_fields:
+        if not any(str(rule.get("source_field", "")).lower() == field for rule in tenant_rules):
+            warnings.append(f"No mapping found for common field: '{field}'")
+    
+    return {
+        "tenant_id": tenant_id,
+        "is_valid": len(issues) == 0,
+        "warnings": warnings,
+        "issues": issues,
+        "stats": stats,
+        "field_mappings": {k: list(v) for k, v in field_mappings.items()},
+    }
+
 
 
 def _parse_conversation_preference_updates(command_text: str) -> list[dict[str, Any]]:
@@ -4233,8 +4733,17 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
 
     steps = [dict(s) for s in (draft.get("steps") or [])]
     next_order = max((int(s.get("step_order") or 0) for s in steps), default=0) + 1
+    previous_step = dict(steps[-1]) if steps else None
 
-    previous_step = steps[-1] if steps else None
+    system_context = _build_system_context(
+        payload.url,
+        {
+            **dict(payload.system_context or {}),
+            "element_label": payload.element_label,
+            "element_tag": payload.element_tag,
+            "element_type": payload.element_type,
+        },
+    )
 
     raw_step: dict[str, Any] = {
         "step_order":   next_order,
@@ -4248,11 +4757,12 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
         "description":  payload.description or payload.step_name or "",
         "instruction":  payload.description or payload.step_name or "",
         "element_label": payload.element_label,
-        "event_type": payload.event_type,
-        "system_context": dict(payload.system_context or {}),
+        "event_type": payload.event_type or payload.action,
+        "system_context": system_context,
         "observation_triggers": [str(item).strip() for item in (payload.observation_triggers or []) if str(item).strip()],
         "observation_questions": [],
         "observation_answers": [],
+        "known_step": False,
     }
 
     # Auto-populate variable_inputs for text fields so the teaching loop can
@@ -4302,12 +4812,9 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
         )
 
     normalized = _normalize_step(raw_step, next_order)
-    normalized["event_type"] = str(payload.event_type or payload.action or "")
-    normalized["system_context"] = dict(payload.system_context or {})
-    prompts = _build_observation_prompts(updated=draft, step=normalized, previous_step=previous_step)
+    prompts = _build_observation_prompts(draft, normalized, previous_step)
+    normalized["observation_triggers"] = [str(item.get("trigger_type") or "") for item in prompts if str(item.get("trigger_type") or "")]
     normalized["observation_questions"] = prompts
-    normalized["observation_triggers"] = [str(item.get("trigger_type") or "") for item in prompts if isinstance(item, dict)]
-    normalized["observation_answers"] = []
     steps.append(normalized)
 
     updated = dict(draft)
@@ -4336,856 +4843,167 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
     return WorkflowLearningDraftRecord(**updated)
 
 
-def _sanitize_observation_frequency(raw: Any) -> str:
-    value = str(raw or "medium").strip().lower()
-    if value in {"low", "medium", "high"}:
-        return value
-    return "medium"
-
-
-def _frequency_from_mode(mode: str) -> str:
-    normalized = str(mode or "assisted").strip().lower()
-    if normalized == "training":
-        return "high"
-    if normalized == "production":
-        return "low"
-    return "medium"
-
-
-def _teach_settings_for_draft(draft: dict[str, Any]) -> dict[str, Any]:
-    settings = dict(draft.get("teach_session_settings") or {})
-    settings.setdefault("auto_speak_questions", True)
-    settings.setdefault("voice_provider", "elevenlabs")
-    settings.setdefault("browser_tts_enabled", False)
-    settings.setdefault("max_follow_ups_per_question", 2)
-    settings.setdefault("min_seconds_between_questions", 20)
-    settings.setdefault("accepted_answer_cooldown_seconds", 45)
-    settings.setdefault("wait_for_progress_timeout_seconds", 60)
-    settings.setdefault("do_not_ask_while_user_typing", True)
-    settings.setdefault("question_frequency_mode", "assisted")
-    settings.setdefault("pause_until", None)
-    return settings
-
-
-def _teach_memory_for_draft(draft: dict[str, Any]) -> dict[str, Any]:
-    memory = dict(draft.get("teach_session_memory") or {})
-    memory.setdefault("learned_navigation_rules", [])
-    memory.setdefault("learned_identity_rules", [])
-    memory.setdefault("learned_carrier_rules", [])
-    memory.setdefault("learned_aor_rules", [])
-    memory.setdefault("learned_crm_rules", [])
-    memory.setdefault("learned_success_verification_rules", [])
-    memory.setdefault("learned_validation_rules", [])
-    memory.setdefault("learned_decision_rules", [])
-    memory.setdefault("learned_action_rules", [])
-    memory.setdefault("answered_questions", [])
-    memory.setdefault("answered_intents", [])
-    memory.setdefault("unknown_stage_context_keys", [])
-    memory.setdefault("category_cooldowns", {})
-    memory.setdefault("unclear_items", [])
-    return memory
-
-
-def _question_text_hash(text: str) -> str:
-    return hashlib.sha1(str(text or "").strip().lower().encode("utf-8")).hexdigest()[:16]
-
-
-def _prompt_question_id(prompt: dict[str, Any]) -> str:
-    explicit = str(prompt.get("question_id") or "").strip()
-    if explicit:
-        return explicit
-    return str(prompt.get("prompt_id") or "").strip()
-
-
-def _prompt_answered_key(prompt: dict[str, Any]) -> str:
-    explicit = str(prompt.get("answered_key") or "").strip()
-    if explicit:
-        return explicit
-    legacy = str(prompt.get("already_answered_key") or "").strip()
-    if legacy:
-        return legacy
-    category = str(prompt.get("category") or "unknown").strip().lower()
-    purpose = str(prompt.get("purpose") or "general").strip().lower().replace(" ", "_")
-    return f"{category}.{purpose}"
-
-
-def _unknown_stage_scope_key(system_context: dict[str, Any]) -> str:
-    ctx = dict(system_context or {})
-    host = str(ctx.get("host") or "").strip().lower()
-    raw_url = str(ctx.get("url") or "").strip()
-    path = ""
-    if raw_url:
-        try:
-            path = str(urlparse(raw_url).path or "").strip().lower()
-        except Exception:
-            path = ""
-    if not path:
-        path = str(ctx.get("path") or "").strip().lower()
-    return f"{host}|{path}"
-
-
-def _current_progress_snapshot(draft: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "url": str(draft.get("teach_current_url") or ""),
-        "domain": str(draft.get("teach_current_domain") or ""),
-        "stage": str(draft.get("teach_current_stage") or "unknown"),
-        "step_count": len([s for s in (draft.get("steps") or []) if isinstance(s, dict)]),
-    }
-
-
-def _consume_wait_for_progress_if_ready(updated: dict[str, Any], force: bool = False) -> tuple[bool, str]:
-    state = str(updated.get("teach_conversation_state") or "idle")
-    if state != "answer_accepted_waiting_for_progress":
-        return False, "wait_for_progress inactive"
-
-    if force:
-        updated["teach_conversation_state"] = "asking_question"
-        return False, "manual ask-next override"
-
-    now = datetime.utcnow()
-    cooldown_until = _parse_iso_timestamp(updated.get("teach_wait_for_progress_until"))
-    hard_expires = _parse_iso_timestamp(updated.get("teach_wait_for_progress_expires_at"))
-    baseline = dict(updated.get("teach_wait_progress_baseline") or {})
-    current = _current_progress_snapshot(updated)
-
-    progress_changed = False
-    if str(current.get("url") or "") and str(current.get("url") or "") != str(baseline.get("url") or ""):
-        progress_changed = True
-    if str(current.get("domain") or "") and str(current.get("domain") or "") != str(baseline.get("domain") or ""):
-        progress_changed = True
-    if str(current.get("stage") or "") and str(current.get("stage") or "") != str(baseline.get("stage") or ""):
-        progress_changed = True
-    if int(current.get("step_count") or 0) >= int(baseline.get("step_count") or 0) + 2:
-        progress_changed = True
-
-    if progress_changed:
-        updated["teach_conversation_state"] = "asking_question"
-        logger.info("teach wait_for_progress released: progress_detected current=%s baseline=%s", current, baseline)
-        return False, "Progress detected; ready for next question."
-
-    if hard_expires is not None and now >= hard_expires.replace(tzinfo=None):
-        updated["teach_conversation_state"] = "asking_question"
-        logger.info("teach wait_for_progress released: timeout_reached current=%s baseline=%s", current, baseline)
-        return False, "Wait-for-progress timeout expired; asking next question."
-
-    if cooldown_until is not None and now < cooldown_until.replace(tzinfo=None):
-        seconds_left = int((cooldown_until.replace(tzinfo=None) - now).total_seconds())
-        return True, f"Cooling down after accepted answer ({max(1, seconds_left)}s remaining)."
-
-    return True, "Waiting for meaningful progress before next question."
-
-
-def _answered_tracking(memory: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
-    answered_questions = [dict(x) for x in (memory.get("answered_questions") or []) if isinstance(x, dict)]
-    question_ids = {str(x.get("question_id") or "").strip() for x in answered_questions if str(x.get("question_id") or "").strip()}
-    text_hashes = {str(x.get("question_text_hash") or "").strip() for x in answered_questions if str(x.get("question_text_hash") or "").strip()}
-    answered_keys = {
-        str(x).strip()
-        for x in (memory.get("answered_intents") or [])
-        if str(x).strip()
-    }
-    return question_ids, text_hashes, answered_keys
-
-
-def _is_prompt_already_answered(prompt: dict[str, Any], memory: dict[str, Any]) -> tuple[bool, str]:
-    answered_ids, answered_hashes, answered_keys = _answered_tracking(memory)
-    qid = _prompt_question_id(prompt)
-    qhash = _question_text_hash(str(prompt.get("question") or ""))
-    akey = _prompt_answered_key(prompt)
-
-    if qid and qid in answered_ids:
-        return True, f"duplicate question_id suppressed ({qid})"
-    if qhash and qhash in answered_hashes:
-        return True, f"duplicate question_text_hash suppressed ({qhash})"
-    if akey and akey in answered_keys:
-        return True, f"duplicate answered_key suppressed ({akey})"
-    return False, "not answered yet"
-
-
-def _is_category_on_cooldown(memory: dict[str, Any], category: str) -> tuple[bool, str]:
-    cooldowns = dict(memory.get("category_cooldowns") or {})
-    until = _parse_iso_timestamp(cooldowns.get(str(category or "")))
-    if until is None:
-        return False, "no category cooldown"
-    now = datetime.utcnow()
-    if now >= until.replace(tzinfo=None):
-        return False, "category cooldown expired"
-    seconds_left = int((until.replace(tzinfo=None) - now).total_seconds())
-    return True, f"category cooldown active ({max(1, seconds_left)}s remaining)"
-
-
-def _suppress_already_answered_pending_prompts(updated: dict[str, Any]) -> int:
-    memory = _teach_memory_for_draft(updated)
-    unknown_scope_keys = {
-        str(x).strip()
-        for x in (memory.get("unknown_stage_context_keys") or [])
-        if str(x).strip()
-    }
-    suppressed = 0
-    steps = [dict(s) for s in (updated.get("steps") or []) if isinstance(s, dict)]
-    for step_idx, step in enumerate(steps):
-        prompts = [dict(item) for item in (step.get("observation_questions") or []) if isinstance(item, dict)]
-        changed = False
-        for prompt_idx, prompt in enumerate(prompts):
-            if str(prompt.get("status") or "pending") != "pending":
-                continue
-            already, reason = _is_prompt_already_answered(prompt, memory)
-            if not already and str(prompt.get("trigger_type") or "") == "unknown_stage":
-                scope_key = _unknown_stage_scope_key(dict(prompt.get("system_context") or {}))
-                if scope_key in unknown_scope_keys:
-                    already = True
-                    reason = f"unknown-stage prompt already asked on this page ({scope_key})"
-            if not already:
-                continue
-            prompt["status"] = "suppressed"
-            prompt["suppressed_at"] = datetime.utcnow().isoformat()
-            prompt["suppressed_reason"] = reason
-            prompts[prompt_idx] = prompt
-            changed = True
-            suppressed += 1
-            logger.info("teach prompt suppressed: prompt_id=%s reason=%s", str(prompt.get("prompt_id") or ""), reason)
-        if changed:
-            step["observation_questions"] = prompts
-            steps[step_idx] = step
-    if suppressed > 0:
-        updated["steps"] = steps
-    return suppressed
-
-
-def _category_for_trigger(trigger: str) -> str:
-    mapping = {
-        "system_switch": "navigation_reasoning",
-        "domain_navigation": "navigation_reasoning",
-        "navigation_decision": "carrier_selection",
-        "decision_point": "classification",
-        "classification_step": "classification",
-        "unknown_pattern": "exception_handling",
-        "system_selection": "carrier_selection",
-    }
-    return mapping.get(str(trigger or "").strip(), "data_source")
-
-
-def _memory_bucket_for_category(category: str) -> str:
-    if category in {"navigation_reasoning"}:
-        return "learned_navigation_rules"
-    if category in {"identity_verification", "data_source"}:
-        return "learned_identity_rules"
-    if category in {"carrier_selection", "carrier_validation"}:
-        return "learned_carrier_rules"
-    if category in {"healthsherpa_aor"}:
-        return "learned_aor_rules"
-    if category in {"crm_action"}:
-        return "learned_crm_rules"
-    if category in {"success_verification", "safety_rule"}:
-        return "learned_success_verification_rules"
-    if category in {"classification", "exception_handling"}:
-        return "learned_decision_rules"
-    return "learned_action_rules"
-
-
-def _is_crm_host(host: str) -> bool:
-    lowered = str(host or "").lower()
-    crm_tokens = ["keap", "infusionsoft", "hubspot", "salesforce", "pipedrive", "zoho", "crm"]
-    return any(token in lowered for token in crm_tokens)
-
-
-def _is_carrier_host(host: str) -> bool:
-    lowered = str(host or "").lower()
-    if not lowered:
-        return False
-    if "trackvia" in lowered or "healthsherpa" in lowered or _is_crm_host(lowered):
-        return False
-    carrier_tokens = [
-        "ambetter",
-        "anthem",
-        "aetna",
-        "cigna",
-        "uhc",
-        "uhone",
-        "bcbs",
-        "bluecross",
-        "carrier",
-        "member",
-        "policy",
-    ]
-    return any(token in lowered for token in carrier_tokens)
-
-
-def _domain_family_from_host(host: str) -> str:
-    lowered = str(host or "").lower()
-    if "trackvia" in lowered:
-        return "trackvia"
-    if "healthsherpa" in lowered:
-        return "healthsherpa"
-    if _is_crm_host(lowered):
-        return "crm"
-    if _is_carrier_host(lowered):
-        return "carrier"
-    return "unknown"
-
-
-def _build_step_text_blob(step: dict[str, Any]) -> str:
-    return " ".join(
-        [
-            str(step.get("step_name") or ""),
-            str(step.get("description") or ""),
-            str(step.get("selector") or ""),
-            str(step.get("value") or ""),
-            str(step.get("option") or ""),
-            str((step.get("system_context") or {}).get("element_label") or ""),
-            str((step.get("system_context") or {}).get("path") or ""),
-        ]
-    ).lower()
-
-
-def _build_stage_signals(step: dict[str, Any], previous_step: dict[str, Any] | None) -> dict[str, Any]:
-    current_context = dict(step.get("system_context") or {})
-    previous_context = dict((previous_step or {}).get("system_context") or {})
-    current_host = str(current_context.get("host") or "").strip().lower()
-    previous_host = str(previous_context.get("host") or "").strip().lower()
-    current_domain = _domain_family_from_host(current_host)
-    previous_domain = _domain_family_from_host(previous_host)
-    label_blob = _build_step_text_blob(step)
-
-    carrier_hint = any(token in label_blob for token in ["carrier", "book", "policy", "member", "portal"])
-    client_hint = any(token in label_blob for token in ["client", "household", "subscriber", "member", "employee"])
-    aor_hint = "aor" in label_blob or "agent of record" in label_blob
-    crm_hint = any(token in label_blob for token in ["crm", "keap", "contact", "infusionsoft"])
-    verification_hint = any(token in label_blob for token in ["verify", "verified", "confirmation", "completed", "success"])
-    exception_hint = any(token in label_blob for token in ["not found", "missing", "error", "mismatch", "unable"])
-
-    return {
-        "current_url": str(current_context.get("url") or step.get("url") or ""),
-        "current_host": current_host,
-        "current_domain": current_domain,
-        "previous_domain": previous_domain,
-        "system_switch_event": bool(current_domain != "unknown" and previous_domain != "unknown" and current_domain != previous_domain),
-        "switch_trackvia_to_carrier": previous_domain == "trackvia" and current_domain == "carrier",
-        "trackvia_page_detected": current_domain == "trackvia" or "trackvia" in label_blob,
-        "carrier_domain_detected": current_domain == "carrier",
-        "healthsherpa_domain_detected": current_domain == "healthsherpa",
-        "crm_domain_detected": current_domain == "crm",
-        "carrier_field_detected": carrier_hint,
-        "client_record_detected": client_hint,
-        "selected_action": str(step.get("action") or "").strip().lower(),
-        "selected_action_is_crm": bool(current_domain == "crm" or crm_hint),
-        "previous_carrier_lookup_not_found": bool(previous_domain == "carrier" and "not found" in _build_step_text_blob(previous_step or {})),
-        "verification_hint": verification_hint,
-        "exception_hint": exception_hint,
-        "aor_hint": aor_hint,
-    }
-
-
-def _detect_workflow_stage(step: dict[str, Any], previous_step: dict[str, Any] | None) -> str:
-    signals = _build_stage_signals(step, previous_step)
-    blob = _build_step_text_blob(step)
-    domain = str(signals.get("current_domain") or "unknown")
-
-    if bool(signals.get("exception_hint")):
-        return "exception_handling"
-    if domain == "trackvia":
-        return "trackvia_client_selection"
-    if domain == "carrier":
-        if any(token in blob for token in ["paid", "active", "status", "effective", "term", "validation", "check"]):
-            return "carrier_validation"
-        return "carrier_portal_selection"
-    if domain == "healthsherpa" or bool(signals.get("aor_hint")):
-        return "healthsherpa_aor_check"
-    if domain == "crm":
-        if any(token in blob for token in ["search", "lookup", "find", "contact", "match"]):
-            return "crm_contact_lookup"
-        return "crm_action"
-    if bool(signals.get("verification_hint")):
-        return "action_verification"
-    return "unknown"
-
-
-def _unknown_stage_prompt(draft_id: str, step_order: int, system_context: dict[str, Any], reason: str) -> dict[str, Any]:
-    scope_key = _unknown_stage_scope_key(system_context)
-    return {
-        "prompt_id": str(uuid4()),
-        "question_id": f"unknown_stage:{scope_key}",
-        "draft_id": draft_id,
-        "step_order": int(step_order or 0),
-        "question": "What system are we in right now, and what are you trying to accomplish on this page?",
-        "question_type": "workflow_context",
-        "trigger_type": "unknown_stage",
-        "category": "workflow_context",
-        "purpose": "Establish current workflow stage before asking specific downstream questions.",
-        "expected_answer_shape": "Current system + immediate goal for this page.",
-        "allowed_stages": ["unknown"],
-        "required_context": ["current_system_or_goal"],
-        "priority": 100,
-        "answered_key": f"workflow_context:{scope_key}",
-        "already_answered_key": "workflow_context",
-        "conversation_state": "asking_question",
-        "parent_question_id": None,
-        "follow_up_count": 0,
-        "max_follow_ups": 1,
-        "clarity_score": None,
-        "accepted": False,
-        "learned_fact": None,
-        "structured_output": None,
-        "status": "pending",
-        "created_at": datetime.utcnow().isoformat(),
-        "next_question_reason": reason,
-        "system_context": dict(system_context or {}),
-    }
-
-
-def _question_policy_for_category(category: str, trigger: str) -> dict[str, Any]:
-    policy_map: dict[str, dict[str, Any]] = {
-        "navigation_reasoning": {
-            "allowed_stages": ["trackvia_client_selection", "carrier_portal_selection"],
-            "required_context": ["trackvia_page_detected", "client_record_detected", "carrier_field_detected", "switch_trackvia_to_carrier"],
-            "required_context_mode": "any",
-            "priority": 95,
-            "already_answered_key": "learned_navigation_rules",
-        },
-        "carrier_selection": {
-            "allowed_stages": ["trackvia_client_selection", "carrier_portal_selection"],
-            "required_context": ["trackvia_page_detected", "carrier_field_detected", "switch_trackvia_to_carrier"],
-            "required_context_mode": "any",
-            "priority": 92,
-            "already_answered_key": "learned_carrier_rules",
-        },
-        "carrier_validation": {
-            "allowed_stages": ["carrier_portal_selection", "carrier_validation"],
-            "required_context": ["carrier_domain_detected"],
-            "required_context_mode": "all",
-            "priority": 90,
-            "already_answered_key": "learned_carrier_rules",
-        },
-        "healthsherpa_aor": {
-            "allowed_stages": ["healthsherpa_aor_check", "exception_handling"],
-            "required_context": ["healthsherpa_domain_detected", "previous_carrier_lookup_not_found"],
-            "required_context_mode": "any",
-            "priority": 88,
-            "already_answered_key": "learned_aor_rules",
-        },
-        "crm_action": {
-            "allowed_stages": ["crm_contact_lookup", "crm_action"],
-            "required_context": ["crm_domain_detected", "selected_action_is_crm"],
-            "required_context_mode": "any",
-            "priority": 89,
-            "already_answered_key": "learned_crm_rules",
-        },
-        "success_verification": {
-            "allowed_stages": ["action_verification", "crm_action", "carrier_validation"],
-            "required_context": ["verification_hint", "crm_domain_detected", "carrier_domain_detected"],
-            "required_context_mode": "any",
-            "priority": 80,
-            "already_answered_key": "learned_success_verification_rules",
-        },
-        "classification": {
-            "allowed_stages": ["carrier_validation", "healthsherpa_aor_check", "crm_action", "action_verification", "exception_handling"],
-            "required_context": ["client_record_detected", "carrier_domain_detected", "healthsherpa_domain_detected", "crm_domain_detected"],
-            "required_context_mode": "any",
-            "priority": 78,
-            "already_answered_key": "learned_decision_rules",
-        },
-        "exception_handling": {
-            "allowed_stages": ["exception_handling"],
-            "required_context": ["exception_hint"],
-            "required_context_mode": "all",
-            "priority": 82,
-            "already_answered_key": "learned_action_rules",
-        },
-        "data_source": {
-            "allowed_stages": ["trackvia_client_selection", "carrier_validation", "crm_contact_lookup"],
-            "required_context": ["trackvia_page_detected", "carrier_domain_detected", "crm_domain_detected"],
-            "required_context_mode": "any",
-            "priority": 70,
-            "already_answered_key": "learned_identity_rules",
-        },
-    }
-    policy = dict(policy_map.get(category) or {})
-    if not policy:
-        policy = {
-            "allowed_stages": ["trackvia_client_selection", "carrier_validation", "healthsherpa_aor_check", "crm_action", "exception_handling", "action_verification"],
-            "required_context": [],
-            "required_context_mode": "any",
-            "priority": 60,
-            "already_answered_key": "learned_action_rules",
-        }
-    policy["trigger_event"] = trigger
-    return policy
-
-
-def _required_context_satisfied(policy: dict[str, Any], signals: dict[str, Any]) -> bool:
-    required = [str(item) for item in (policy.get("required_context") or []) if str(item)]
-    if not required:
-        return True
-    mode = str(policy.get("required_context_mode") or "any").strip().lower()
-    if mode == "all":
-        return all(bool(signals.get(key)) for key in required)
-    return any(bool(signals.get(key)) for key in required)
-
-
-def _purpose_expected_for_category(category: str, trigger: str) -> tuple[str, str]:
-    templates: dict[str, tuple[str, str]] = {
-        "navigation_reasoning": (
-            "Learn how the employee decides which system/page to open next.",
-            "A rule with condition + source field + destination system/page.",
-        ),
-        "data_source": (
-            "Learn where critical identifiers come from.",
-            "System + exact field name + how to confirm correctness.",
-        ),
-        "identity_verification": (
-            "Learn how to verify we matched the correct person/client.",
-            "Required matching fields and mismatch handling.",
-        ),
-        "carrier_selection": (
-            "Learn carrier routing logic from source data.",
-            "A conditional rule mapping TrackVia fields to carrier portal.",
-        ),
-        "carrier_validation": (
-            "Learn the validation checks required in carrier portals.",
-            "Fields checked, expected values, and pass/fail thresholds.",
-        ),
-        "healthsherpa_aor": (
-            "Learn how AOR status is determined and used.",
-            "Where to check AOR and what actions follow each outcome.",
-        ),
-        "classification": (
-            "Learn how outcomes are classified and what each classification means.",
-            "Decision rule with condition and resulting classification/action.",
-        ),
-        "crm_action": (
-            "Learn what CRM update should happen and when.",
-            "Exact action + required matching fields + safety checks.",
-        ),
-        "success_verification": (
-            "Learn how to verify an action is complete before moving on.",
-            "Verification signal(s) and required confirmation steps.",
-        ),
-        "exception_handling": (
-            "Learn what to do when expected data is missing or mismatched.",
-            "Fallback path + stop conditions + escalation rule.",
-        ),
-        "safety_rule": (
-            "Learn guardrails that prevent unsafe updates.",
-            "Explicit do/don't rule and required checks before write actions.",
-        ),
-    }
-    return templates.get(category, (f"Learn rationale for trigger '{trigger}'.", "Clear condition-action explanation."))
-
-
-def _question_text_for_category(category: str) -> str:
-    prompts_by_category: dict[str, list[str]] = {
-        "navigation_reasoning": [
-            "How do you know which carrier book of business to open for this client?",
-            "Which field in TrackVia tells you where to go next?",
-            "Are there exceptions where you would choose a different carrier portal?",
-        ],
-        "data_source": [
-            "Where do you get the policy number?",
-            "Where do you get the FFM ID?",
-            "Where do you find the Keap ID?",
-        ],
-        "carrier_validation": [
-            "What are you checking in this carrier book?",
-            "How do you know the client is active or past due?",
-            "What date or field tells you the paid-through status?",
-        ],
-        "healthsherpa_aor": [
-            "Why are you checking HealthSherpa for this client?",
-            "How do you know whether we are the agent of record?",
-        ],
-        "crm_action": [
-            "How do you confirm you found the right CRM contact?",
-            "What fields must match before Bill is allowed to update the CRM?",
-            "What should Bill do if only the name matches?",
-        ],
-        "classification": [
-            "What action should happen for this result?",
-            "What should Bill do if the client is past due?",
-            "What should Bill do if we are not agent of record?",
-        ],
-        "success_verification": [
-            "How do you know the CRM action was completed successfully?",
-            "What should Bill check before moving to the next client?",
-        ],
-        "exception_handling": [
-            "What should Bill do if the client is not in the carrier book but we are agent of record?",
-            "If a field is missing, what is the exact next place you check and why?",
-        ],
-    }
-    choices = prompts_by_category.get(category) or ["What should Bill learn from this step before moving on?"]
-    return choices[int(datetime.utcnow().timestamp()) % len(choices)]
-
-
-def _prompt_allowed_for_trigger(trigger: str, frequency: str) -> bool:
-    if frequency == "high":
-        return True
-    if frequency == "medium":
-        return trigger in {
-            "system_switch",
-            "decision_point",
-            "classification_step",
-            "unknown_pattern",
-            "domain_navigation",
-            "navigation_decision",
-        }
-    return trigger in {"system_switch", "unknown_pattern", "domain_navigation"}
-
-
-def _detect_observation_triggers(previous_step: dict[str, Any] | None, step: dict[str, Any]) -> list[str]:
-    triggers: list[str] = []
-    current_context = dict(step.get("system_context") or {})
-    previous_context = dict((previous_step or {}).get("system_context") or {})
-    current_host = str(current_context.get("host") or "").strip().lower()
-    previous_host = str(previous_context.get("host") or "").strip().lower()
-
-    if current_host and previous_host and current_host != previous_host:
-        triggers.append("system_switch")
-        triggers.append("domain_navigation")
-
-    action = str(step.get("action") or "").strip().lower()
-    label_blob = " ".join(
-        [
-            str(step.get("step_name") or ""),
-            str(step.get("description") or ""),
-            str(step.get("value") or ""),
-            str(step.get("option") or ""),
-            str((step.get("system_context") or {}).get("element_label") or ""),
-        ]
-    ).lower()
-
-    decision_terms = ["next", "continue", "submit", "save", "approve", "deny", "mark", "assign", "select"]
-    classification_terms = ["status", "result", "classification", "classify", "tag", "type", "outcome"]
-    navigation_terms = ["portal", "system", "go to", "navigate", "switch", "use", "carrier", "health", "trackvia", "crm"]
-
-    if action == "select_option" or any(term in label_blob for term in classification_terms):
-        triggers.append("classification_step")
-
-    if action in {"click_selector", "select_option"} and any(term in label_blob for term in decision_terms + classification_terms):
-        triggers.append("decision_point")
-
-    if action == "open_url":
-        triggers.append("domain_navigation")
-        if any(term in label_blob for term in decision_terms + navigation_terms):
-            triggers.append("navigation_decision")
-
-    if action in {"click_selector", "select_option"} and any(term in label_blob for term in navigation_terms):
-        triggers.append("navigation_decision")
-
-    if action == "manual_step" or (action != "open_url" and not str(step.get("selector") or "").strip()):
-        triggers.append("unknown_pattern")
-
-    ordered: list[str] = []
-    for trigger in triggers:
-        if trigger not in ordered:
-            ordered.append(trigger)
-    return ordered
-
-
-def _observation_prompt_for_trigger(
+@app.post(
+    "/api/brain/workflow-learning/drafts/{draft_id}/observation/answer",
+    response_model=ObservationQuestionAnswerResponse,
+)
+def answer_observation_question(
     draft_id: str,
-    step_order: int,
-    trigger: str,
-    system_context: dict[str, Any],
-    stage: str,
-    policy: dict[str, Any],
-    reason: str,
-) -> dict[str, Any]:
-    question_map = {
-        "system_switch": "check",
-        "decision_point": "decision",
-        "classification_step": "classification",
-        "unknown_pattern": "why_action",
-        "domain_navigation": "navigation_why",
-        "navigation_decision": "navigation_rule",
-        "system_selection": "navigation_which",
-    }
-    category = _category_for_trigger(trigger)
-    purpose, expected_shape = _purpose_expected_for_category(category, trigger)
-    question_type = question_map.get(trigger, "check")
-    question = _question_text_for_category(category)
-    return {
-        "prompt_id": str(uuid4()),
-        "question_id": f"{category}:{trigger}:{stage}",
-        "draft_id": draft_id,
-        "step_order": int(step_order or 0),
-        "question": question,
-        "question_type": question_type,
-        "trigger_type": trigger,
-        "category": category,
-        "purpose": purpose,
-        "expected_answer_shape": expected_shape,
-        "allowed_stages": list(policy.get("allowed_stages") or []),
-        "trigger_event": str(policy.get("trigger_event") or trigger),
-        "required_context": list(policy.get("required_context") or []),
-        "priority": int(policy.get("priority") or 50),
-        "answered_key": str(policy.get("already_answered_key") or ""),
-        "already_answered_key": str(policy.get("already_answered_key") or ""),
-        "stage": stage,
-        "next_question_reason": reason,
-        "conversation_state": "asking_question",
-        "parent_question_id": None,
-        "follow_up_count": 0,
-        "max_follow_ups": 2,
-        "clarity_score": None,
-        "accepted": False,
-        "learned_fact": None,
-        "structured_output": None,
-        "status": "pending",
-        "created_at": datetime.utcnow().isoformat(),
-        "system_context": dict(system_context or {}),
-    }
+    payload: ObservationQuestionAnswerRequest,
+) -> ObservationQuestionAnswerResponse:
+    idx, draft = _find_workflow_draft(draft_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
 
+    updated = dict(draft)
+    updated["observation_question_frequency"] = _sanitize_observation_frequency(
+        updated.get("observation_question_frequency") or _get_conversation_preference("observation.question_frequency")
+    )
+    steps = [dict(s) for s in (updated.get("steps") or [])]
 
-def _build_observation_prompts(updated: dict[str, Any], step: dict[str, Any], previous_step: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if bool(step.get("known_step")):
-        return []
-    if bool(updated.get("observation_skip_all_questions")) or bool(updated.get("observation_questions_paused")):
-        return []
+    target_idx: int | None = None
+    for i, step in enumerate(steps):
+        if int(step.get("step_order") or 0) == int(payload.step_order):
+            target_idx = i
+            break
+    if target_idx is None:
+        raise HTTPException(status_code=404, detail="Observation step not found")
 
-    settings = _teach_settings_for_draft(updated)
-    frequency = _frequency_from_mode(str(settings.get("question_frequency_mode") or "assisted"))
-    updated["observation_question_frequency"] = frequency
-    explicit_triggers = [str(item).strip() for item in (step.get("observation_triggers") or []) if str(item).strip()]
-    triggers = explicit_triggers or _detect_observation_triggers(previous_step, step)
-    stage = _detect_workflow_stage(step, previous_step)
-    signals = _build_stage_signals(step, previous_step)
-    last_trigger = triggers[0] if triggers else "unknown_pattern"
+    step = dict(steps[target_idx])
+    prompts = [dict(item) for item in (step.get("observation_questions") or []) if isinstance(item, dict)]
+    prompt = next((item for item in prompts if str(item.get("prompt_id") or "") == payload.prompt_id), None)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail="Observation prompt not found")
 
-    updated["teach_current_stage"] = stage
-    updated["teach_last_trigger_event"] = last_trigger
-    updated["teach_current_domain"] = str(signals.get("current_domain") or "")
-    updated["teach_current_url"] = str(signals.get("current_url") or "")
+    generated_rule_candidate: dict[str, Any] | None = None
+    saved_answer = False
+    action = str(payload.action or "answer").strip().lower()
 
-    memory = _teach_memory_for_draft(updated)
-    blocked_categories: set[str] = set()
-    if memory.get("learned_navigation_rules"):
-        blocked_categories.add("navigation_reasoning")
-    if memory.get("learned_identity_rules"):
-        blocked_categories.add("data_source")
-    if memory.get("learned_carrier_rules"):
-        blocked_categories.add("carrier_selection")
-        blocked_categories.add("carrier_validation")
-    if memory.get("learned_aor_rules"):
-        blocked_categories.add("healthsherpa_aor")
-    if memory.get("learned_crm_rules"):
-        blocked_categories.add("crm_action")
-    if memory.get("learned_success_verification_rules"):
-        blocked_categories.add("success_verification")
-    if memory.get("learned_decision_rules"):
-        blocked_categories.add("classification")
-
-    if stage == "unknown":
-        unknown_scope = _unknown_stage_scope_key(dict(step.get("system_context") or {}))
-        known_scopes = {
-            str(x).strip()
-            for x in (memory.get("unknown_stage_context_keys") or [])
-            if str(x).strip()
+    if action == "set_frequency":
+        frequency = _sanitize_observation_frequency(payload.question_frequency)
+        updated["observation_question_frequency"] = frequency
+        _set_conversation_preference("observation.question_frequency", frequency)
+        prompt["status"] = "pending"
+    elif action == "pause":
+        updated["observation_questions_paused"] = True
+        _set_conversation_preference("observation.pause_questions", True)
+        prompt["status"] = "later"
+    elif action == "resume":
+        updated["observation_questions_paused"] = False
+        _set_conversation_preference("observation.pause_questions", False)
+        prompt["status"] = "pending"
+    elif action == "skip_all":
+        updated["observation_skip_all_questions"] = True
+        _set_conversation_preference("observation.skip_all_questions", True)
+        prompt["status"] = "skipped"
+    elif action == "known":
+        step["known_step"] = True
+        prompt["status"] = "known"
+    elif action == "later":
+        prompt["status"] = "later"
+    elif action == "skip":
+        prompt["status"] = "skipped"
+    else:
+        prompt["status"] = "answered"
+        cleaned_answer = " ".join(str(payload.answer or "").split())
+        answer_record = {
+            "answer_id": str(uuid4()),
+            "prompt_id": payload.prompt_id,
+            "question": str(prompt.get("question") or ""),
+            "question_type": str(payload.question_type or prompt.get("question_type") or ""),
+            "trigger_type": str(payload.trigger_type or prompt.get("trigger_type") or ""),
+            "category": str(prompt.get("category") or prompt.get("trigger_type") or "general"),
+            "answer": cleaned_answer,
+            "response_mode": str(payload.response_mode or "text"),
+            "system_context": dict(payload.system_context or prompt.get("system_context") or step.get("system_context") or {}),
+            "workflow_id": str(updated.get("published_workflow_name") or updated.get("workflow_name") or ""),
+            "tenant_id": str(updated.get("tenant_id") or ""),
+            "session_id": str(updated.get("draft_id") or draft_id),
+            "task_id": str((payload.system_context or {}).get("task_id") or ""),
+            "page_url": str((payload.system_context or {}).get("url") or (payload.system_context or {}).get("page_url") or ""),
+            "page_domain": str((payload.system_context or {}).get("host") or ""),
+            "screenshot_ref": str((payload.system_context or {}).get("screenshot_ref") or ""),
+            "captured_at": datetime.utcnow().isoformat(),
         }
-        if unknown_scope in known_scopes:
-            logger.info("teach unknown-stage prompt skipped: scope_already_answered=%s", unknown_scope)
-            return []
-        prompt = _unknown_stage_prompt(
-            draft_id=str(updated.get("draft_id") or ""),
-            step_order=int(step.get("step_order") or 0),
-            system_context=dict(step.get("system_context") or {}),
-            reason="Stage is unknown, so asking broad context before downstream workflow questions.",
+        answers = [dict(item) for item in (step.get("observation_answers") or []) if isinstance(item, dict)]
+        answers.append(answer_record)
+        step["observation_answers"] = answers
+        generated_rule_candidate, annotation, memory_entry = _extract_observation_structures(
+            step=step,
+            prompt=prompt,
+            answer_text=cleaned_answer,
+            response_mode=str(payload.response_mode or "text"),
         )
-        already, reason = _is_prompt_already_answered(prompt, memory)
-        if already:
-            logger.info("teach unknown-stage prompt skipped: %s", reason)
-            return []
-        return [prompt]
+        updated.setdefault("rule_suggestions", [])
+        updated.setdefault("workflow_annotations", [])
+        updated.setdefault("training_memory", [])
+        updated["rule_suggestions"] = [
+            dict(item) for item in (updated.get("rule_suggestions") or []) if isinstance(item, dict)
+        ] + [generated_rule_candidate]
+        updated["workflow_annotations"] = [
+            dict(item) for item in (updated.get("workflow_annotations") or []) if isinstance(item, dict)
+        ] + [annotation]
+        updated["training_memory"] = [
+            dict(item) for item in (updated.get("training_memory") or []) if isinstance(item, dict)
+        ] + [memory_entry]
+        
+        # Extract navigation mapping if this is a navigation-related question
+        trigger_type = str(prompt.get("trigger_type") or "").lower()
+        if trigger_type in {"system_selection", "domain_navigation", "navigation_decision"}:
+            nav_mapping = _extract_navigation_mapping(step, prompt, cleaned_answer)
+            if nav_mapping:
+                # Create a navigation rule from the mapping
+                navigation_rule = {
+                    "rule_id": str(uuid4()),
+                    "draft_id": str(updated.get("draft_id") or ""),
+                    "step_order": int(step.get("step_order") or 0),
+                    "trigger_type": trigger_type,
+                    "question_type": str(prompt.get("question_type") or ""),
+                    "condition": f"{nav_mapping.get('source_field')} equals {nav_mapping.get('source_value')}",
+                    "current_system": str(step.get("system_context", {}).get("system") or ""),
+                    "target_system": nav_mapping.get("target_system", ""),
+                    "target_url_pattern": nav_mapping.get("target_url_pattern", ""),
+                    "system_context": dict(step.get("system_context") or {}),
+                    "mappings": [dict(nav_mapping)],
+                    "answer": cleaned_answer,
+                    "response_mode": str(payload.response_mode or "text"),
+                    "status": "candidate",
+                    "source": "interactive_observation",
+                    "captured_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+                updated.setdefault("navigation_rules", [])
+                updated["navigation_rules"] = [
+                    dict(item) for item in (updated.get("navigation_rules") or []) if isinstance(item, dict)
+                ] + [navigation_rule]
+                
+                # Also save to tenant-specific navigation rule store if tenant_id is present
+                tenant_id = str(updated.get("tenant_id") or "").strip()
+                if tenant_id:
+                    _append_tenant_navigation_rule(tenant_id, navigation_rule)
+        
+        saved_answer = True
 
-    prompts: list[dict[str, Any]] = []
-    for trigger in triggers:
-        if not _prompt_allowed_for_trigger(trigger, frequency):
-            continue
-        category = _category_for_trigger(trigger)
-        if category in blocked_categories:
-            continue
-        policy = _question_policy_for_category(category, trigger)
-        allowed_stages = [str(item) for item in (policy.get("allowed_stages") or []) if str(item)]
-        if allowed_stages and stage not in allowed_stages:
-            continue
-        if not _required_context_satisfied(policy, signals):
-            continue
+    prompt["updated_at"] = datetime.utcnow().isoformat()
+    step["observation_questions"] = prompts
+    steps[target_idx] = _normalize_step(step, int(step.get("step_order") or payload.step_order or 1))
+    updated["steps"] = steps
+    updated["updated_at"] = datetime.utcnow().isoformat()
 
-        cooldown_active, cooldown_reason = _is_category_on_cooldown(memory, category)
-        if cooldown_active:
-            logger.info("teach prompt skipped: category=%s reason=%s", category, cooldown_reason)
-            continue
+    workflow_learning_drafts[idx] = updated
+    _save_workflow_learning_drafts()
 
-        reason = (
-            f"stage={stage}; trigger={trigger}; context_ok=true; allowed={','.join(allowed_stages) or 'any'}"
-        )
-        candidate = _observation_prompt_for_trigger(
-            draft_id=str(updated.get("draft_id") or ""),
-            step_order=int(step.get("step_order") or 0),
-            trigger=trigger,
-            system_context=dict(step.get("system_context") or {}),
-            stage=stage,
-            policy=policy,
-            reason=reason,
-        )
-        already, already_reason = _is_prompt_already_answered(candidate, memory)
-        if already:
-            logger.info("teach prompt skipped: category=%s reason=%s", category, already_reason)
-            continue
-        prompts.append(candidate)
-
-    if not prompts:
-        if stage in {"exception_handling", "action_verification"}:
-            fallback_policy = _question_policy_for_category("exception_handling", "unknown_pattern")
-            fallback = _observation_prompt_for_trigger(
-                draft_id=str(updated.get("draft_id") or ""),
-                step_order=int(step.get("step_order") or 0),
-                trigger="unknown_pattern",
-                system_context=dict(step.get("system_context") or {}),
-                stage=stage,
-                policy=fallback_policy,
-                reason=f"Fallback question for stage {stage}.",
-            )
-            already, already_reason = _is_prompt_already_answered(fallback, memory)
-            if not already:
-                prompts = [fallback]
-            else:
-                logger.info("teach fallback prompt skipped: reason=%s", already_reason)
-                prompts = []
-        else:
-            return []
-
-    prompts.sort(key=lambda item: int(item.get("priority") or 0), reverse=True)
-    if frequency != "high" and prompts:
-        return [prompts[0]]
-    return prompts[:2]
-
-
-def _parse_iso_timestamp(value: Any) -> datetime | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def _can_serve_new_question(draft: dict[str, Any], prompt: dict[str, Any], settings: dict[str, Any]) -> tuple[bool, str]:
-    if str(prompt.get("status") or "pending") != "pending":
-        return False, "No pending prompt available."
-
-    if prompt.get("asked_at"):
-        return True, "Pending prompt is waiting for an answer."
-
-    min_seconds = max(0, int(settings.get("min_seconds_between_questions") or 0))
-    last_asked = _parse_iso_timestamp(draft.get("teach_last_question_at"))
-    if last_asked is not None and min_seconds > 0:
-        elapsed = (datetime.utcnow() - last_asked.replace(tzinfo=None)).total_seconds()
-        if elapsed < min_seconds:
-            wait_for = int(max(1, min_seconds - elapsed))
-            return False, f"Question throttle active ({wait_for}s remaining)."
-
-    return True, "Stage and context checks passed."
+    return ObservationQuestionAnswerResponse(
+        draft_id=draft_id,
+        step_order=int(payload.step_order),
+        prompt_id=payload.prompt_id,
+        status=str(prompt.get("status") or "pending"),
+        saved_answer=saved_answer,
+        observation_question_frequency=_sanitize_observation_frequency(updated.get("observation_question_frequency")),
+        observation_questions_paused=bool(updated.get("observation_questions_paused", False)),
+        observation_skip_all_questions=bool(updated.get("observation_skip_all_questions", False)),
+        generated_rule_candidate=generated_rule_candidate,
+    )
 
 
 def _next_pending_observation_prompt(draft: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -5199,223 +5017,14 @@ def _next_pending_observation_prompt(draft: dict[str, Any]) -> tuple[dict[str, A
     return None, None
 
 
-def _evaluate_teach_answer(prompt: dict[str, Any], answer_text: str) -> dict[str, Any]:
-    cleaned = " ".join(str(answer_text or "").split())
-    question = str(prompt.get("question") or "").lower()
-    purpose = str(prompt.get("purpose") or "").lower()
-    expected = str(prompt.get("expected_answer_shape") or "").lower()
-    combined = f"{question} {purpose} {expected}"
-
-    missing: list[str] = []
-    score = 100
-
-    if not cleaned:
-        score -= 70
-        missing.append("No answer provided")
-    if len(cleaned) < 16:
-        score -= 25
-        missing.append("Need a more specific answer")
-
-    rule_keywords = ["if", "when", "based", "field", "match", "then", "because", "from"]
-    if any(term in combined for term in ["how", "which", "rule", "determine"]):
-        if not any(term in cleaned.lower() for term in rule_keywords):
-            score -= 20
-            missing.append("Missing rule/condition details")
-
-    domain_keywords = ["trackvia", "carrier", "portal", "crm", "healthsherpa", "policy", "ffm", "aor", "paid", "status"]
-    if any(term in combined for term in domain_keywords):
-        if not any(term in cleaned.lower() for term in domain_keywords):
-            score -= 15
-            missing.append("Missing key system/field reference")
-
-    extracted_rule_candidate: dict[str, Any] = {
-        "category": str(prompt.get("category") or ""),
-        "trigger_type": str(prompt.get("trigger_type") or ""),
-        "rule_text": cleaned,
-        "source_field_guess": "",
-        "target_action_guess": "",
-    }
-    lower = cleaned.lower()
-    for token in ["carrier", "plan", "policy", "ffm", "keap", "status", "paid"]:
-        if token in lower:
-            extracted_rule_candidate["source_field_guess"] = token
-            break
-    for token in ["open", "check", "update", "skip", "pause", "verify"]:
-        if token in lower:
-            extracted_rule_candidate["target_action_guess"] = token
-            break
-
-    accepted = score >= 70 and bool(cleaned)
-    follow_up = ""
-    if not accepted:
-        if "Missing key system/field reference" in missing:
-            follow_up = "I need one detail: which exact field tells you this decision (carrier, plan, policy number, FFM ID, or another field)?"
-        elif "Missing rule/condition details" in missing:
-            follow_up = "Can you state the rule as: if [condition], then [action]?"
-        else:
-            follow_up = "I think I understand part of that, but I need one concrete detail clarified."
-
-    return {
-        "clarity_score": max(0, min(100, int(score))),
-        "missing_information": missing,
-        "extracted_rule_candidate": extracted_rule_candidate,
-        "suggested_follow_up_question": follow_up,
-        "accepted": accepted,
-    }
-
-
-def _add_follow_up_prompt(prompt: dict[str, Any], question_text: str) -> dict[str, Any]:
-    follow_up_count = int(prompt.get("follow_up_count") or 0) + 1
-    return {
-        **prompt,
-        "prompt_id": str(uuid4()),
-        "parent_question_id": str(prompt.get("prompt_id") or ""),
-        "question": question_text,
-        "conversation_state": "asking_clarification",
-        "follow_up_count": follow_up_count,
-        "created_at": datetime.utcnow().isoformat(),
-        "status": "pending",
-        "accepted": False,
-        "clarity_score": None,
-    }
-
-
-def _record_learned_answer(updated: dict[str, Any], prompt: dict[str, Any], answer_text: str, structured_output: dict[str, Any]) -> None:
-    memory = _teach_memory_for_draft(updated)
-    bucket = _memory_bucket_for_category(str(prompt.get("category") or ""))
-    answered_key = _prompt_answered_key(prompt)
-    question_id = _prompt_question_id(prompt)
-    question_hash = _question_text_hash(str(prompt.get("question") or ""))
-    entry = {
-        "question_id": question_id or str(prompt.get("prompt_id") or ""),
-        "prompt_id": str(prompt.get("prompt_id") or ""),
-        "question_text_hash": question_hash,
-        "answered_key": answered_key,
-        "question_category": str(prompt.get("category") or ""),
-        "question_purpose": str(prompt.get("purpose") or ""),
-        "answer": answer_text,
-        "structured_output": structured_output,
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-    bucket_items = [dict(x) for x in (memory.get(bucket) or []) if isinstance(x, dict)]
-    bucket_items.append(entry)
-    memory[bucket] = bucket_items[-20:]
-
-    answered_questions = [dict(x) for x in (memory.get("answered_questions") or []) if isinstance(x, dict)]
-    answered_questions.append(
-        {
-            "question_id": entry["question_id"],
-            "prompt_id": entry["prompt_id"],
-            "question_text_hash": entry["question_text_hash"],
-            "answered_key": entry["answered_key"],
-            "category": entry["question_category"],
-            "step_order": int(prompt.get("step_order") or 0),
-            "timestamp": entry["timestamp"],
-        }
-    )
-    memory["answered_questions"] = answered_questions[-300:]
-
-    intents = [str(x).strip() for x in (memory.get("answered_intents") or []) if str(x).strip()]
-    if answered_key and answered_key not in intents:
-        intents.append(answered_key)
-    memory["answered_intents"] = intents[-300:]
-
-    if str(prompt.get("trigger_type") or "") == "unknown_stage":
-        scope_key = _unknown_stage_scope_key(dict(prompt.get("system_context") or {}))
-        scope_keys = [str(x).strip() for x in (memory.get("unknown_stage_context_keys") or []) if str(x).strip()]
-        if scope_key and scope_key not in scope_keys:
-            scope_keys.append(scope_key)
-        memory["unknown_stage_context_keys"] = scope_keys[-300:]
-
-    category = str(prompt.get("category") or "").strip()
-    if category:
-        settings = _teach_settings_for_draft(updated)
-        cooldown_seconds = max(0, int(settings.get("accepted_answer_cooldown_seconds") or 0))
-        if cooldown_seconds > 0:
-            cooldowns = dict(memory.get("category_cooldowns") or {})
-            cooldowns[category] = (datetime.utcnow() + timedelta(seconds=cooldown_seconds)).isoformat()
-            memory["category_cooldowns"] = cooldowns
-
-    logger.info(
-        "teach answer accepted: question_id=%s answered_key=%s category=%s",
-        entry["question_id"],
-        answered_key,
-        entry["question_category"],
-    )
-    updated["teach_session_memory"] = memory
-
-
-def _append_history(updated: dict[str, Any], record: dict[str, Any]) -> None:
-    history = [dict(x) for x in (updated.get("teach_session_history") or []) if isinstance(x, dict)]
-    history.append(record)
-    updated["teach_session_history"] = history[-500:]
-
-
 @app.get("/api/teach-sessions/{session_id}/questions/next")
-def get_teach_session_next_question(session_id: str, force: bool = Query(default=False)) -> dict[str, Any]:
-    draft_idx, draft = _find_workflow_draft(session_id)
-    if draft is None or draft_idx is None:
+def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
+    idx, draft = _find_workflow_draft(session_id)
+    if draft is None or idx is None:
         raise HTTPException(status_code=404, detail="Teach session not found")
 
-    updated = dict(draft)
-    settings = _teach_settings_for_draft(updated)
-    updated["teach_session_settings"] = settings
-
-    blocked, blocked_reason = _consume_wait_for_progress_if_ready(updated, force=bool(force))
-    suppressed = _suppress_already_answered_pending_prompts(updated)
-    if suppressed > 0:
-        logger.info("teach pending prompts suppressed before next-question: count=%s", suppressed)
-
-    step, prompt = _next_pending_observation_prompt(updated)
-    steps_recorded = len([s for s in (updated.get("steps") or []) if isinstance(s, dict)])
-    next_question_reason = "No pending prompt yet."
-
-    if blocked:
-        next_question_reason = blocked_reason
-        prompt = None
-        step = None
-    elif blocked_reason != "wait_for_progress inactive":
-        next_question_reason = blocked_reason
-
-    if step is not None and prompt is not None:
-        allowed, reason = _can_serve_new_question(updated, prompt, settings)
-        next_question_reason = reason
-        if not allowed:
-            prompt = None
-            step = None
-        else:
-            prompt_with_ask_state = dict(prompt)
-            if not prompt_with_ask_state.get("asked_at"):
-                prompt_with_ask_state["asked_at"] = datetime.utcnow().isoformat()
-                updated["teach_last_question_at"] = prompt_with_ask_state["asked_at"]
-                updated["teach_conversation_state"] = "waiting_for_answer"
-                steps = [dict(s) for s in (updated.get("steps") or []) if isinstance(s, dict)]
-                for step_idx, candidate in enumerate(steps):
-                    if int(candidate.get("step_order") or 0) != int((step or {}).get("step_order") or 0):
-                        continue
-                    prompts = [dict(item) for item in (candidate.get("observation_questions") or []) if isinstance(item, dict)]
-                    for prompt_idx, item in enumerate(prompts):
-                        if str(item.get("prompt_id") or "") == str(prompt.get("prompt_id") or ""):
-                            prompts[prompt_idx] = prompt_with_ask_state
-                            break
-                    candidate["observation_questions"] = prompts
-                    steps[step_idx] = candidate
-                    break
-                updated["steps"] = steps
-                updated["updated_at"] = datetime.utcnow().isoformat()
-            prompt = prompt_with_ask_state
-            if not prompt.get("next_question_reason"):
-                prompt["next_question_reason"] = reason
-
-    if updated != draft:
-        workflow_learning_drafts[draft_idx] = updated
-        _save_workflow_learning_drafts()
-    draft = updated
-
-    current_stage = str(draft.get("teach_current_stage") or "unknown")
-    current_url = str(draft.get("teach_current_url") or "")
-    current_domain = str(draft.get("teach_current_domain") or "")
-    last_trigger_event = str(draft.get("teach_last_trigger_event") or "unknown")
+    step, prompt = _next_pending_observation_prompt(draft)
+    steps_recorded = len([s for s in (draft.get("steps") or []) if isinstance(s, dict)])
     return {
         "session_id": session_id,
         "workflow_id": str(draft.get("published_workflow_name") or draft.get("workflow_name") or ""),
@@ -5426,280 +5035,41 @@ def get_teach_session_next_question(session_id: str, force: bool = Query(default
         "observation_questions_paused": bool(draft.get("observation_questions_paused", False)),
         "observation_skip_all_questions": bool(draft.get("observation_skip_all_questions", False)),
         "steps_recorded": steps_recorded,
-        "conversation_state": str(draft.get("teach_conversation_state") or "idle"),
-        "current_stage": current_stage,
-        "current_url": current_url,
-        "current_domain": current_domain,
-        "last_trigger_event": last_trigger_event,
-        "next_question_reason": str((prompt or {}).get("next_question_reason") or next_question_reason),
-        "settings": settings,
-    }
-
-
-def _apply_observation_answer(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    idx, draft = _find_workflow_draft(session_id)
-    if draft is None or idx is None:
-        raise HTTPException(status_code=404, detail="Teach session not found")
-
-    updated = dict(draft)
-    settings = _teach_settings_for_draft(updated)
-    updated["teach_session_settings"] = settings
-    updated["observation_question_frequency"] = _sanitize_observation_frequency(
-        payload.get("question_frequency") or updated.get("observation_question_frequency")
-    )
-
-    steps = [dict(s) for s in (updated.get("steps") or []) if isinstance(s, dict)]
-    step_order = int(payload.get("step_order") or 0)
-    prompt_id = str(payload.get("prompt_id") or "")
-    action = str(payload.get("action") or "answer").strip().lower()
-    answer_text = " ".join(str(payload.get("answer") or "").split())
-
-    target_step: dict[str, Any] | None = None
-    target_prompt: dict[str, Any] | None = None
-    latest_evaluation: dict[str, Any] | None = None
-    follow_up_prompt_text: str | None = None
-    learned_rule_preview: dict[str, Any] | None = None
-
-    for step in steps:
-        if step_order and int(step.get("step_order") or 0) != step_order:
-            continue
-        prompts = [dict(item) for item in (step.get("observation_questions") or []) if isinstance(item, dict)]
-        for prompt in prompts:
-            if prompt_id and str(prompt.get("prompt_id") or "") != prompt_id:
-                continue
-            target_step = step
-            target_prompt = prompt
-            break
-        if target_prompt is not None:
-            break
-
-    if target_prompt is None:
-        target_step, target_prompt = _next_pending_observation_prompt(updated)
-        if target_step is None or target_prompt is None:
-            return {
-                "session_id": session_id,
-                "status": "noop",
-                "observation_question_frequency": updated.get("observation_question_frequency", "medium"),
-                "observation_questions_paused": bool(updated.get("observation_questions_paused", False)),
-                "observation_skip_all_questions": bool(updated.get("observation_skip_all_questions", False)),
-            }
-
-    if target_step is None:
-        raise HTTPException(status_code=404, detail="Teach session step not found")
-
-    prompts = [dict(item) for item in (target_step.get("observation_questions") or []) if isinstance(item, dict)]
-    for i, prompt in enumerate(prompts):
-        if str(prompt.get("prompt_id") or "") == str(target_prompt.get("prompt_id") or ""):
-            if action == "pause":
-                updated["observation_questions_paused"] = True
-                prompt["status"] = "later"
-            elif action == "resume":
-                updated["observation_questions_paused"] = False
-                prompt["status"] = "pending"
-            elif action == "skip_all":
-                updated["observation_skip_all_questions"] = True
-                prompt["status"] = "skipped"
-            elif action in {"skip", "later"}:
-                prompt["status"] = "later" if action == "later" else "skipped"
-            else:
-                prompt["status"] = "answered"
-                prompt["answer"] = answer_text
-                answers = [dict(item) for item in (target_step.get("observation_answers") or []) if isinstance(item, dict)]
-                evaluation = _evaluate_teach_answer(prompt, answer_text)
-                latest_evaluation = dict(evaluation)
-                prompt["clarity_score"] = evaluation["clarity_score"]
-                prompt["accepted"] = bool(evaluation["accepted"])
-                prompt["structured_output"] = dict(evaluation.get("extracted_rule_candidate") or {})
-                prompt["learned_fact"] = answer_text if bool(evaluation["accepted"]) else None
-                answers.append(
-                    {
-                        "answer_id": str(uuid4()),
-                        "teach_session_id": session_id,
-                        "tenant_id": str(updated.get("tenant_id") or ""),
-                        "workflow_id": str(updated.get("published_workflow_name") or updated.get("workflow_name") or ""),
-                        "prompt_id": str(prompt.get("prompt_id") or ""),
-                        "step_order": int(target_step.get("step_order") or 0),
-                        "question_category": str(prompt.get("category") or ""),
-                        "question_purpose": str(prompt.get("purpose") or ""),
-                        "answer": answer_text,
-                        "response_mode": str(payload.get("response_mode") or "text"),
-                        "answered_at": datetime.utcnow().isoformat(),
-                        "question_type": str(prompt.get("question_type") or ""),
-                        "trigger_type": str(prompt.get("trigger_type") or ""),
-                        "clarity_score": int(evaluation.get("clarity_score") or 0),
-                        "accepted": bool(evaluation.get("accepted")),
-                        "structured_output": dict(evaluation.get("extracted_rule_candidate") or {}),
-                        "follow_up_chain": [str(prompt.get("parent_question_id") or ""), str(prompt.get("prompt_id") or "")],
-                        "page_url": str((prompt.get("system_context") or {}).get("url") or ""),
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "system_context": dict(prompt.get("system_context") or {}),
-                    }
-                )
-                if bool(evaluation.get("accepted")):
-                    now = datetime.utcnow()
-                    cooldown_seconds = max(0, int(settings.get("accepted_answer_cooldown_seconds") or 0))
-                    wait_timeout_seconds = max(0, int(settings.get("wait_for_progress_timeout_seconds") or 0))
-                    updated["teach_conversation_state"] = "answer_accepted_waiting_for_progress"
-                    updated["teach_wait_for_progress_until"] = (now + timedelta(seconds=cooldown_seconds)).isoformat() if cooldown_seconds > 0 else None
-                    updated["teach_wait_for_progress_expires_at"] = (now + timedelta(seconds=wait_timeout_seconds)).isoformat() if wait_timeout_seconds > 0 else None
-                    updated["teach_wait_progress_baseline"] = _current_progress_snapshot(updated)
-                    updated["teach_last_accepted_question_id"] = _prompt_question_id(prompt)
-                    updated["teach_last_accepted_answered_key"] = _prompt_answered_key(prompt)
-                    learned_rule_preview = dict(evaluation.get("extracted_rule_candidate") or {})
-                    _record_learned_answer(updated, prompt, answer_text, dict(evaluation.get("extracted_rule_candidate") or {}))
-                    logger.info(
-                        "teach entering wait_for_progress: session_id=%s question_id=%s answered_key=%s baseline=%s",
-                        session_id,
-                        _prompt_question_id(prompt),
-                        _prompt_answered_key(prompt),
-                        updated.get("teach_wait_progress_baseline") or {},
-                    )
-                else:
-                    updated["teach_conversation_state"] = "asking_clarification"
-                    max_follow = int(prompt.get("max_follow_ups") or settings.get("max_follow_ups_per_question") or 2)
-                    follow_count = int(prompt.get("follow_up_count") or 0)
-                    if follow_count < max_follow:
-                        follow_text = str(evaluation.get("suggested_follow_up_question") or "").strip()
-                        if follow_text:
-                            follow_prompt = _add_follow_up_prompt(prompt, follow_text)
-                            follow_up_prompt_text = str(follow_prompt.get("question") or "")
-                            prompts.append(follow_prompt)
-                    else:
-                        memory = _teach_memory_for_draft(updated)
-                        unclear = [dict(x) for x in (memory.get("unclear_items") or []) if isinstance(x, dict)]
-                        unclear.append(
-                            {
-                                "question_id": str(prompt.get("prompt_id") or ""),
-                                "question": str(prompt.get("question") or ""),
-                                "answer": answer_text,
-                                "missing_information": list(evaluation.get("missing_information") or []),
-                                "timestamp": datetime.utcnow().isoformat(),
-                            }
-                        )
-                        memory["unclear_items"] = unclear[-30:]
-                        updated["teach_session_memory"] = memory
-                target_step["observation_answers"] = answers
-                _append_history(
-                    updated,
-                    {
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "question_id": str(prompt.get("prompt_id") or ""),
-                        "parent_question_id": str(prompt.get("parent_question_id") or ""),
-                        "question_category": str(prompt.get("category") or ""),
-                        "question_purpose": str(prompt.get("purpose") or ""),
-                        "answer": answer_text,
-                        "clarity_score": int(evaluation.get("clarity_score") or 0),
-                        "accepted": bool(evaluation.get("accepted")),
-                        "structured_output": dict(evaluation.get("extracted_rule_candidate") or {}),
-                        "follow_up_count": int(prompt.get("follow_up_count") or 0),
-                    },
-                )
-            prompts[i] = prompt
-            break
-
-    target_step["observation_questions"] = prompts
-    target_step["updated_at"] = datetime.utcnow().isoformat()
-    updated["steps"] = steps
-    updated["updated_at"] = datetime.utcnow().isoformat()
-    workflow_learning_drafts[idx] = updated
-    _save_workflow_learning_drafts()
-
-    return {
-        "session_id": session_id,
-        "status": "saved",
-        "prompt_id": str(target_prompt.get("prompt_id") or ""),
-        "step_order": int(target_step.get("step_order") or 0),
-        "observation_question_frequency": updated.get("observation_question_frequency", "medium"),
-        "observation_questions_paused": bool(updated.get("observation_questions_paused", False)),
-        "observation_skip_all_questions": bool(updated.get("observation_skip_all_questions", False)),
-        "conversation_state": str(updated.get("teach_conversation_state") or "waiting_for_answer"),
-        "clarity_score": (latest_evaluation or {}).get("clarity_score"),
-        "missing_information": (latest_evaluation or {}).get("missing_information", []),
-        "accepted": (latest_evaluation or {}).get("accepted"),
-        "suggested_follow_up_question": follow_up_prompt_text or (latest_evaluation or {}).get("suggested_follow_up_question"),
-        "learned_rule_preview": learned_rule_preview,
     }
 
 
 @app.post("/api/teach-sessions/{session_id}/answers")
 def submit_teach_session_answer(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
-    body = dict(payload or {})
-    body["action"] = "answer"
-    return _apply_observation_answer(session_id, body)
-
-
-@app.post("/api/teach-sessions/{session_id}/answers/evaluate")
-def evaluate_teach_session_answer(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
-    idx, draft = _find_workflow_draft(session_id)
-    if draft is None or idx is None:
-        raise HTTPException(status_code=404, detail="Teach session not found")
-
-    prompt_id = str((payload or {}).get("prompt_id") or "")
-    answer = str((payload or {}).get("answer") or "")
-    step, prompt = _next_pending_observation_prompt(draft)
-    if prompt_id:
-        for s in [dict(x) for x in (draft.get("steps") or []) if isinstance(x, dict)]:
-            for p in [dict(item) for item in (s.get("observation_questions") or []) if isinstance(item, dict)]:
-                if str(p.get("prompt_id") or "") == prompt_id:
-                    step, prompt = s, p
-                    break
-            if prompt is not None and str(prompt.get("prompt_id") or "") == prompt_id:
-                break
-
-    if step is None or prompt is None:
-        raise HTTPException(status_code=404, detail="Observation prompt not found")
-
-    evaluation = _evaluate_teach_answer(prompt, answer)
-    return {
-        "session_id": session_id,
-        "prompt_id": str(prompt.get("prompt_id") or ""),
-        "step_order": int(step.get("step_order") or 0),
-        **evaluation,
-    }
-
-
-@app.post("/api/teach-sessions/{session_id}/questions/follow-up")
-def create_teach_session_follow_up(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
-    idx, draft = _find_workflow_draft(session_id)
-    if draft is None or idx is None:
-        raise HTTPException(status_code=404, detail="Teach session not found")
-
-    prompt_id = str((payload or {}).get("prompt_id") or "")
-    follow_text = str((payload or {}).get("question") or "").strip()
-    if not prompt_id or not follow_text:
-        raise HTTPException(status_code=422, detail="prompt_id and question are required")
-
-    updated = dict(draft)
-    steps = [dict(s) for s in (updated.get("steps") or []) if isinstance(s, dict)]
-    created: dict[str, Any] | None = None
-    for step in steps:
-        prompts = [dict(item) for item in (step.get("observation_questions") or []) if isinstance(item, dict)]
-        for prompt in prompts:
-            if str(prompt.get("prompt_id") or "") == prompt_id:
-                created = _add_follow_up_prompt(prompt, follow_text)
-                prompts.append(created)
-                step["observation_questions"] = prompts
-                break
-        if created is not None:
-            break
-
-    if created is None:
-        raise HTTPException(status_code=404, detail="Prompt not found")
-
-    updated["steps"] = steps
-    updated["teach_conversation_state"] = "asking_clarification"
-    updated["updated_at"] = datetime.utcnow().isoformat()
-    workflow_learning_drafts[idx] = updated
-    _save_workflow_learning_drafts()
-
-    return {"session_id": session_id, "question": created}
+    request = ObservationQuestionAnswerRequest(
+        prompt_id=str(payload.get("prompt_id") or ""),
+        step_order=int(payload.get("step_order") or 0),
+        action="answer",
+        answer=str(payload.get("answer") or ""),
+        response_mode=str(payload.get("response_mode") or "text"),
+        question_type=payload.get("question_type"),
+        trigger_type=payload.get("trigger_type"),
+        question_frequency=payload.get("question_frequency"),
+        system_context=dict(payload.get("system_context") or {}),
+    )
+    result = answer_observation_question(session_id, request)
+    return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
 
 @app.post("/api/teach-sessions/{session_id}/questions/skip")
 def skip_teach_session_question(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
-    body = dict(payload or {})
-    body["action"] = "skip"
-    return _apply_observation_answer(session_id, body)
+    request = ObservationQuestionAnswerRequest(
+        prompt_id=str(payload.get("prompt_id") or ""),
+        step_order=int(payload.get("step_order") or 0),
+        action="skip",
+        answer="",
+        response_mode="control",
+        question_type=payload.get("question_type"),
+        trigger_type=payload.get("trigger_type"),
+        question_frequency=payload.get("question_frequency"),
+        system_context=dict(payload.get("system_context") or {}),
+    )
+    result = answer_observation_question(session_id, request)
+    return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
 
 @app.post("/api/teach-sessions/{session_id}/questions/pause")
@@ -5708,12 +5078,30 @@ def pause_teach_session_questions(session_id: str, payload: dict = Body(default=
     if draft is None or idx is None:
         raise HTTPException(status_code=404, detail="Teach session not found")
 
-    should_resume = bool((payload or {}).get("resume", False))
+    should_resume = bool(payload.get("resume", False))
+    step, prompt = _next_pending_observation_prompt(draft)
+
+    if step is not None and prompt is not None:
+        request = ObservationQuestionAnswerRequest(
+            prompt_id=str(prompt.get("prompt_id") or ""),
+            step_order=int(step.get("step_order") or 0),
+            action="resume" if should_resume else "pause",
+            answer="",
+            response_mode="control",
+            question_type=str(prompt.get("question_type") or ""),
+            trigger_type=str(prompt.get("trigger_type") or ""),
+            question_frequency=payload.get("question_frequency"),
+            system_context=dict(prompt.get("system_context") or {}),
+        )
+        result = answer_observation_question(session_id, request)
+        return result.model_dump() if hasattr(result, "model_dump") else dict(result)
+
     updated = dict(draft)
     updated["observation_questions_paused"] = not should_resume
     updated["updated_at"] = datetime.utcnow().isoformat()
     workflow_learning_drafts[idx] = updated
     _save_workflow_learning_drafts()
+    _set_conversation_preference("observation.pause_questions", not should_resume)
 
     return {
         "session_id": session_id,
@@ -5722,60 +5110,57 @@ def pause_teach_session_questions(session_id: str, payload: dict = Body(default=
     }
 
 
-@app.get("/api/teach-sessions/{session_id}/memory")
-def get_teach_session_memory(session_id: str) -> dict[str, Any]:
-    idx, draft = _find_workflow_draft(session_id)
-    if draft is None or idx is None:
-        raise HTTPException(status_code=404, detail="Teach session not found")
+@app.get("/api/brain/navigation/rules/{tenant_id}")
+def get_tenant_navigation_rules(tenant_id: str) -> dict[str, Any]:
+    """Retrieve all learned navigation rules for a specific tenant."""
+    rules = _get_tenant_navigation_rules(tenant_id)
     return {
-        "session_id": session_id,
-        "tenant_id": str(draft.get("tenant_id") or ""),
-        "workflow_id": str(draft.get("published_workflow_name") or draft.get("workflow_name") or ""),
-        "memory": _teach_memory_for_draft(draft),
-        "history": [dict(x) for x in (draft.get("teach_session_history") or []) if isinstance(x, dict)],
+        "tenant_id": tenant_id,
+        "rule_count": len(rules),
+        "rules": rules,
     }
 
 
-@app.post("/api/teach-sessions/{session_id}/settings")
-def update_teach_session_settings(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
-    idx, draft = _find_workflow_draft(session_id)
-    if draft is None or idx is None:
-        raise HTTPException(status_code=404, detail="Teach session not found")
-
-    updated = dict(draft)
-    settings = _teach_settings_for_draft(updated)
-    body = dict(payload or {})
-
-    if "auto_speak_questions" in body:
-        settings["auto_speak_questions"] = bool(body.get("auto_speak_questions"))
-    if "max_follow_ups_per_question" in body:
-        settings["max_follow_ups_per_question"] = max(0, int(body.get("max_follow_ups_per_question") or 0))
-    if "min_seconds_between_questions" in body:
-        settings["min_seconds_between_questions"] = max(0, int(body.get("min_seconds_between_questions") or 0))
-    if "do_not_ask_while_user_typing" in body:
-        settings["do_not_ask_while_user_typing"] = bool(body.get("do_not_ask_while_user_typing"))
-    if "question_frequency_mode" in body:
-        settings["question_frequency_mode"] = str(body.get("question_frequency_mode") or "assisted").strip().lower()
-    if "voice_provider" in body:
-        provider = str(body.get("voice_provider") or "elevenlabs").strip().lower()
-        settings["voice_provider"] = provider if provider in {"elevenlabs", "none"} else "elevenlabs"
-    if "browser_tts_enabled" in body:
-        settings["browser_tts_enabled"] = bool(body.get("browser_tts_enabled"))
-    if "pause_minutes" in body:
-        minutes = max(0, int(body.get("pause_minutes") or 0))
-        settings["pause_until"] = (datetime.utcnow().timestamp() + (minutes * 60)) if minutes else None
-
-    updated["teach_session_settings"] = settings
-    updated["observation_question_frequency"] = _frequency_from_mode(str(settings.get("question_frequency_mode") or "assisted"))
-    updated["updated_at"] = datetime.utcnow().isoformat()
-    workflow_learning_drafts[idx] = updated
-    _save_workflow_learning_drafts()
-
+@app.post("/api/brain/navigation/apply/{tenant_id}")
+def apply_navigation_rules_endpoint(
+    tenant_id: str,
+    current_system: str = "",
+    step_context: dict[str, Any] = {},
+    session_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply navigation rules to determine the next system.
+    
+    This endpoint is called at runtime to use learned navigation mappings
+    to automatically determine which system to navigate to.
+    """
+    result = _apply_navigation_rules(tenant_id, current_system, step_context, session_state)
+    if result:
+        return {
+            "found_navigation_rule": True,
+            "target_system": result.get("target_system"),
+            "url_pattern": result.get("url_pattern"),
+            "confidence": result.get("confidence"),
+            "matched_rule_id": result.get("matched_rule_id"),
+        }
     return {
-        "session_id": session_id,
-        "settings": settings,
-        "observation_question_frequency": updated.get("observation_question_frequency", "medium"),
+        "found_navigation_rule": False,
+        "target_system": None,
+        "url_pattern": None,
     }
+
+
+@app.get("/api/brain/navigation/validate/{tenant_id}")
+def validate_tenant_navigation_rules(tenant_id: str) -> dict[str, Any]:
+    """Validate navigation rules for a tenant and return warnings/issues.
+    
+    This endpoint checks for:
+    - Low-confidence mappings
+    - Conflicting rules
+    - Missing critical mappings
+    - Invalid target systems
+    """
+    return _validate_navigation_rules(tenant_id)
+
 
 
 @app.post("/api/brain/workflow-learning/drafts/{draft_id}/teach-session/start")
@@ -6281,7 +5666,61 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         command_lower = "what failed last"
     # ────────────────────────────────────────────────────────────────────────
 
-    if "show online workers" in command_lower or "list online workers" in command_lower:
+    if _is_new_workflow_command(command_lower):
+        recognized_intent = "start_new_workflow"
+        workflow_name = _extract_workflow_name_from_conversation(command_text)
+
+        if not workflow_name:
+            before_execution = "I recognized a request to start teaching a new workflow."
+            after_execution = "What should we call this workflow?"
+            suggested_next_action = "Try: 'Let's create a new workflow called Member Renewal Followup'."
+        else:
+            selected_workflow = workflow_name
+
+            # If a specific worker was requested, require it to be online.
+            if payload.target_machine_uuid and (not selected_worker or not selected_worker.online):
+                before_execution = "I recognized a request to start a new teaching workflow."
+                after_execution = "The requested worker is not online right now."
+                suggested_next_action = "Choose an online worker or ask 'which worker is free'."
+            else:
+                if not selected_worker:
+                    selected_worker = _select_best_worker(machines, payload.target_machine_uuid)
+
+                if not selected_worker:
+                    before_execution = "I recognized a request to start a new teaching workflow."
+                    after_execution = "No online worker is available to open the teaching browser."
+                    suggested_next_action = "Bring a worker online, then retry the command."
+                else:
+                    draft_request = WorkflowLearningCreateRequest(
+                        learning_path="demonstration",
+                        workflow_name=workflow_name,
+                        goal=f"Teach workflow '{workflow_name}' from conversational command.",
+                        source_text="",
+                    )
+                    draft = _build_workflow_draft(draft_request)
+                    workflow_learning_drafts.append(draft)
+                    _save_workflow_learning_drafts()
+
+                    task_payload = {
+                        "task_type": "teach_session",
+                        "draft_id": draft.get("draft_id"),
+                        "workflow_name": workflow_name,
+                        "api_base": _resolve_teach_session_worker_api_base(""),
+                        "start_url": "",
+                        "target_machine_uuid": selected_worker.machine_uuid,
+                    }
+                    task = _create_task_record(task_payload)
+
+                    before_execution = "I created a teach-mode draft and prepared a worker-targeted teaching session."
+                    after_execution = (
+                        f"Started teaching workflow '{workflow_name}' as task {task.id} on "
+                        f"{selected_worker.machine_name} ({selected_worker.machine_uuid})."
+                    )
+                    suggested_next_action = (
+                        "Use the teaching overlay while performing the process; Bill will capture steps and ask guiding questions."
+                    )
+
+    elif "show online workers" in command_lower or "list online workers" in command_lower:
         recognized_intent = "worker_query"
         online = [machine for machine in _sorted_workers(machines) if machine.online]
         before_execution = "I checked worker heartbeat freshness and status."
@@ -6926,9 +6365,14 @@ def rename_machine(machine_uuid: str, payload: dict = Body(...)) -> dict:
     with _workers_lock:
         if machine_uuid not in registered_workers:
             raise HTTPException(status_code=404, detail="Machine not found")
+        old_name = (registered_workers[machine_uuid].get("machine_name") or "").strip()
         registered_workers[machine_uuid]["machine_name"] = new_name
-        _save_workers_store()
-    logger.info("machine %s renamed to %r", machine_uuid, new_name)
+    # Persist outside the lock to avoid blocking worker heartbeats during I/O
+    _save_workers_store()
+    logger.info(
+        "worker renamed: uuid=%s old_name=%r new_name=%r",
+        machine_uuid, old_name, new_name,
+    )
     return {"machine_uuid": machine_uuid, "machine_name": new_name}
 
 
@@ -6985,14 +6429,6 @@ def list_tasks(limit: int = 20) -> list[TaskRecord]:
     safe_limit = max(1, min(limit, 200))
     ordered = sorted(tasks, key=lambda task: task.get("created_at", ""), reverse=True)
     return [TaskRecord(**task) for task in ordered[:safe_limit]]
-
-
-@app.get("/api/tasks/{task_id}", response_model=TaskRecord)
-def get_task(task_id: str) -> TaskRecord:
-    for task in tasks:
-        if task["id"] == task_id:
-            return TaskRecord(**task)
-    raise HTTPException(status_code=404, detail="Task not found")
 
 
 @app.post("/api/tasks/{task_id}/cancel")
@@ -7330,6 +6766,14 @@ def list_paused_tasks(machine_uuid: str = None, include_auto: bool = False) -> d
         })
     
     return {"count": len(paused), "tasks": paused}
+
+
+@app.get("/api/tasks/{task_id}", response_model=TaskRecord)
+def get_task(task_id: str) -> TaskRecord:
+    for task in tasks:
+        if task["id"] == task_id:
+            return TaskRecord(**task)
+    raise HTTPException(status_code=404, detail="Task not found")
 
 
 @app.post("/api/tasks/{task_id}/recovery-action")
@@ -7878,6 +7322,691 @@ if register_playbook_endpoints is not None:
     register_playbook_endpoints(app)
 
 
+# ---------------------------------------------------------------------------
+# Tenant Entity Endpoints (tenant-first model)
+# ---------------------------------------------------------------------------
+
+try:
+    from tenant_schemas import TenantRecord, TenantCreateRequest, TenantUpdateRequest
+    from tenant_service import (
+        create_tenant as _create_tenant,
+        list_tenants as _list_tenants,
+        get_tenant as _get_tenant,
+        update_tenant as _update_tenant,
+        ensure_tenant_workflow_link,
+    )
+    _tenants_available = True
+except Exception as _tenant_import_err:
+    logger.warning("Tenant entity system unavailable: %s", _tenant_import_err)
+    _tenants_available = False
+
+
+# ---------------------------------------------------------------------------
+# Tenant Template Endpoints (internal/admin)
+# ---------------------------------------------------------------------------
+
+try:
+    from tenant_template_schemas import (
+        TenantWorkflowTemplate,
+        TemplateListItem,
+        TemplateValidationResult,
+        IdentityScoreRequest,
+        IdentityScoreResult,
+        DecisionTestRequest,
+        DecisionTestResult,
+    )
+    from tenant_template_service import (
+        list_templates,
+        list_templates_for_tenant,
+        load_template as _load_template,
+        save_template,
+        validate_template,
+        export_template_json,
+        import_template_json,
+        get_action_steps,
+        score_identity_match,
+        decide_next_action,
+    )
+    _tenant_templates_available = True
+except Exception as _tt_import_err:
+    logger.warning("Tenant template system unavailable: %s", _tt_import_err)
+    _tenant_templates_available = False
+
+try:
+    from tenant_workflow_schemas import (
+        AuditActionResult,
+        AuditClientContext,
+        AuditDecisionContext,
+        AuditSourceRecord,
+        AuditTargetContact,
+        TenantWorkflowRunRequest,
+        TenantWorkflowRunResult,
+        TenantWorkflowTaskContext,
+    )
+    _tenant_workflow_schemas_available = True
+except Exception as _tenant_workflow_schema_err:
+    logger.warning("Tenant workflow schemas unavailable: %s", _tenant_workflow_schema_err)
+    _tenant_workflow_schemas_available = False
+
+
+if _tenants_available:
+
+    @app.post("/api/tenants", response_model=TenantRecord, status_code=201, tags=["Tenants"])
+    def tenant_create(payload: TenantCreateRequest) -> TenantRecord:
+        try:
+            return _create_tenant(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.get("/api/tenants", response_model=list[TenantRecord], tags=["Tenants"])
+    def tenants_list() -> list[TenantRecord]:
+        return _list_tenants()
+
+    @app.get("/api/tenants/{tenant_id}", response_model=TenantRecord, tags=["Tenants"])
+    def tenant_get(tenant_id: str) -> TenantRecord:
+        tenant = _get_tenant(tenant_id)
+        if tenant is None:
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+        return tenant
+
+    @app.put("/api/tenants/{tenant_id}", response_model=TenantRecord, tags=["Tenants"])
+    def tenant_update(tenant_id: str, payload: TenantUpdateRequest) -> TenantRecord:
+        try:
+            return _update_tenant(tenant_id, payload)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+
+if _tenant_templates_available:
+
+    def _resolve_ctx_path(context: dict[str, Any], path: str) -> Any:
+        node: Any = context
+        for part in path.split("."):
+            if not isinstance(node, dict):
+                return None
+            node = node.get(part)
+        return node
+
+    def _render_template_value(raw: Any, input_data: dict[str, Any], identity_ctx: dict[str, Any], audit_ctx: dict[str, Any]) -> Any:
+        if not isinstance(raw, str):
+            return raw
+
+        token_re = re.compile(r"\{([^{}]+)\}")
+
+        def _replace(match: re.Match[str]) -> str:
+            token = str(match.group(1) or "").strip()
+            if token.startswith("identity."):
+                value = _resolve_ctx_path({"identity": identity_ctx}, token)
+            elif token.startswith("audit."):
+                value = _resolve_ctx_path({"audit": audit_ctx}, token)
+            elif token.startswith("input."):
+                value = _resolve_ctx_path({"input": input_data}, token)
+            else:
+                value = _resolve_ctx_path({"input": input_data, "identity": identity_ctx, "audit": audit_ctx}, token)
+            return "" if value is None else str(value)
+
+        return token_re.sub(_replace, raw)
+
+    def _validate_template_for_execution(template: TenantWorkflowTemplate) -> list[str]:
+        failures: list[str] = []
+        if not template.actions:
+            failures.append("Template has no actions configured")
+        if not template.decision_rules:
+            failures.append("Template has no decision rules configured")
+        if not template.identity_policy.fields:
+            failures.append("Template has no identity policy fields configured")
+        return failures
+
+    def _resolve_workflow_id_for_tenant(tenant_id: str, workflow_hint: str) -> str:
+        try:
+            _load_template(tenant_id, workflow_hint)
+            return workflow_hint
+        except Exception:
+            pass
+
+        hint = str(workflow_hint or "").strip().lower()
+        for item in list_templates_for_tenant(tenant_id):
+            if str(item.workflow_id or "").strip().lower() == hint:
+                return item.workflow_id
+            if str(item.workflow_name or "").strip().lower() == hint:
+                return item.workflow_id
+        raise FileNotFoundError(f"Template not found: tenant={tenant_id} workflow={workflow_hint}")
+
+    def _require_identity_fields(record: dict[str, Any], label: str, require_all: bool = True) -> None:
+        present = [field for field in _IDENTITY_FIELDS if str(record.get(field) or "").strip()]
+        if require_all:
+            missing = [field for field in _IDENTITY_FIELDS if field not in present]
+            if missing:
+                raise ValueError(f"{label} missing required identity fields: {', '.join(missing)}")
+            return
+        if not present:
+            raise ValueError(f"{label} missing required identity fields: {', '.join(_IDENTITY_FIELDS)}")
+
+    def _coerce_tenant_workflow_run_request(
+        tenant_id: str,
+        workflow_id: str,
+        input_data: TenantWorkflowRunRequest | dict[str, Any],
+    ) -> TenantWorkflowRunRequest:
+        if isinstance(input_data, TenantWorkflowRunRequest):
+            return input_data
+
+        payload = dict(input_data or {})
+        source_raw = dict(payload.get("source_record") or {})
+        target_raw = dict(payload.get("target_contact") or source_raw)
+        decision_raw = dict(payload.get("decision_context") or {})
+        legacy_audit = dict(payload.get("audit_context") or {})
+        audit_node = dict(legacy_audit.get("audit") or {})
+
+        if not source_raw:
+            source_raw = {
+                "client_name": payload.get("client_name"),
+                "external_contact_id": payload.get("external_contact_id"),
+                "policy_number": payload.get("policy_number"),
+                "marketplace_id": payload.get("marketplace_id"),
+            }
+        if not target_raw:
+            target_raw = dict(source_raw)
+
+        source_record_dict = {
+            "source_system": str(payload.get("source_system") or source_raw.get("source_system") or "source").strip(),
+            "client_name": str(source_raw.get("client_name") or payload.get("client_name") or "").strip(),
+            "external_contact_id": str(source_raw.get("external_contact_id") or payload.get("external_contact_id") or "").strip(),
+            "policy_number": str(source_raw.get("policy_number") or payload.get("policy_number") or "").strip(),
+            "marketplace_id": str(source_raw.get("marketplace_id") or payload.get("marketplace_id") or "").strip(),
+            "raw": source_raw,
+        }
+        target_contact_dict = {
+            "target_system": str(payload.get("target_system") or target_raw.get("target_system") or "crm").strip(),
+            "client_name": str(target_raw.get("client_name") or source_record_dict["client_name"] or "").strip(),
+            "external_contact_id": str(target_raw.get("external_contact_id") or source_record_dict["external_contact_id"] or "").strip(),
+            "policy_number": str(target_raw.get("policy_number") or source_record_dict["policy_number"] or "").strip(),
+            "marketplace_id": str(target_raw.get("marketplace_id") or source_record_dict["marketplace_id"] or "").strip(),
+            "agent_of_record": target_raw.get("agent_of_record", payload.get("agent_of_record", audit_node.get("agent_of_record"))),
+            "raw": target_raw,
+        }
+
+        batch_mode = _is_explicit_smart_sherpa_batch_mode(workflow_id, payload, source_raw, target_raw)
+        is_smart_sherpa = str(workflow_id or "").strip().lower() == "smart_sherpa_sync"
+        if batch_mode and is_smart_sherpa:
+            source_raw = dict(source_raw)
+            target_raw = dict(target_raw)
+            source_raw["run_mode"] = "batch"
+            target_raw["run_mode"] = "batch"
+            source_record_dict["raw"] = source_raw
+            target_contact_dict["raw"] = target_raw
+        else:
+            require_all = not is_smart_sherpa
+            _require_identity_fields(source_record_dict, "source_record", require_all=require_all)
+            _require_identity_fields(target_contact_dict, "target_contact", require_all=require_all)
+
+        client_context = AuditClientContext(
+            client_name=source_record_dict["client_name"],
+            external_contact_id=source_record_dict["external_contact_id"],
+            policy_number=source_record_dict["policy_number"],
+            marketplace_id=source_record_dict["marketplace_id"],
+        )
+
+        decision_context = AuditDecisionContext(
+            audit_status=str(
+                decision_raw.get("audit_status")
+                or payload.get("audit_status")
+                or audit_node.get("status")
+                or "unknown"
+            ).strip(),
+            agent_of_record=decision_raw.get("agent_of_record", payload.get("agent_of_record", audit_node.get("agent_of_record"))),
+            identity_score=decision_raw.get("identity_score", payload.get("identity_score")),
+            selected_rule=decision_raw.get("selected_rule", payload.get("selected_rule")),
+            selected_action=decision_raw.get("selected_action", payload.get("selected_action")),
+            dry_run=bool(decision_raw.get("dry_run", payload.get("dry_run", False))),
+            requires_human_approval=bool(
+                decision_raw.get("requires_human_approval", payload.get("requires_human_approval", False))
+            ),
+            audit_context=legacy_audit or {"audit": audit_node},
+        )
+
+        return TenantWorkflowRunRequest(
+            tenant_id=str(tenant_id).strip(),
+            workflow_id=str(workflow_id).strip(),
+            source_system=str(payload.get("source_system") or source_record_dict["source_system"] or "source").strip(),
+            target_system=str(payload.get("target_system") or target_contact_dict["target_system"] or "crm").strip(),
+            client_name=client_context.client_name,
+            external_contact_id=client_context.external_contact_id,
+            policy_number=client_context.policy_number,
+            marketplace_id=client_context.marketplace_id,
+            audit_status=decision_context.audit_status,
+            agent_of_record=decision_context.agent_of_record,
+            dry_run=decision_context.dry_run,
+            requires_human_approval=decision_context.requires_human_approval,
+            mode=str(payload.get("mode") or "interactive_visible"),
+            target_machine_uuid=str(payload.get("target_machine_uuid") or "").strip() or None,
+            source_record=AuditSourceRecord(**source_record_dict),
+            target_contact=AuditTargetContact(**target_contact_dict),
+            decision_context=decision_context,
+            debug_metadata=dict(payload.get("debug_metadata") or {}),
+        )
+
+    def _action_steps_to_browser_steps(
+        action_steps: list[dict[str, Any]],
+        input_data: dict[str, Any],
+        identity_ctx: dict[str, Any],
+        audit_ctx: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        browser_steps: list[dict[str, Any]] = []
+        for idx, step in enumerate(action_steps, start=1):
+            action_name = str(step.get("action") or "manual_step").strip() or "manual_step"
+            browser_steps.append(
+                {
+                    "step_order": idx,
+                    "name": f"step_{idx}",
+                    "step_name": str(step.get("description") or f"Step {idx}"),
+                    "action": action_name,
+                    "selector": _render_template_value(step.get("selector"), input_data, identity_ctx, audit_ctx),
+                    "url": _render_template_value(step.get("url"), input_data, identity_ctx, audit_ctx),
+                    "value": _render_template_value(step.get("value"), input_data, identity_ctx, audit_ctx),
+                    "instruction": str(step.get("description") or ""),
+                    "manual_review_required": action_name == "manual_approval",
+                    "timeout_ms": step.get("timeout_ms"),
+                }
+            )
+        return browser_steps
+
+    def run_tenant_workflow(
+        tenant_id: str,
+        workflow_id: str,
+        input_data: TenantWorkflowRunRequest | dict[str, Any],
+    ) -> TenantWorkflowRunResult:
+        request_model = _coerce_tenant_workflow_run_request(tenant_id, workflow_id, input_data)
+        is_internal_smart_sherpa = (
+            str(request_model.tenant_id or "").strip().lower() == "internal"
+            and str(request_model.workflow_id or "").strip().lower() == "smart_sherpa_sync"
+        )
+
+        try:
+            resolved_workflow_id = _resolve_workflow_id_for_tenant(request_model.tenant_id, request_model.workflow_id)
+            template = _load_template(tenant_id, resolved_workflow_id)
+        except FileNotFoundError:
+            if not is_internal_smart_sherpa:
+                raise
+
+            source_record = request_model.source_record.raw or request_model.source_record.model_dump()
+            target_contact = request_model.target_contact.raw or request_model.target_contact.model_dump()
+            template_payload = dict(PROCEDURE_TEMPLATES.get("smart_sherpa_sync", {}).get("payload") or {})
+            runtime_payload = {
+                **template_payload,
+                "task_type": "smart_sherpa_sync",
+                "workflow_id": "smart_sherpa_sync",
+                "workflow_name": "smart_sherpa_sync",
+                "tenant_id": request_model.tenant_id,
+                "mode": str(request_model.mode or template_payload.get("mode") or "interactive_visible"),
+                "run_mode": "batch",
+                "source_record": source_record,
+                "target_contact": target_contact,
+                "debug_metadata": dict(request_model.debug_metadata or {}),
+            }
+            target_machine_uuid = str(request_model.target_machine_uuid or "").strip()
+            if target_machine_uuid:
+                runtime_payload["target_machine_uuid"] = target_machine_uuid
+
+            queued_task = _create_task_record(runtime_payload)
+            task_context = TenantWorkflowTaskContext(
+                tenant_id=request_model.tenant_id,
+                workflow_id="smart_sherpa_sync",
+                task_id=queued_task.id,
+                source_system=request_model.source_system,
+                target_system=request_model.target_system,
+                client_name=request_model.client_name,
+                external_contact_id=request_model.external_contact_id,
+                policy_number=request_model.policy_number,
+                marketplace_id=request_model.marketplace_id,
+                audit_status=request_model.audit_status,
+                agent_of_record=request_model.agent_of_record,
+                identity_score=100,
+                selected_rule="smart_sherpa_compat",
+                selected_action="queue_smart_sherpa_sync",
+                dry_run=bool(request_model.dry_run),
+                requires_human_approval=bool(request_model.requires_human_approval),
+                target_machine_uuid=target_machine_uuid or None,
+                mode=str(request_model.mode or "interactive_visible"),
+                debug_metadata=dict(request_model.debug_metadata or {}),
+            )
+            action_result = AuditActionResult(
+                selected_rule="smart_sherpa_compat",
+                selected_action="queue_smart_sherpa_sync",
+                action_steps_count=1,
+                dry_run=bool(request_model.dry_run),
+                requires_human_approval=bool(request_model.requires_human_approval),
+            )
+            logger.info(
+                "Tenant runtime: compatibility fallback queued smart_sherpa_sync tenant=%s workflow=%s task_id=%s",
+                request_model.tenant_id,
+                request_model.workflow_id,
+                queued_task.id,
+            )
+            return TenantWorkflowRunResult(
+                tenant_id=request_model.tenant_id,
+                workflow_id="smart_sherpa_sync",
+                task_id=queued_task.id,
+                identity_score=100,
+                selected_rule="smart_sherpa_compat",
+                selected_action="queue_smart_sherpa_sync",
+                dry_run=bool(request_model.dry_run),
+                requires_human_approval=bool(request_model.requires_human_approval),
+                queued_task=queued_task,
+                task_context=task_context,
+                action_result=action_result,
+            )
+
+        if _tenants_available:
+            ensure_tenant_workflow_link(
+                tenant_id=request_model.tenant_id,
+                workflow_id=resolved_workflow_id,
+                systems=[s.system_key for s in template.systems],
+            )
+
+        validation_failures = _validate_template_for_execution(template)
+        if validation_failures:
+            raise ValueError("Template execution validation failed: " + "; ".join(validation_failures))
+
+        source_record = request_model.source_record.raw or request_model.source_record.model_dump()
+        target_contact = request_model.target_contact.raw or request_model.target_contact.model_dump()
+        audit_context = dict(request_model.decision_context.audit_context or {})
+        if not audit_context:
+            audit_context = {
+                "audit": {
+                    "status": request_model.audit_status,
+                    "agent_of_record": request_model.agent_of_record,
+                }
+            }
+
+        is_batch_smart_sherpa = _is_explicit_smart_sherpa_batch_mode(
+            request_model.workflow_id,
+            {"run_mode": (request_model.debug_metadata or {}).get("run_mode")},
+            source_record,
+            target_contact,
+        )
+        if is_batch_smart_sherpa:
+            identity_score = IdentityScoreResult(
+                score=100,
+                max_possible_score=100,
+                field_results=[{"mode": "batch", "reason": "identity_check_bypassed_for_explicit_batch_mode"}],
+                verdict="auto_proceed",
+                notes="Explicit smart_sherpa_sync batch run: identity match scoring bypassed.",
+            )
+        else:
+            identity_score = score_identity_match(template, source_record, target_contact, use_aliases=True)
+            if identity_score.verdict == "block":
+                raise ValueError(f"Identity score blocked execution: score={identity_score.score}")
+
+        logger.info(
+            "Tenant runtime: template loaded tenant=%s workflow=%s score=%s verdict=%s batch_mode=%s",
+            request_model.tenant_id,
+            resolved_workflow_id,
+            identity_score.score,
+            identity_score.verdict,
+            is_batch_smart_sherpa,
+        )
+
+        decision = decide_next_action(template, audit_context)
+        logger.info(
+            "Tenant runtime: rule selected tenant=%s workflow=%s rule=%s action=%s",
+            request_model.tenant_id,
+            resolved_workflow_id,
+            decision.matched_rule_id,
+            decision.action_key,
+        )
+        if not decision.action_key or decision.action_key == "noop":
+            raise ValueError("Decision engine did not select an executable action")
+
+        action_steps = get_action_steps(template, decision.action_key)
+        if not action_steps:
+            raise ValueError(f"No action steps found for action_key={decision.action_key}")
+
+        identity_ctx = {
+            "score": identity_score.score,
+            "verdict": identity_score.verdict,
+            "source_record": source_record,
+            "target_contact": target_contact,
+        }
+        browser_steps = _action_steps_to_browser_steps(action_steps, request_model.model_dump(), identity_ctx, audit_context)
+        mode = str(request_model.mode or "interactive_visible")
+
+        requires_human_approval = bool(request_model.requires_human_approval)
+        dry_run = bool(request_model.dry_run)
+
+        runtime_payload = {
+            "task_type": "browser_workflow",
+            "mode": mode,
+            "workflow_name": template.workflow_id,
+            "workflow_id": template.workflow_id,
+            "tenant_id": request_model.tenant_id,
+            "tenant_workflow_id": template.workflow_id,
+            "tenant_template_version": template.version,
+            "identity_score": identity_score.score,
+            "identity_verdict": identity_score.verdict,
+            "selected_rule": decision.matched_rule_id,
+            "selected_action": decision.action_key,
+            "decision_rule_id": decision.matched_rule_id,
+            "decision_action_key": decision.action_key,
+            "dry_run": dry_run,
+            "requires_human_approval": requires_human_approval,
+            "audit_context": audit_context,
+            "debug_metadata": request_model.debug_metadata,
+            "source_record": request_model.source_record.model_dump(),
+            "target_contact": request_model.target_contact.model_dump(),
+            "steps": browser_steps,
+        }
+        if is_batch_smart_sherpa:
+            runtime_payload["run_mode"] = "batch"
+        target_machine_uuid = str(request_model.target_machine_uuid or "").strip()
+        if target_machine_uuid:
+            runtime_payload["target_machine_uuid"] = target_machine_uuid
+
+        task = _create_task_record(runtime_payload)
+
+        task_context = TenantWorkflowTaskContext(
+            tenant_id=request_model.tenant_id,
+            workflow_id=template.workflow_id,
+            task_id=task.id,
+            source_system=request_model.source_system,
+            target_system=request_model.target_system,
+            client_name=request_model.client_name,
+            external_contact_id=request_model.external_contact_id,
+            policy_number=request_model.policy_number,
+            marketplace_id=request_model.marketplace_id,
+            audit_status=request_model.audit_status,
+            agent_of_record=request_model.agent_of_record,
+            identity_score=identity_score.score,
+            selected_rule=decision.matched_rule_id,
+            selected_action=decision.action_key,
+            dry_run=dry_run,
+            requires_human_approval=requires_human_approval,
+            target_machine_uuid=target_machine_uuid or None,
+            mode=mode,
+            debug_metadata=request_model.debug_metadata,
+        )
+
+        action_result = AuditActionResult(
+            selected_rule=decision.matched_rule_id,
+            selected_action=decision.action_key,
+            action_steps_count=len(action_steps),
+            dry_run=dry_run,
+            requires_human_approval=requires_human_approval,
+        )
+
+        task["payload"]["task_context"] = task_context.model_dump()
+        task["payload"]["audit_action_result"] = action_result.model_dump()
+        save_task_db(task)
+
+        logger.info(
+            "Tenant runtime: action executed tenant=%s workflow=%s action=%s task_id=%s",
+            request_model.tenant_id,
+            resolved_workflow_id,
+            decision.action_key,
+            task.id,
+        )
+        return TenantWorkflowRunResult(
+            tenant_id=request_model.tenant_id,
+            workflow_id=template.workflow_id,
+            task_id=task.id,
+            identity_score=identity_score.score,
+            selected_rule=decision.matched_rule_id,
+            selected_action=decision.action_key,
+            dry_run=dry_run,
+            requires_human_approval=requires_human_approval,
+            queued_task=task,
+            task_context=task_context,
+            action_result=action_result,
+        )
+
+    @app.post(
+        "/api/tenants/{tenant_id}/workflows/{workflow_id}/run",
+        response_model=TenantWorkflowRunResult,
+        tags=["Tenants"],
+    )
+    def run_tenant_workflow_endpoint(
+        tenant_id: str,
+        workflow_id: str,
+        input_data: TenantWorkflowRunRequest | dict[str, Any] = Body(default={}),
+    ) -> TenantWorkflowRunResult:
+        try:
+            return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_id, input_data=input_data or {})
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: tenant={tenant_id} workflow={workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.get("/api/tenant-templates", response_model=list[TemplateListItem], tags=["Tenant Templates"])
+    def tenant_templates_list() -> list[TemplateListItem]:
+        """List all tenant workflow templates."""
+        return list_templates()
+
+    @app.get("/api/tenant-templates/{tenant_id}", response_model=list[TemplateListItem], tags=["Tenant Templates"])
+    def tenant_templates_for_tenant(tenant_id: str) -> list[TemplateListItem]:
+        """List all workflow templates for a specific tenant."""
+        return list_templates_for_tenant(tenant_id)
+
+    @app.get(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}",
+        response_model=TenantWorkflowTemplate,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_get(tenant_id: str, workflow_id: str) -> TenantWorkflowTemplate:
+        """Retrieve a single tenant workflow template."""
+        try:
+            return _load_template(tenant_id, workflow_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: tenant={tenant_id} workflow={workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post(
+        "/api/tenant-templates/{tenant_id}/workflows",
+        response_model=TenantWorkflowTemplate,
+        status_code=201,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_create(tenant_id: str, template: TenantWorkflowTemplate) -> TenantWorkflowTemplate:
+        """Create a new tenant workflow template."""
+        template.tenant_id = tenant_id
+        save_template(template)
+        if _tenants_available:
+            ensure_tenant_workflow_link(
+                tenant_id=tenant_id,
+                workflow_id=template.workflow_id,
+                systems=[s.system_key for s in template.systems],
+            )
+        return template
+
+    @app.put(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}",
+        response_model=TenantWorkflowTemplate,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_update(tenant_id: str, workflow_id: str, template: TenantWorkflowTemplate) -> TenantWorkflowTemplate:
+        """Create or replace a tenant workflow template."""
+        template.tenant_id = tenant_id
+        template.workflow_id = workflow_id
+        save_template(template)
+        if _tenants_available:
+            ensure_tenant_workflow_link(
+                tenant_id=tenant_id,
+                workflow_id=workflow_id,
+                systems=[s.system_key for s in template.systems],
+            )
+        return template
+
+    @app.post(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}/validate",
+        response_model=TemplateValidationResult,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_validate(tenant_id: str, workflow_id: str) -> TemplateValidationResult:
+        """Run semantic validation on a stored tenant workflow template."""
+        try:
+            template = _load_template(tenant_id, workflow_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: {tenant_id}/{workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return validate_template(template)
+
+    @app.post(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}/test-identity-score",
+        response_model=IdentityScoreResult,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_test_identity(
+        tenant_id: str,
+        workflow_id: str,
+        payload: IdentityScoreRequest,
+    ) -> IdentityScoreResult:
+        """
+        Test identity scoring for a tenant workflow template.
+
+        Provide source_record and target_contact as flat dicts using either
+        generic_key names or tenant_alias names (use_aliases=true, the default).
+        """
+        try:
+            template = _load_template(tenant_id, workflow_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: {tenant_id}/{workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return score_identity_match(
+            template,
+            payload.source_record,
+            payload.target_contact,
+            use_aliases=payload.use_aliases,
+        )
+
+    @app.post(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}/test-decision",
+        response_model=DecisionTestResult,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_test_decision(
+        tenant_id: str,
+        workflow_id: str,
+        payload: DecisionTestRequest,
+    ) -> DecisionTestResult:
+        """
+        Evaluate decision rules against an audit context.
+
+        audit_context should match the shape your workflow produces, e.g.:
+            {"audit": {"status": "past_due", "agent_of_record": true}}
+        Returns the first matching rule and the action_key it selects.
+        """
+        try:
+            template = _load_template(tenant_id, workflow_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: {tenant_id}/{workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return decide_next_action(template, payload.audit_context)
+
+
 @app.get("/api/voice/config")
 def get_voice_config() -> dict[str, Any]:
     from bill_voice_events import get_enabled_categories, is_event_voice_enabled
@@ -8100,6 +8229,11 @@ def get_recovery_context(task_id: str) -> dict[str, Any]:
         "last_error": last_error,
         "is_paused_for_recovery": is_paused,
         "is_auto_recovery": is_auto_recovery,
+        "page_state_snapshot": recovery_context.get("page_state_snapshot") or {},
+        "detected_modals": recovery_context.get("detected_modals") or [],
+        "detected_overlays": recovery_context.get("detected_overlays") or [],
+        "failed_action": recovery_context.get("failed_action") or "",
+        "attempted_fallbacks": recovery_context.get("attempted_fallbacks") or [],
         "matched_playbook_id": recovery_context.get("matched_playbook_id"),
         "matched_problem_signature": recovery_context.get("matched_problem_signature"),
         "playbook_auto_attempted": bool(recovery_context.get("playbook_auto_attempted")),
@@ -8281,6 +8415,45 @@ def complete_task(task_id: str, payload: TaskCompleteRequest) -> dict[str, str]:
     raise HTTPException(status_code=404, detail="Task not found")
 
 
+def _extract_web_resilience_snapshot(payload: TaskFailRequest) -> dict[str, Any]:
+    recovery_context = payload.recovery_context if isinstance(payload.recovery_context, dict) else {}
+    result_json = payload.result_json if isinstance(payload.result_json, dict) else {}
+    web_resilience = result_json.get("web_resilience") if isinstance(result_json.get("web_resilience"), dict) else {}
+
+    raw_snapshot: dict[str, Any] = {}
+    for source in (recovery_context, web_resilience):
+        if not isinstance(source, dict):
+            continue
+        raw_snapshot = {
+            "page_state_snapshot": source.get("page_state_snapshot"),
+            "detected_modals": source.get("detected_modals"),
+            "detected_overlays": source.get("detected_overlays"),
+            "failed_action": source.get("failed_action"),
+            "attempted_fallbacks": source.get("attempted_fallbacks"),
+        }
+        if any(v for v in raw_snapshot.values()):
+            break
+
+    page_state_snapshot = raw_snapshot.get("page_state_snapshot")
+    detected_modals = raw_snapshot.get("detected_modals")
+    detected_overlays = raw_snapshot.get("detected_overlays")
+    attempted_fallbacks = raw_snapshot.get("attempted_fallbacks")
+
+    safe_page_state = page_state_snapshot if isinstance(page_state_snapshot, dict) else {}
+    safe_visible_text = str(safe_page_state.get("visible_text_sample") or "")
+    if len(safe_visible_text) > 300:
+        safe_visible_text = safe_visible_text[:300]
+    if safe_page_state:
+        safe_page_state = {**safe_page_state, "visible_text_sample": safe_visible_text}
+
+    return {
+        "page_state_snapshot": safe_page_state,
+        "detected_modals": [str(item) for item in (detected_modals or [])][:8],
+        "detected_overlays": [str(item) for item in (detected_overlays or [])][:8],
+        "failed_action": str(raw_snapshot.get("failed_action") or ""),
+        "attempted_fallbacks": [str(item) for item in (attempted_fallbacks or [])][:20],
+    }
+
 @app.post("/worker/tasks/{task_id}/fail")
 def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
     for task in tasks:
@@ -8292,6 +8465,48 @@ def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
         task["result_json"] = payload.result_json
         task["updated_at"] = datetime.utcnow().isoformat()
         task["completed_at"] = datetime.utcnow().isoformat()
+
+        web_resilience_snapshot = _extract_web_resilience_snapshot(payload)
+        has_web_resilience_snapshot = any(
+            bool(web_resilience_snapshot.get(key))
+            for key in ("page_state_snapshot", "detected_modals", "detected_overlays", "failed_action", "attempted_fallbacks")
+        )
+        if has_web_resilience_snapshot:
+            prior_context = task.get("recovery_context") if isinstance(task.get("recovery_context"), dict) else {}
+            task["recovery_context"] = {
+                **prior_context,
+                "task_id": task_id,
+                "workflow_name": (task.get("payload") or {}).get("workflow_name") or (task.get("payload") or {}).get("task_type") or "unknown",
+                "paused_at": prior_context.get("paused_at") or datetime.utcnow().isoformat(),
+                "pause_reason": prior_context.get("pause_reason") or "Failure captured for recovery diagnostics",
+                "machine_uuid": payload.machine_uuid,
+                "last_error": payload.error,
+                "error_classification": classify_error(payload.error),
+                "page_state_snapshot": web_resilience_snapshot.get("page_state_snapshot") or {},
+                "detected_modals": web_resilience_snapshot.get("detected_modals") or [],
+                "detected_overlays": web_resilience_snapshot.get("detected_overlays") or [],
+                "failed_action": web_resilience_snapshot.get("failed_action") or "",
+                "attempted_fallbacks": web_resilience_snapshot.get("attempted_fallbacks") or [],
+            }
+            logger.warning(
+                "WEB_RESILIENCE_SNAPSHOT task_id=%s failed_action=%s detected_modals=%d detected_overlays=%d",
+                task_id,
+                task["recovery_context"].get("failed_action", ""),
+                len(task["recovery_context"].get("detected_modals", [])),
+                len(task["recovery_context"].get("detected_overlays", [])),
+            )
+            _log_recovery_audit(
+                task_id,
+                "web_resilience_snapshot",
+                {
+                    "failed_action": task["recovery_context"].get("failed_action", ""),
+                    "detected_modals": task["recovery_context"].get("detected_modals", []),
+                    "detected_overlays": task["recovery_context"].get("detected_overlays", []),
+                    "attempted_fallbacks": task["recovery_context"].get("attempted_fallbacks", []),
+                    "page_url": (task["recovery_context"].get("page_state_snapshot") or {}).get("url", ""),
+                },
+                machine_uuid=payload.machine_uuid,
+            )
 
         error_class = classify_error(payload.error)
 
@@ -8507,4 +8722,59 @@ def debug_tasks_db() -> list[dict]:
             ]
     except Exception as exc:
         return [{"error": str(exc)}]
+
+
+# ── Phase 9: Conversational Command Center Adapter ────────────────────────────
+
+def _bill_chat_rename_worker(machine_uuid: str, new_name: str) -> dict:
+    """Thin wrapper used by BillChatService to rename a worker."""
+    with _workers_lock:
+        if machine_uuid not in registered_workers:
+            raise ValueError(f"Worker {machine_uuid!r} not found")
+        old_name = (registered_workers[machine_uuid].get("machine_name") or "").strip()
+        registered_workers[machine_uuid]["machine_name"] = new_name
+    _save_workers_store()
+    logger.info(
+        "worker renamed via chat: uuid=%s old_name=%r new_name=%r",
+        machine_uuid, old_name, new_name,
+    )
+    return {"machine_uuid": machine_uuid, "old_name": old_name, "machine_name": new_name}
+
+
+def _bill_chat_get_workers() -> dict[str, dict]:
+    """Return a snapshot of registered workers for BillChatService."""
+    with _workers_lock:
+        return {k: dict(v) for k, v in registered_workers.items()}
+
+
+@app.post("/api/bill/chat")
+def bill_chat(payload: dict = Body(default={})) -> dict:
+    """Phase 9: Conversational Command Center Adapter.
+
+    Accepts a natural-language message and routes it to the appropriate
+    Bill Core service (task queue, worker registry, teaching sessions, etc.).
+    Existing /api/brain/command functionality is NOT replaced by this endpoint.
+    """
+    from conversational.bill_chat_service import BillChatRequest, BillChatService
+
+    try:
+        request = BillChatRequest(
+            tenant_id=str(payload.get("tenant_id") or "internal"),
+            user_id=str(payload.get("user_id") or ""),
+            session_id=str(payload.get("session_id") or ""),
+            message=str(payload.get("message") or ""),
+            target_machine_uuid=payload.get("target_machine_uuid") or None,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    service = BillChatService(
+        create_task_fn=_create_task_record,
+        get_workers_fn=_bill_chat_get_workers,
+        rename_worker_fn=_bill_chat_rename_worker,
+    )
+
+    response = service.handle_message(request)
+    return response.model_dump()
+
 

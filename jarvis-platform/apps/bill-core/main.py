@@ -1477,6 +1477,34 @@ def _extract_name_with_patterns(command_text: str, patterns: list[str]) -> str |
     return None
 
 
+def _is_new_workflow_command(command_lower: str) -> bool:
+    phrases = (
+        "start a new workflow",
+        "start new workflow",
+        "create a new workflow",
+        "create new workflow",
+        "create a workflow",
+        "new workflow",
+        "teach this process",
+        "teach this workflow",
+        "start teaching this",
+        "teach this",
+    )
+    return any(phrase in command_lower for phrase in phrases)
+
+
+def _extract_workflow_name_from_conversation(command_text: str) -> str | None:
+    patterns = [
+        r"\b(?:workflow\s+)?called\s+([A-Za-z][A-Za-z0-9 _-]{1,80})",
+        r"\b(?:workflow\s+)?named\s+([A-Za-z][A-Za-z0-9 _-]{1,80})",
+        r"\bworkflow\s+([A-Za-z][A-Za-z0-9 _-]{1,80})",
+    ]
+    value = _extract_name_with_patterns(command_text, patterns)
+    if not value:
+        return None
+    return re.sub(r"\s+", "_", value.strip()).strip("_-")[:80] or None
+
+
 def _parse_command_parameters(command_text: str) -> dict[str, Any]:
     command_lower = command_text.lower()
     params: dict[str, Any] = {}
@@ -5638,7 +5666,61 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         command_lower = "what failed last"
     # ────────────────────────────────────────────────────────────────────────
 
-    if "show online workers" in command_lower or "list online workers" in command_lower:
+    if _is_new_workflow_command(command_lower):
+        recognized_intent = "start_new_workflow"
+        workflow_name = _extract_workflow_name_from_conversation(command_text)
+
+        if not workflow_name:
+            before_execution = "I recognized a request to start teaching a new workflow."
+            after_execution = "What should we call this workflow?"
+            suggested_next_action = "Try: 'Let's create a new workflow called Member Renewal Followup'."
+        else:
+            selected_workflow = workflow_name
+
+            # If a specific worker was requested, require it to be online.
+            if payload.target_machine_uuid and (not selected_worker or not selected_worker.online):
+                before_execution = "I recognized a request to start a new teaching workflow."
+                after_execution = "The requested worker is not online right now."
+                suggested_next_action = "Choose an online worker or ask 'which worker is free'."
+            else:
+                if not selected_worker:
+                    selected_worker = _select_best_worker(machines, payload.target_machine_uuid)
+
+                if not selected_worker:
+                    before_execution = "I recognized a request to start a new teaching workflow."
+                    after_execution = "No online worker is available to open the teaching browser."
+                    suggested_next_action = "Bring a worker online, then retry the command."
+                else:
+                    draft_request = WorkflowLearningCreateRequest(
+                        learning_path="demonstration",
+                        workflow_name=workflow_name,
+                        goal=f"Teach workflow '{workflow_name}' from conversational command.",
+                        source_text="",
+                    )
+                    draft = _build_workflow_draft(draft_request)
+                    workflow_learning_drafts.append(draft)
+                    _save_workflow_learning_drafts()
+
+                    task_payload = {
+                        "task_type": "teach_session",
+                        "draft_id": draft.get("draft_id"),
+                        "workflow_name": workflow_name,
+                        "api_base": _resolve_teach_session_worker_api_base(""),
+                        "start_url": "",
+                        "target_machine_uuid": selected_worker.machine_uuid,
+                    }
+                    task = _create_task_record(task_payload)
+
+                    before_execution = "I created a teach-mode draft and prepared a worker-targeted teaching session."
+                    after_execution = (
+                        f"Started teaching workflow '{workflow_name}' as task {task.id} on "
+                        f"{selected_worker.machine_name} ({selected_worker.machine_uuid})."
+                    )
+                    suggested_next_action = (
+                        "Use the teaching overlay while performing the process; Bill will capture steps and ask guiding questions."
+                    )
+
+    elif "show online workers" in command_lower or "list online workers" in command_lower:
         recognized_intent = "worker_query"
         online = [machine for machine in _sorted_workers(machines) if machine.online]
         before_execution = "I checked worker heartbeat freshness and status."
@@ -8147,6 +8229,11 @@ def get_recovery_context(task_id: str) -> dict[str, Any]:
         "last_error": last_error,
         "is_paused_for_recovery": is_paused,
         "is_auto_recovery": is_auto_recovery,
+        "page_state_snapshot": recovery_context.get("page_state_snapshot") or {},
+        "detected_modals": recovery_context.get("detected_modals") or [],
+        "detected_overlays": recovery_context.get("detected_overlays") or [],
+        "failed_action": recovery_context.get("failed_action") or "",
+        "attempted_fallbacks": recovery_context.get("attempted_fallbacks") or [],
         "matched_playbook_id": recovery_context.get("matched_playbook_id"),
         "matched_problem_signature": recovery_context.get("matched_problem_signature"),
         "playbook_auto_attempted": bool(recovery_context.get("playbook_auto_attempted")),
@@ -8328,6 +8415,45 @@ def complete_task(task_id: str, payload: TaskCompleteRequest) -> dict[str, str]:
     raise HTTPException(status_code=404, detail="Task not found")
 
 
+def _extract_web_resilience_snapshot(payload: TaskFailRequest) -> dict[str, Any]:
+    recovery_context = payload.recovery_context if isinstance(payload.recovery_context, dict) else {}
+    result_json = payload.result_json if isinstance(payload.result_json, dict) else {}
+    web_resilience = result_json.get("web_resilience") if isinstance(result_json.get("web_resilience"), dict) else {}
+
+    raw_snapshot: dict[str, Any] = {}
+    for source in (recovery_context, web_resilience):
+        if not isinstance(source, dict):
+            continue
+        raw_snapshot = {
+            "page_state_snapshot": source.get("page_state_snapshot"),
+            "detected_modals": source.get("detected_modals"),
+            "detected_overlays": source.get("detected_overlays"),
+            "failed_action": source.get("failed_action"),
+            "attempted_fallbacks": source.get("attempted_fallbacks"),
+        }
+        if any(v for v in raw_snapshot.values()):
+            break
+
+    page_state_snapshot = raw_snapshot.get("page_state_snapshot")
+    detected_modals = raw_snapshot.get("detected_modals")
+    detected_overlays = raw_snapshot.get("detected_overlays")
+    attempted_fallbacks = raw_snapshot.get("attempted_fallbacks")
+
+    safe_page_state = page_state_snapshot if isinstance(page_state_snapshot, dict) else {}
+    safe_visible_text = str(safe_page_state.get("visible_text_sample") or "")
+    if len(safe_visible_text) > 300:
+        safe_visible_text = safe_visible_text[:300]
+    if safe_page_state:
+        safe_page_state = {**safe_page_state, "visible_text_sample": safe_visible_text}
+
+    return {
+        "page_state_snapshot": safe_page_state,
+        "detected_modals": [str(item) for item in (detected_modals or [])][:8],
+        "detected_overlays": [str(item) for item in (detected_overlays or [])][:8],
+        "failed_action": str(raw_snapshot.get("failed_action") or ""),
+        "attempted_fallbacks": [str(item) for item in (attempted_fallbacks or [])][:20],
+    }
+
 @app.post("/worker/tasks/{task_id}/fail")
 def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
     for task in tasks:
@@ -8339,6 +8465,48 @@ def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
         task["result_json"] = payload.result_json
         task["updated_at"] = datetime.utcnow().isoformat()
         task["completed_at"] = datetime.utcnow().isoformat()
+
+        web_resilience_snapshot = _extract_web_resilience_snapshot(payload)
+        has_web_resilience_snapshot = any(
+            bool(web_resilience_snapshot.get(key))
+            for key in ("page_state_snapshot", "detected_modals", "detected_overlays", "failed_action", "attempted_fallbacks")
+        )
+        if has_web_resilience_snapshot:
+            prior_context = task.get("recovery_context") if isinstance(task.get("recovery_context"), dict) else {}
+            task["recovery_context"] = {
+                **prior_context,
+                "task_id": task_id,
+                "workflow_name": (task.get("payload") or {}).get("workflow_name") or (task.get("payload") or {}).get("task_type") or "unknown",
+                "paused_at": prior_context.get("paused_at") or datetime.utcnow().isoformat(),
+                "pause_reason": prior_context.get("pause_reason") or "Failure captured for recovery diagnostics",
+                "machine_uuid": payload.machine_uuid,
+                "last_error": payload.error,
+                "error_classification": classify_error(payload.error),
+                "page_state_snapshot": web_resilience_snapshot.get("page_state_snapshot") or {},
+                "detected_modals": web_resilience_snapshot.get("detected_modals") or [],
+                "detected_overlays": web_resilience_snapshot.get("detected_overlays") or [],
+                "failed_action": web_resilience_snapshot.get("failed_action") or "",
+                "attempted_fallbacks": web_resilience_snapshot.get("attempted_fallbacks") or [],
+            }
+            logger.warning(
+                "WEB_RESILIENCE_SNAPSHOT task_id=%s failed_action=%s detected_modals=%d detected_overlays=%d",
+                task_id,
+                task["recovery_context"].get("failed_action", ""),
+                len(task["recovery_context"].get("detected_modals", [])),
+                len(task["recovery_context"].get("detected_overlays", [])),
+            )
+            _log_recovery_audit(
+                task_id,
+                "web_resilience_snapshot",
+                {
+                    "failed_action": task["recovery_context"].get("failed_action", ""),
+                    "detected_modals": task["recovery_context"].get("detected_modals", []),
+                    "detected_overlays": task["recovery_context"].get("detected_overlays", []),
+                    "attempted_fallbacks": task["recovery_context"].get("attempted_fallbacks", []),
+                    "page_url": (task["recovery_context"].get("page_state_snapshot") or {}).get("url", ""),
+                },
+                machine_uuid=payload.machine_uuid,
+            )
 
         error_class = classify_error(payload.error)
 
@@ -8608,4 +8776,5 @@ def bill_chat(payload: dict = Body(default={})) -> dict:
 
     response = service.handle_message(request)
     return response.model_dump()
+
 

@@ -1,8 +1,9 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import WebResilienceSnapshotCard, { type PageStateSnapshot } from "./WebResilienceSnapshotCard";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Types ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 export type PausedTask = {
   id: string;
@@ -41,6 +42,12 @@ export type RecoveryContext = {
   // control
   recovery_attempt_count?: number | null;
   can_submit_new_action?: boolean | null;
+  // web resilience phase 2 snapshot
+  page_state_snapshot?: PageStateSnapshot | null;
+  detected_modals?: string[] | null;
+  detected_overlays?: string[] | null;
+  failed_action?: string | null;
+  attempted_fallbacks?: string[] | null;
   // sub-objects
   actions?: RecoveryAction[];
   audit_trail?: RecoveryAuditEntry[];
@@ -119,9 +126,15 @@ type RecoveryContextApiResponse = {
   candidate_playbook_created?: boolean;
   learned_from_human_recovery?: boolean;
   audit_trail?: Array<Record<string, unknown>>;
+  // web resilience phase 2
+  page_state_snapshot?: Record<string, unknown> | null;
+  detected_modals?: string[] | null;
+  detected_overlays?: string[] | null;
+  failed_action?: string | null;
+  attempted_fallbacks?: string[] | null;
 };
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Constants ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 const QUEUE_POLL_MS = 8_000;
 const DETAIL_POLL_MS = 5_000;
@@ -168,10 +181,10 @@ const ACTION_DEFS: { action: string; label: string; description: string; variant
   },
 ];
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 function timeAgo(iso: string | null | undefined): string {
-  if (!iso) return "—";
+  if (!iso) return "ΓÇö";
   const diff = Date.now() - new Date(iso).getTime();
   if (diff < 60_000) return "just now";
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
@@ -179,7 +192,7 @@ function timeAgo(iso: string | null | undefined): string {
 }
 
 function shortId(id: string): string {
-  return id.length > 8 ? `…${id.slice(-8)}` : id;
+  return id.length > 8 ? `ΓÇª${id.slice(-8)}` : id;
 }
 
 function statusBadge(status: string): string {
@@ -206,7 +219,7 @@ function actionStatusBadge(status: string | undefined): string {
   return "rounded px-1.5 py-0.5 text-[10px] font-semibold bg-slate-700/60 text-slate-400";
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Component ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 interface RecoveryPanelProps {
   apiBase: string;
@@ -232,7 +245,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
   const queueTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const detailTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ── Fetchers ───────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Fetchers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
   const loadQueue = useCallback(async () => {
     setLoadingQueue(true);
@@ -285,6 +298,11 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
         is_auto_recovery: Boolean(data.is_auto_recovery),
         recovery_attempt_count: data.recovery_attempt_count ?? null,
         can_submit_new_action: data.can_submit_new_action ?? null,
+        page_state_snapshot: (data.page_state_snapshot as PageStateSnapshot) ?? null,
+        detected_modals: data.detected_modals ?? null,
+        detected_overlays: data.detected_overlays ?? null,
+        failed_action: data.failed_action ?? null,
+        attempted_fallbacks: data.attempted_fallbacks ?? null,
         actions: actionsRaw.map((item) => ({
           action_id: String(item.action_id ?? "") || undefined,
           action: String(item.action ?? "") || undefined,
@@ -330,7 +348,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
     }
   }, [apiBase]);
 
-  // ── Polling setup ──────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Polling setup ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
   useEffect(() => {
     void loadQueue();
@@ -354,7 +372,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
     void loadSuggestion(selectedTaskId, false);
   }, [selectedTaskId, loadSuggestion]);
 
-  // ── Actions ────────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Actions ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
   const handleSelectTask = (task: PausedTask) => {
     if (task.id === selectedTaskId) return;
@@ -440,7 +458,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
     }
   };
 
-  // ── Derived state ──────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Derived state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
   const selectedTask = pausedTasks.find((t) => t.id === selectedTaskId) ?? null;
   const taskStillPaused =
@@ -450,7 +468,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
         (recoveryContext.task_id === selectedTaskId)));
   const canSubmit = !submittingAction && (recoveryContext?.can_submit_new_action !== false);
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Render ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
   const totalPaused = pausedTasks.length;
   const autoPaused = pausedTasks.filter((t) => t.status === "paused_for_auto_recovery").length;
@@ -479,12 +497,12 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
           disabled={loadingQueue}
           className={BUTTON_ACCENT_GHOST}
         >
-          {loadingQueue ? "Refreshing…" : "↻ Refresh"}
+          {loadingQueue ? "RefreshingΓÇª" : "Γå╗ Refresh"}
         </button>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        {/* ── Left: Queue ───────────────────────────────────────────────── */}
+        {/* ΓöÇΓöÇ Left: Queue ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */}
         <div className="flex flex-col gap-2">
           {queueError && (
             <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
@@ -526,7 +544,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
               <div className="flex items-center justify-between">
                 <span className="text-xs text-slate-500">
                   {task.assigned_machine_uuid
-                    ? `Worker: …${task.assigned_machine_uuid.slice(-6)}`
+                    ? `Worker: ΓÇª${task.assigned_machine_uuid.slice(-6)}`
                     : "No worker"}
                 </span>
                 <span className="text-xs text-slate-600">{timeAgo(task.updated_at)}</span>
@@ -538,7 +556,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
           ))}
         </div>
 
-        {/* ── Right: Detail Panel ───────────────────────────────────────── */}
+        {/* ΓöÇΓöÇ Right: Detail Panel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */}
         <div className="flex flex-col gap-3">
           {!selectedTaskId && (
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-10 text-center">
@@ -572,7 +590,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
                 </p>
                 {recoveryContext?.assigned_machine_uuid && (
                   <p className="mt-0.5 text-xs text-slate-500">
-                    Worker: …{recoveryContext.assigned_machine_uuid.slice(-8)}
+                    Worker: ΓÇª{recoveryContext.assigned_machine_uuid.slice(-8)}
                   </p>
                 )}
               </div>
@@ -628,8 +646,8 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
                         {(suggestion.based_on.matched_problem_signature || suggestion.based_on.modal_detected || suggestion.based_on.tab_count != null) && (
                           <p>
                             Basis: {suggestion.based_on.matched_problem_signature ?? "-"}
-                            {suggestion.based_on.modal_detected ? " · modal" : ""}
-                            {suggestion.based_on.tab_count != null ? ` · tabs=${suggestion.based_on.tab_count}` : ""}
+                            {suggestion.based_on.modal_detected ? " ┬╖ modal" : ""}
+                            {suggestion.based_on.tab_count != null ? ` ┬╖ tabs=${suggestion.based_on.tab_count}` : ""}
                           </p>
                         )}
                       </div>
@@ -673,6 +691,18 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
                   </p>
                   <p className="text-xs leading-relaxed text-rose-300">{recoveryContext.last_error}</p>
                 </div>
+              )}
+
+              {/* Web Resilience Snapshot Card */}
+              {(recoveryContext || loadingDetail) && (
+                <WebResilienceSnapshotCard
+                  loading={loadingDetail && !recoveryContext}
+                  pageStateSnapshot={recoveryContext?.page_state_snapshot}
+                  detectedModals={recoveryContext?.detected_modals}
+                  detectedOverlays={recoveryContext?.detected_overlays}
+                  failedAction={recoveryContext?.failed_action}
+                  attemptedFallbacks={recoveryContext?.attempted_fallbacks}
+                />
               )}
 
               {/* Checkpoint signals */}
@@ -781,7 +811,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs text-slate-500">Playbook ID</span>
                         <span className="font-mono text-[10px] text-slate-400">
-                          …{recoveryContext.matched_playbook_id.slice(-8)}
+                          ΓÇª{recoveryContext.matched_playbook_id.slice(-8)}
                         </span>
                       </div>
                     )}
@@ -797,7 +827,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
                 <textarea
                   value={operatorNotes}
                   onChange={(e) => setOperatorNotes(e.target.value)}
-                  placeholder="Describe what you observed or why you chose this action…"
+                  placeholder="Describe what you observed or why you chose this actionΓÇª"
                   rows={2}
                   disabled={!canSubmit}
                   className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 resize-none focus:border-cyan-500/50 focus:outline-none disabled:opacity-40"
@@ -880,7 +910,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
                           {a.result_message && (
                             <p className="mt-0.5 text-[10px] text-slate-500 leading-snug">
                               {a.result_message.length > 120
-                                ? a.result_message.slice(0, 120) + "…"
+                                ? a.result_message.slice(0, 120) + "ΓÇª"
                                 : a.result_message}
                             </p>
                           )}
@@ -902,7 +932,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
                     className="flex w-full items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-slate-500"
                   >
                     <span>Audit Trail ({recoveryContext.audit_trail.length})</span>
-                    <span>{showAuditTrail ? "▲" : "▼"}</span>
+                    <span>{showAuditTrail ? "Γû▓" : "Γû╝"}</span>
                   </button>
                   {showAuditTrail && (
                     <div className="mt-2 flex flex-col gap-1.5 border-l-2 border-slate-700 pl-3">
@@ -921,7 +951,7 @@ export default function RecoveryPanel({ apiBase }: RecoveryPanelProps) {
                               {Object.entries(entry.details)
                                 .slice(0, 3)
                                 .map(([k, v]) => `${k}: ${String(v)}`)
-                                .join(" · ")}
+                                .join(" ┬╖ ")}
                             </p>
                           )}
                         </div>
