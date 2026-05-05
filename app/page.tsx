@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MobileNav, { type MobileView } from "./components/MobileNav";
 import MobileDashboard from "./components/MobileDashboard";
 import AlertsPanel, { type AlertItem, type AlertKind, type HelpTask } from "./components/AlertsPanel";
@@ -328,6 +328,7 @@ type TeachOverlayQuestionResponse = {
 
 const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
 const COMMAND_CENTER_VOICE_PREF_KEY = "bill.command-center.voice.enabled";
+const COMMAND_CENTER_AUTO_SUBMIT_PREF_KEY = "bill.command-center.voice.autoSubmit.enabled";
 
 const getConfiguredApiBase = (): string => {
   const configured = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim();
@@ -534,9 +535,34 @@ export default function Home() {
   }, []);
 
   // ── Voice (Phase 4) ──────────────────────────────────────────────────────────
+  const [autoSubmitVoiceCommands, setAutoSubmitVoiceCommands] = useState<boolean>(false);
+  const lastAutoSubmittedTranscriptRef = useRef<string>("");
+  const lastAutoSubmittedAtRef = useRef<number>(0);
   const { isSupported: voiceSupported, isListening, isSpeaking, ttsEnabled, setTtsEnabled, startListening, stopListening, speak } = useVoice({
     onTranscript: (text) => {
-      setChatInput(text);
+      const transcript = text.trim();
+      if (!transcript) {
+        return;
+      }
+
+      setChatInput(transcript);
+
+      if (!autoSubmitVoiceCommands) {
+        return;
+      }
+
+      const normalized = transcript.replace(/\s+/g, " ").toLowerCase();
+      const now = Date.now();
+      const isDuplicate =
+        normalized === lastAutoSubmittedTranscriptRef.current &&
+        now - lastAutoSubmittedAtRef.current < 10000;
+      if (isDuplicate) {
+        return;
+      }
+
+      lastAutoSubmittedTranscriptRef.current = normalized;
+      lastAutoSubmittedAtRef.current = now;
+      void submitBrainCommand(transcript);
     },
   });
   const billVoice = useBillVoice(getApiBase());
@@ -554,6 +580,23 @@ export default function Home() {
   const teachingOverlayVoiceEnabled = Boolean(
     commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured,
   );
+  const teachingOverlayVoiceIssue = useMemo(() => {
+    if (!commandVoiceEnabled) {
+      return "Command Center voice is turned off.";
+    }
+    if (!billVoice.config) {
+      return billVoice.lastError
+        ? `Voice config check failed: ${billVoice.lastError}`
+        : "Voice config is still loading.";
+    }
+    if (!billVoice.config.voice_enabled) {
+      return "Backend voice is disabled (BILL_VOICE_ENABLED is false).";
+    }
+    if (!billVoice.config.configured) {
+      return billVoice.config.reason ?? "ElevenLabs API key/voice ID is missing.";
+    }
+    return null;
+  }, [billVoice.config, billVoice.lastError, commandVoiceEnabled]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -583,6 +626,22 @@ export default function Home() {
     window.localStorage.setItem(COMMAND_CENTER_VOICE_PREF_KEY, commandVoiceEnabled ? "1" : "0");
     setTtsEnabled(commandVoiceEnabled);
   }, [commandVoiceEnabled, setTtsEnabled]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(COMMAND_CENTER_AUTO_SUBMIT_PREF_KEY);
+    if (raw === "1") {
+      setAutoSubmitVoiceCommands(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      COMMAND_CENTER_AUTO_SUBMIT_PREF_KEY,
+      autoSubmitVoiceCommands ? "1" : "0",
+    );
+  }, [autoSubmitVoiceCommands]);
 
   const queueBillEventSpeech = useCallback(
     (eventType: string, options?: { taskId?: string; workflowName?: string; context?: Record<string, unknown>; overrideText?: string }) => {
@@ -1314,6 +1373,13 @@ export default function Home() {
       const slug = workflowName.toLowerCase().replace(/\s+/g, "_");
       const url = `${apiBase}/api/procedures/${slug}/run`;
       const requestBody: Record<string, unknown> = { mode: "interactive_visible", payload: {} };
+      if (slug === "smart_sherpa_sync") {
+        requestBody.payload = {
+          run_mode: "batch",
+          source_record: { run_mode: "batch" },
+          target_contact: { run_mode: "batch" },
+        };
+      }
       if (targetMachineUuid) requestBody.target_machine_uuid = targetMachineUuid;
       const res = await fetch(url, {
         method: "POST",
@@ -1348,7 +1414,11 @@ export default function Home() {
       const procedureRunUrl = `${apiBase}/api/procedures/smart_sherpa_sync/run`;
       const requestBody: Record<string, unknown> = {
         mode: "interactive_visible",
-        payload: {}
+        payload: {
+          run_mode: "batch",
+          source_record: { run_mode: "batch" },
+          target_contact: { run_mode: "batch" },
+        }
       };
       if (targetMachineUuid) {
         requestBody.target_machine_uuid = targetMachineUuid;
@@ -1380,10 +1450,10 @@ export default function Home() {
     }
   };
 
-  const submitBrainCommand = async (
+  async function submitBrainCommand(
     commandOverride?: string,
     workerOverrideUuid?: string,
-  ) => {
+  ) {
     const command = (commandOverride ?? chatInput).trim();
     if (!command || chatLoading) {
       return;
@@ -1512,7 +1582,7 @@ export default function Home() {
     } finally {
       setChatLoading(false);
     }
-  };
+  }
 
   const cancelTask = async (taskId?: string) => {
     if (!taskId) {
@@ -1975,7 +2045,7 @@ export default function Home() {
   };
 
   const loadTeachOverlayQuestion = useCallback(
-    async (draftId: string, options?: { silent?: boolean }) => {
+    async (draftId: string, options?: { silent?: boolean; force?: boolean }) => {
       if (!draftId) {
         return;
       }
@@ -1988,7 +2058,8 @@ export default function Home() {
           throw new Error("NEXT_PUBLIC_API_BASE is not set");
         }
         logTeachOverlay("next question requested", { session_id: draftId });
-        const response = await fetch(`${apiBase}/api/teach-sessions/${draftId}/questions/next`);
+        const forceParam = options?.force ? "?force=true" : "";
+        const response = await fetch(`${apiBase}/api/teach-sessions/${draftId}/questions/next${forceParam}`);
         const body = (await response.json()) as TeachOverlayQuestionResponse | { detail?: string };
         if (!response.ok) {
           throw new Error((body as { detail?: string }).detail ?? `Overlay question fetch failed (${response.status})`);
@@ -2218,7 +2289,7 @@ export default function Home() {
     }
 
     if (!teachingOverlayVoiceEnabled) {
-      setTeachingOverlayError("ElevenLabs voice is not configured for this session.");
+      setTeachingOverlayError(`ElevenLabs voice is not configured for this session. ${teachingOverlayVoiceIssue ?? ""}`.trim());
       return false;
     }
 
@@ -2255,6 +2326,7 @@ export default function Home() {
     logTeachOverlay,
     teachingOverlayQuestion,
     teachingOverlayTaskId,
+    teachingOverlayVoiceIssue,
     teachingOverlayVoiceEnabled,
     teachingSessionDraftId,
   ]);
@@ -2601,6 +2673,8 @@ export default function Home() {
                 onSubmit={() => void submitBrainCommand()}
                 commandVoiceEnabled={commandVoiceEnabled}
                 setCommandVoiceEnabled={setCommandVoiceEnabled}
+                autoSubmitVoiceCommands={autoSubmitVoiceCommands}
+                setAutoSubmitVoiceCommands={setAutoSubmitVoiceCommands}
                 voiceSupported={voiceSupported}
                 isListening={isListening}
                 startListening={startListening}
@@ -2868,7 +2942,7 @@ export default function Home() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => teachingSessionDraftId && void loadTeachOverlayQuestion(teachingSessionDraftId)}
+                    onClick={() => teachingSessionDraftId && void loadTeachOverlayQuestion(teachingSessionDraftId, { force: true })}
                     className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-cyan-400/40 hover:text-cyan-100"
                   >
                     Refresh
@@ -2959,6 +3033,12 @@ export default function Home() {
                     <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-200">Bill needs clarification</span>
                   ) : null}
                 </div>
+
+                {teachingOverlayConversationState === "answer_accepted_waiting_for_progress" ? (
+                  <p className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                    Got it. I'll wait while you continue.
+                  </p>
+                ) : null}
 
                 {teachingOverlayMissingInfo.length > 0 ? (
                   <p className="mt-2 text-xs text-amber-200">Missing: {teachingOverlayMissingInfo.join("; ")}</p>
