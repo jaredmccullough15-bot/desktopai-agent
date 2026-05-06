@@ -129,6 +129,17 @@ type SpeechRecognitionLike = {
 
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
+type TeachingStartupState = {
+  session_id: string;
+  task_id?: string | null;
+  workflow_name: string;
+  target_machine_uuid?: string | null;
+  status: "browser_opening" | "active" | "failed";
+  message?: string;
+  overlay_enabled?: boolean;
+  voice_prompt_text?: string;
+};
+
 type BrainCommandResponse = {
   recognized_intent?: string;
   command?: string;
@@ -149,6 +160,7 @@ type BrainCommandResponse = {
   suggested_emotion?: string | null;
   suggested_style_profile?: string | null;
   voice_event_type?: string | null;
+  teaching_mode?: TeachingStartupState | null;
 };
 
 type DraftVariableInput = {
@@ -484,6 +496,10 @@ export default function Home() {
   const [teachingOverlayLastTypingAt, setTeachingOverlayLastTypingAt] = useState<number>(0);
   const [teachingOverlayDictating, setTeachingOverlayDictating] = useState(false);
   const [teachingOverlaySpeechSupported, setTeachingOverlaySpeechSupported] = useState(false);
+  // Teaching startup state — tracks browser_opening → active/failed
+  const [teachingStartupState, setTeachingStartupState] = useState<TeachingStartupState | null>(null);
+  const teachingStartupPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSpokenTeachingSessionIdRef = useRef<string>("");
   const [teachingStartUrl, setTeachingStartUrl] = useState<string>("");
   const [teachingTargetWorkerUuid, setTeachingTargetWorkerUuid] = useState<string>("");
   const [teachingLaunchStatus, setTeachingLaunchStatus] = useState<null | "launching" | "running" | "error">(null);
@@ -533,6 +549,39 @@ export default function Home() {
   const logTeachOverlay = useCallback((message: string, details?: Record<string, unknown>) => {
     console.info("[teach-overlay]", message, details ?? {});
   }, []);
+
+  // ── Teaching startup polling ─────────────────────────────────────────────────
+  const stopTeachingStartupPoll = useCallback(() => {
+    if (teachingStartupPollRef.current !== null) {
+      clearInterval(teachingStartupPollRef.current);
+      teachingStartupPollRef.current = null;
+    }
+  }, []);
+
+  const startTeachingStartupPoll = useCallback(
+    (sessionId: string) => {
+      stopTeachingStartupPoll();
+      const apiBase = getApiBase();
+      if (!apiBase || !sessionId) return;
+      teachingStartupPollRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`${apiBase}/api/teaching/session/${sessionId}/status`);
+          if (!res.ok) return;
+          const data = (await res.json()) as TeachingStartupState;
+          setTeachingStartupState(data);
+          if (data.status === "active" || data.status === "failed") {
+            stopTeachingStartupPoll();
+          }
+        } catch {
+          // network hiccup — keep polling
+        }
+      }, 2000);
+    },
+    [stopTeachingStartupPoll],
+  );
+
+  // Stop polling when component unmounts
+  useEffect(() => () => stopTeachingStartupPoll(), [stopTeachingStartupPoll]);
 
   // ── Voice (Phase 4) ──────────────────────────────────────────────────────────
   const [autoSubmitVoiceCommands, setAutoSubmitVoiceCommands] = useState<boolean>(false);
@@ -597,6 +646,21 @@ export default function Home() {
     }
     return null;
   }, [billVoice.config, billVoice.lastError, commandVoiceEnabled]);
+
+  // ── Voice: speak once when teaching browser transitions to active ──────────
+  useEffect(() => {
+    if (!teachingStartupState) return;
+    const { session_id, status, voice_prompt_text } = teachingStartupState;
+    if (status !== "active") return;
+    if (lastSpokenTeachingSessionIdRef.current === session_id) return;
+    lastSpokenTeachingSessionIdRef.current = session_id;
+    const promptText = voice_prompt_text || "Teaching mode is now active. Walk me through the workflow.";
+    if (commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured) {
+      void billVoice.speakText({ text: promptText, emotion: "excited" });
+    } else {
+      speak(promptText);
+    }
+  }, [teachingStartupState, commandVoiceEnabled, billVoice, speak]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1565,6 +1629,15 @@ export default function Home() {
           workflowName: body.selected_workflow,
           context: { source: "brain_command" },
         });
+      }
+
+      // ── Teaching startup ──────────────────────────────────────────────────
+      if (body.teaching_mode?.session_id) {
+        setTeachingStartupState(body.teaching_mode);
+        if (body.teaching_mode.overlay_enabled !== false) {
+          setTeachingOverlayOpen(true);
+        }
+        startTeachingStartupPoll(body.teaching_mode.session_id);
       }
 
       await loadDashboardData();
@@ -2878,6 +2951,59 @@ export default function Home() {
           >
             Open Teaching Overlay
           </button>
+
+          {/* ── Teaching startup status panel ─────────────────────────── */}
+          {teachingStartupState && teachingStartupState.status !== "active" && (
+            <section
+              className={`w-full rounded-2xl border p-4 text-slate-100 shadow-2xl backdrop-blur ${
+                teachingStartupState.status === "failed"
+                  ? "border-rose-500/40 bg-rose-950/80"
+                  : "border-cyan-400/30 bg-slate-950/95"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  {teachingStartupState.status === "browser_opening" && (
+                    <svg
+                      className="h-5 w-5 animate-spin text-cyan-400"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    </svg>
+                  )}
+                  {teachingStartupState.status === "failed" && (
+                    <span className="text-rose-400 text-lg">✕</span>
+                  )}
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">
+                      Teaching Mode
+                    </p>
+                    <h3 className="text-sm font-semibold text-white">
+                      {teachingStartupState.status === "browser_opening"
+                        ? `Starting teaching session for "${teachingStartupState.workflow_name}"…`
+                        : `Teaching session failed for "${teachingStartupState.workflow_name}"`}
+                    </h3>
+                    {teachingStartupState.message && (
+                      <p className="mt-0.5 text-xs text-slate-400">{teachingStartupState.message}</p>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopTeachingStartupPoll();
+                    setTeachingStartupState(null);
+                  }}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500 hover:text-white"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </section>
+          )}
 
           {teachingOverlayOpen ? (
             <section className="w-full rounded-2xl border border-cyan-400/30 bg-slate-950/95 p-4 text-slate-100 shadow-2xl shadow-slate-950/60 backdrop-blur">
