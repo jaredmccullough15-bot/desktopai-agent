@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMemo, useState } from "react";
 
@@ -157,7 +157,7 @@ export default function BillVoiceControls({ voice }: Props) {
             </button>
             <span className="text-slate-500">
               {mic.supported
-                ? `Permission: ${mic.permission} · ${mic.isRecording ? "recording" : "idle"}`
+                ? `Permission: ${mic.permission} ┬╖ ${mic.isRecording ? "recording" : "idle"}`
                 : "Mic API not supported in this browser"}
             </span>
           </div>

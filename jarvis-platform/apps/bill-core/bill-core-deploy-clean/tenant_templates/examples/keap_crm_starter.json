@@ -1,0 +1,74 @@
+{
+  "_comment": "Starter system template for Keap/Infusionsoft CRM. Copy and adapt per tenant. system_name is tenant-specific; system_key should always be 'crm' in rules and actions.",
+  "tenant_id": "examples",
+  "workflow_id": "keap_crm_starter",
+  "workflow_name": "Keap CRM Starter Template",
+  "description": "Minimal example showing how to configure Keap/Infusionsoft as the CRM system for a tenant workflow. Not a runnable workflow on its own.",
+  "version": "1.0.0",
+  "enabled": false,
+  "tags": ["example", "keap", "crm"],
+  "systems": [
+    {
+      "system_key": "crm",
+      "system_name": "Keap / Infusionsoft",
+      "base_url": "https://app.infusionsoft.com",
+      "login_url": "https://app.infusionsoft.com",
+      "search_strategy": "form_submit",
+      "selectors": {
+        "search_input": "#global-search, input[placeholder*='Search contacts']",
+        "search_button": "button.search-btn",
+        "results_container": "#search-results, .contact-list",
+        "result_row": ".contact-row",
+        "next_page_button": "a.next-page",
+        "no_results_indicator": ".no-contacts",
+        "extra": {
+          "contact_id_field": ".contact-id",
+          "task_create_button": "button:has-text('Add Task')",
+          "task_title_input": "#task-title",
+          "task_notes_input": "#task-notes",
+          "task_save_button": "button:has-text('Save Task')"
+        }
+      },
+      "extraction_fields": [
+        {
+          "field_key": "external_contact_id",
+          "tenant_alias": "keap_id",
+          "display_label": "Keap Contact ID",
+          "selector": ".contact-id",
+          "attribute": "textContent",
+          "transform": "strip"
+        },
+        {
+          "field_key": "name",
+          "display_label": "Full Name",
+          "selector": ".contact-name, h1.name",
+          "attribute": "textContent",
+          "transform": "strip"
+        }
+      ]
+    }
+  ],
+  "identity_policy": {
+    "fields": [
+      { "generic_key": "external_contact_id", "tenant_alias": "keap_id", "match_type": "exact", "weight": 50 },
+      { "generic_key": "policy_number", "tenant_alias": "policy_number", "match_type": "exact", "weight": 30 },
+      { "generic_key": "marketplace_id", "tenant_alias": "ffm_id", "match_type": "exact", "weight": 30 },
+      { "generic_key": "name", "tenant_alias": "name", "match_type": "fuzzy", "weight": 20 }
+    ],
+    "auto_proceed_score": 70,
+    "human_review_score": 40,
+    "block_below_score": 40
+  },
+  "actions": [],
+  "decision_rules": [],
+  "safety_policy": {
+    "never_update_on_name_only": true,
+    "require_identity_score_for_crm_actions": true,
+    "dry_run_default": true,
+    "require_human_approval_for_first_n_runs": 50,
+    "screenshot_before_action": true,
+    "screenshot_after_action": true,
+    "audit_log_required": true,
+    "duplicate_action_check_required": true
+  }
+}

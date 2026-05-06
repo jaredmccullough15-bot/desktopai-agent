@@ -109,6 +109,7 @@ BILL_BOOKMARKS: list[dict[str, Any]] = [dict(item) for item in DEFAULT_BILL_BOOK
 
 DEFAULT_CONFIG = {
     "core_url": DEFAULT_CORE_URL,
+    "fallback_core_urls": [],
     "worker_name": socket.gethostname(),
     "visible_mode": True,
     "auto_update_enabled": True,
@@ -622,6 +623,76 @@ def load_worker_config() -> dict[str, Any]:
     return merged
 
 
+# ---------------------------------------------------------------------------
+# Core URL health preflight + fallback selection
+# ---------------------------------------------------------------------------
+
+def _check_core_url_health(url: str) -> tuple[bool, str]:
+    """Probe <url>/health.  Returns (is_healthy, reason_string)."""
+    health_url = url.rstrip("/") + "/health"
+    try:
+        resp = requests.get(health_url, timeout=8)
+        body = resp.text or ""
+        # Cloudflare Tunnel hard-error (HTTP 530 or recognisable HTML body)
+        if resp.status_code == 530:
+            return False, f"CLOUDFLARE_TUNNEL_ERROR detected (HTTP 530) for {url}"
+        if "Cloudflare Tunnel error" in body or (
+            "cloudflare" in body.lower() and "error" in body.lower()
+        ):
+            return False, f"CLOUDFLARE_TUNNEL_ERROR detected (Cloudflare HTML body) for {url}"
+        if not resp.ok:
+            return False, f"HTTP {resp.status_code} from {health_url}"
+        try:
+            data = resp.json()
+        except Exception:
+            return False, f"Non-JSON response from {health_url} (received HTML or plain text)"
+        status = str(data.get("status", "")).lower()
+        if status in ("ok", "healthy", ""):
+            return True, "ok"
+        return False, f"Unexpected health status value: {data.get('status')!r}"
+    except requests.exceptions.ConnectionError as exc:
+        return False, f"Connection error reaching {health_url}: {exc}"
+    except requests.exceptions.Timeout:
+        return False, f"Timeout (8 s) connecting to {health_url}"
+    except Exception as exc:
+        return False, f"Unexpected error probing {health_url}: {exc}"
+
+
+def _select_active_core_url(primary: str, fallbacks: list[str]) -> str:
+    """
+    Try primary URL /health, then each fallback in order.
+    Returns the first URL that responds with a healthy JSON payload.
+    If all fail, returns primary (worker will surface errors at register time).
+    """
+    candidates = [primary] + [u.rstrip("/") for u in fallbacks if u]
+    for url in candidates:
+        url = url.rstrip("/")
+        log_info(f"[core-url-select] Probing {url}/health ...")
+        healthy, reason = _check_core_url_health(url)
+        if healthy:
+            if url == primary:
+                log_info(f"CORE_URL_SELECTED url={url} (primary)")
+            else:
+                log_warn(
+                    f"CORE_URL_SELECTED url={url} (fallback — primary {primary} was unreachable)"
+                )
+            return url
+        # Log the failure with appropriate severity
+        if "CLOUDFLARE_TUNNEL_ERROR" in reason:
+            log_warn(f"{reason}. Trying fallback.")
+        else:
+            log_warn(f"Bill Core API is unreachable at {url}: {reason}")
+
+    # All candidates failed
+    tried = ", ".join(candidates)
+    log_warn(
+        f"Bill Worker cannot reach Bill Core. "
+        f"Check backend deployment, Cloudflare tunnel, or core_url in config.json. "
+        f"Tried: {tried}"
+    )
+    return primary  # best-effort: continue with primary so later errors are surfaced normally
+
+
 def apply_runtime_config() -> dict[str, Any]:
     global API_BASE
     global HEARTBEAT_INTERVAL_SECONDS
@@ -642,6 +713,16 @@ def apply_runtime_config() -> dict[str, Any]:
     config = load_worker_config()
 
     API_BASE = str(_get_setting(config, "core_url", ["BILL_CORE_URL", "JARVIS_CORE_URL"], DEFAULT_CORE_URL)).rstrip("/")
+
+    # Health preflight: try primary then any fallback_core_urls from config
+    raw_fallbacks = config.get("fallback_core_urls") or []
+    fallback_urls: list[str] = (
+        [str(u).rstrip("/") for u in raw_fallbacks if u]
+        if isinstance(raw_fallbacks, list)
+        else []
+    )
+    API_BASE = _select_active_core_url(API_BASE, fallback_urls)
+
     MACHINE_DISPLAY_NAME_OVERRIDE = str(
         _get_setting(config, "worker_name", ["BILL_WORKER_MACHINE_NAME", "JARVIS_WORKER_MACHINE_NAME"], socket.gethostname())
     ).strip()
@@ -1507,24 +1588,41 @@ def _post_teaching_session_status(
     task_id: str,
     status: str,
     message: str = "",
-) -> None:
+) -> bool:
     """Tell Core that a teaching browser has opened (status=active) or failed."""
     if not session_id:
-        return
+        return False
     url = f"{api_base.rstrip('/')}/api/teaching/session/{session_id}/status"
     body = {"status": status, "task_id": task_id or None, "message": message}
-    try:
-        resp = requests.post(url, json=body, timeout=10)
-        if resp.ok:
-            log_info(
-                f"[worker] TEACHING_SESSION_{status.upper()} session_id={session_id} task_id={task_id}"
-            )
-        else:
+    last_error = ""
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(url, json=body, timeout=10)
+            if resp.ok:
+                log_info(
+                    f"[worker] TEACHING_SESSION_{status.upper()} session_id={session_id} task_id={task_id}"
+                )
+                return True
+            last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
             log_warn(
-                f"[worker] teaching session status update failed: {resp.status_code} {resp.text[:200]}"
+                "[worker] teaching session status update failed "
+                f"attempt={attempt}/3 session_id={session_id} error={last_error}"
             )
-    except Exception as exc:
-        log_warn(f"[worker] teaching session status callback error: {exc}")
+        except Exception as exc:
+            last_error = repr(exc)
+            log_warn(
+                "[worker] teaching session status callback error "
+                f"attempt={attempt}/3 session_id={session_id} error={last_error}"
+            )
+
+        if attempt < 3:
+            time.sleep(float(attempt))
+
+    log_error(
+        "[worker] TEACHING_SESSION_STATUS_CALLBACK_FAILED "
+        f"session_id={session_id} task_id={task_id} status={status} error={last_error}"
+    )
+    return False
 
 
 def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, Any]:
@@ -1598,6 +1696,7 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
             draft_id,
             api_base,
             start_url,
+            session_id=teach_session_id,
             chrome_user_data_dir=str(chrome_user_data_dir),
             profile_directory=chrome_profile_directory,
             remote_debugging_port=remote_debugging_port,

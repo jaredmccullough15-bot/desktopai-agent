@@ -6,15 +6,20 @@ import os
 import time
 from typing import Any, Callable
 import re
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from playwright.sync_api import Browser, BrowserContext, Page, TimeoutError, sync_playwright
+from worker.executors.browser_workflow import WorkflowExecutionError
 from worker.browser_profile import get_browser_context_for_task
+from worker.web_resilience import WebResilience
 
 
 ROW_STRATEGY_NAME = "anchored_row_scoped_only"
 RETURN_STRATEGY_NAME = "site_control_or_direct_list_url"
 PAGINATION_CONFIRMATION_STRATEGY_NAME = "expected_url_page_and_content_change"
+
+
+_WEB_RESILIENCE = WebResilience()
 
 
 def _strategy_location(function_ref: Callable[..., Any]) -> str:
@@ -44,6 +49,84 @@ def _emit_trace(progress_callback: Callable[[str], None] | None, enabled: bool, 
     print(f"[worker] {msg}")
     if progress_callback:
         progress_callback(msg)
+
+
+def _log_page_state_snapshot(
+    page: Page,
+    reason: str,
+    progress_callback: Callable[[str], None] | None,
+    verbose_trace: bool,
+    snapshot_collector: Callable[[dict[str, Any]], None] | None = None,
+) -> None:
+    try:
+        state = _WEB_RESILIENCE.capture_page_state(page).to_dict()
+        if snapshot_collector is not None:
+            snapshot_collector(state)
+        _emit_trace(progress_callback, verbose_trace, f"page_state_snapshot reason={reason} state={state}")
+    except Exception as error:
+        _emit_trace(progress_callback, verbose_trace, f"page_state_snapshot_failed reason={reason} error={error}")
+
+
+def _log_clients_navigation(
+    *,
+    reason: str,
+    target_url: str,
+    current_page_url: str,
+    attach_to_existing: bool,
+    require_existing_page: bool,
+    allow_launch_fallback: bool,
+    attached_existing_page: bool,
+    progress_callback: Callable[[str], None] | None,
+    verbose_trace: bool,
+) -> None:
+    message = (
+        "clients_page_navigation "
+        f"reason={reason} target_url={target_url} current_page_url={current_page_url} "
+        f"attach_to_existing={attach_to_existing} require_existing_page={require_existing_page} "
+        f"allow_launch_fallback={allow_launch_fallback} attached_existing_page={attached_existing_page}"
+    )
+    print(f"[worker] {message}")
+    _emit_trace(progress_callback, verbose_trace, message)
+
+
+def _goto_clients_page(
+    *,
+    list_page: Page,
+    target_url: str,
+    reason: str,
+    timeout_ms: int,
+    is_recovery: bool,
+    attach_to_existing: bool,
+    require_existing_page: bool,
+    allow_launch_fallback: bool,
+    attached_existing_page: bool,
+    progress_callback: Callable[[str], None] | None,
+    verbose_trace: bool,
+) -> None:
+    _log_clients_navigation(
+        reason=reason,
+        target_url=target_url,
+        current_page_url=str(list_page.url or ""),
+        attach_to_existing=attach_to_existing,
+        require_existing_page=require_existing_page,
+        allow_launch_fallback=allow_launch_fallback,
+        attached_existing_page=attached_existing_page,
+        progress_callback=progress_callback,
+        verbose_trace=verbose_trace,
+    )
+    if is_recovery and not allow_launch_fallback:
+        if _is_healthsherpa_clients_url(str(list_page.url or "")):
+            _emit_trace(
+                progress_callback,
+                verbose_trace,
+                "recovery navigation skipped because strict existing-page mode is active",
+            )
+            return
+        raise RuntimeError(
+            "Recovery navigation requires an existing HealthSherpa clients page when "
+            "allow_launch_fallback=false. Open clients in the attached tab, then rerun."
+        )
+    list_page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
 
 def _is_healthsherpa_clients_url(url: str) -> bool:
@@ -355,12 +438,32 @@ def _dismiss_mui_overlay_if_present(page: Page, timeout_ms: int = 2000) -> bool:
 def _open_client_page(list_page: Page, context: BrowserContext, selector: str, index: int, timeout_ms: int) -> tuple[Page, bool]:
     # Dismiss any MUI overlay that could block the row click.
     _dismiss_mui_overlay_if_present(list_page)
+    _WEB_RESILIENCE.dismiss_known_modals(list_page)
 
     candidate = list_page.locator(selector).nth(index)
     if candidate.count() == 0:
+        _log_page_state_snapshot(
+            list_page,
+            reason=f"open_client_page_no_matching_row selector={selector} index={index}",
+            progress_callback=None,
+            verbose_trace=True,
+        )
         raise TimeoutError("No matching client row selector at requested index")
 
     click_timeout_ms = min(max(3000, int(timeout_ms // 3)), 12000)
+
+    def _open_via_anchor_href() -> tuple[Page, bool] | None:
+        href = str(candidate.get_attribute("href") or "").strip()
+        if not href:
+            return None
+        client_url = urljoin(str(list_page.url or ""), href)
+        target = str(candidate.get_attribute("target") or "").strip().lower()
+        if target == "_blank":
+            popup = context.new_page()
+            popup.goto(client_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            return popup, True
+        list_page.goto(client_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        return list_page, False
 
     try:
         with context.expect_page(timeout=3000) as popup_info:
@@ -368,14 +471,43 @@ def _open_client_page(list_page: Page, context: BrowserContext, selector: str, i
         popup = popup_info.value
         popup.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
         return popup, True
-    except TimeoutError:
+    except Exception:
         try:
             candidate.scroll_into_view_if_needed(timeout=2000)
         except Exception:
             pass
-        candidate.click(timeout=click_timeout_ms)
-        list_page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
-        return list_page, False
+        try:
+            with context.expect_page(timeout=3000) as popup_info:
+                candidate.click(timeout=click_timeout_ms, force=True)
+            popup = popup_info.value
+            popup.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+            return popup, True
+        except Exception:
+            via_href = _open_via_anchor_href()
+            if via_href is not None:
+                return via_href
+            try:
+                candidate.click(timeout=click_timeout_ms)
+            except Exception as click_error:
+                fallback = _WEB_RESILIENCE.safe_click(
+                    list_page,
+                    labels=[],
+                    selectors=[selector],
+                )
+                if not fallback.clicked:
+                    _log_page_state_snapshot(
+                        list_page,
+                        reason=(
+                            "open_client_page_click_failed "
+                            f"selector={selector} index={index} error={click_error} "
+                            f"fallback={fallback.to_dict()}"
+                        ),
+                        progress_callback=None,
+                        verbose_trace=True,
+                    )
+                    raise
+            list_page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+            return list_page, False
 
 
 def _resolve_view_rows(list_page: Page, selectors: list[str]) -> tuple[str, Any, int]:
@@ -405,6 +537,10 @@ def _return_to_list_via_site_control_or_url(
     timeout_ms: int,
     progress_callback: Callable[[str], None] | None,
     verbose_trace: bool,
+    attach_to_existing: bool,
+    require_existing_page: bool,
+    allow_launch_fallback: bool,
+    attached_existing_page: bool,
 ) -> tuple[bool, str]:
     _emit_trace(progress_callback, verbose_trace, f"RETURN STRATEGY: {RETURN_STRATEGY_NAME}")
     back_selectors = [
@@ -442,8 +578,19 @@ def _return_to_list_via_site_control_or_url(
 
     if clients_list_url:
         recovery_url = _set_url_page_param(clients_list_url, max(1, int(current_logical_page or 1)))
-        _emit_trace(progress_callback, verbose_trace, f"returning to list via direct URL {recovery_url}")
-        list_page.goto(recovery_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        _goto_clients_page(
+            list_page=list_page,
+            target_url=recovery_url,
+            reason="return_to_list_via_direct_url",
+            timeout_ms=timeout_ms,
+            is_recovery=True,
+            attach_to_existing=attach_to_existing,
+            require_existing_page=require_existing_page,
+            allow_launch_fallback=allow_launch_fallback,
+            attached_existing_page=attached_existing_page,
+            progress_callback=progress_callback,
+            verbose_trace=verbose_trace,
+        )
         try:
             list_page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 10000))
         except TimeoutError:
@@ -501,29 +648,7 @@ def _expand_anchored_view_selectors(selectors: list[str]) -> list[str]:
 def _detect_blocking_modal(page: Page) -> bool:
     """Return True if a visible MUI dialog/modal/backdrop is likely blocking pointer events."""
     try:
-        result = page.evaluate(
-            """
-            () => {
-                // Visible backdrop that is not suppressed via pointer-events
-                for (const el of document.querySelectorAll('.MuiBackdrop-root, .MuiModal-backdrop')) {
-                    const s = window.getComputedStyle(el);
-                    if (s.display === 'none' || s.visibility === 'hidden') continue;
-                    if (parseFloat(s.opacity || '1') < 0.01) continue;
-                    if (s.pointerEvents === 'none') continue;
-                    return true;
-                }
-                // Visible non-hidden dialog or alertdialog
-                for (const el of document.querySelectorAll('[role="dialog"], [role="alertdialog"]')) {
-                    if (el.getAttribute('aria-hidden') === 'true') continue;
-                    const s = window.getComputedStyle(el);
-                    if (s.display === 'none' || s.visibility === 'hidden') continue;
-                    return true;
-                }
-                return false;
-            }
-            """
-        )
-        return bool(result)
+        return _WEB_RESILIENCE.detect_modal(page) or _WEB_RESILIENCE.detect_overlay(page)
     except Exception:
         return False
 
@@ -721,8 +846,25 @@ def _advance_page(
             continue
 
         _emit_trace(progress_callback, verbose_trace, f"clicking next selector '{selector}'")
-
-        control.click(timeout=timeout_ms)
+        try:
+            control.click(timeout=timeout_ms)
+        except Exception as click_error:
+            fallback = _WEB_RESILIENCE.safe_click(
+                list_page,
+                labels=["Next", ">", "›", "»"],
+                selectors=[selector],
+            )
+            if not fallback.clicked:
+                _log_page_state_snapshot(
+                    list_page,
+                    reason=(
+                        "advance_page_click_failed "
+                        f"selector={selector} error={click_error} fallback={fallback.to_dict()}"
+                    ),
+                    progress_callback=progress_callback,
+                    verbose_trace=verbose_trace,
+                )
+                continue
         try:
             list_page.wait_for_load_state("networkidle", timeout=timeout_ms)
         except TimeoutError:
@@ -795,6 +937,12 @@ def _advance_page(
         continue
 
     _emit_trace(progress_callback, verbose_trace, "advance_page failed: no selector produced verifiable next-page transition")
+    _log_page_state_snapshot(
+        list_page,
+        reason="advance_page_no_selector_transition",
+        progress_callback=progress_callback,
+        verbose_trace=verbose_trace,
+    )
     return False
 
 
@@ -804,6 +952,11 @@ def _ensure_clients_list_context(
     current_logical_page: int,
     timeout_ms: int,
     progress_callback: Callable[[str], None] | None,
+    verbose_trace: bool,
+    attach_to_existing: bool,
+    require_existing_page: bool,
+    allow_launch_fallback: bool,
+    attached_existing_page: bool,
 ) -> tuple[bool, str]:
     current_url = str(list_page.url or "")
     if _is_healthsherpa_clients_url(current_url):
@@ -817,7 +970,19 @@ def _ensure_clients_list_context(
         if progress_callback:
             progress_callback("recovering clients list page")
         recovery_url = _set_url_page_param(clients_list_url, max(1, int(current_logical_page or 1)))
-        list_page.goto(recovery_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        _goto_clients_page(
+            list_page=list_page,
+            target_url=recovery_url,
+            reason="ensure_clients_list_context_recovery",
+            timeout_ms=timeout_ms,
+            is_recovery=True,
+            attach_to_existing=attach_to_existing,
+            require_existing_page=require_existing_page,
+            allow_launch_fallback=allow_launch_fallback,
+            attached_existing_page=attached_existing_page,
+            progress_callback=progress_callback,
+            verbose_trace=verbose_trace,
+        )
         try:
             list_page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 10000))
         except TimeoutError:
@@ -836,6 +1001,11 @@ def _enforce_expected_page(
     current_logical_page: int,
     timeout_ms: int,
     progress_callback: Callable[[str], None] | None,
+    verbose_trace: bool,
+    attach_to_existing: bool,
+    require_existing_page: bool,
+    allow_launch_fallback: bool,
+    attached_existing_page: bool,
 ) -> tuple[int, str]:
     """Ensure we never continue processing on a page lower than current logical page."""
     expected_page = max(1, int(current_logical_page or 1))
@@ -852,7 +1022,19 @@ def _enforce_expected_page(
 
     if clients_list_url:
         recovery_url = _set_url_page_param(clients_list_url, expected_page)
-        list_page.goto(recovery_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        _goto_clients_page(
+            list_page=list_page,
+            target_url=recovery_url,
+            reason="enforce_expected_page_recovery",
+            timeout_ms=timeout_ms,
+            is_recovery=True,
+            attach_to_existing=attach_to_existing,
+            require_existing_page=require_existing_page,
+            allow_launch_fallback=allow_launch_fallback,
+            attached_existing_page=attached_existing_page,
+            progress_callback=progress_callback,
+            verbose_trace=verbose_trace,
+        )
         try:
             list_page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 10000))
         except TimeoutError:
@@ -877,15 +1059,34 @@ def run(
     start_url = str(payload.get("start_url") or payload.get("url") or "").strip()
 
     explicit_attach = payload.get("attach_to_existing")
-    attach_to_existing = _to_bool(explicit_attach, default=False)
+    attach_to_existing = _to_bool(explicit_attach, default=True)
     require_existing_page = _to_bool(payload.get("require_existing_page"), default=True)
     allow_launch_fallback = _to_bool(payload.get("allow_launch_fallback"), default=False)
+    if require_existing_page:
+        attach_to_existing = True
+        allow_launch_fallback = False
     cdp_url = str(
         payload.get("cdp_url")
         or os.getenv("SMART_SHERPA_CDP_URL")
         or os.getenv("CHROME_DEBUG_URL")
         or "http://127.0.0.1:9222"
     ).strip()
+
+    print(
+        "[worker] SMART_SHERPA_EXECUTOR_CONFIG "
+        f"attach_to_existing={attach_to_existing} "
+        f"require_existing_page={require_existing_page} "
+        f"allow_launch_fallback={allow_launch_fallback} "
+        "attached_existing_page=False"
+    )
+
+    # Smart Sherpa must run in strict existing-page mode.
+    if not attach_to_existing:
+        raise RuntimeError("smart_sherpa_sync requires attach_to_existing=true")
+    if not require_existing_page:
+        raise RuntimeError("smart_sherpa_sync requires require_existing_page=true")
+    if allow_launch_fallback:
+        raise RuntimeError("smart_sherpa_sync requires allow_launch_fallback=false")
 
     anchored_default_selector = (
         "#applications .MuiDataGrid-row button:has-text('View')||"
@@ -933,12 +1134,22 @@ def run(
     pages_advanced = 0
     recovered_navigations = 0
     completion_reason = "finished"
+    attempted_fallbacks: list[str] = []
+    last_failed_action = ""
+    latest_page_state_snapshot: dict[str, Any] = {}
+
+    def _collect_snapshot(state: dict[str, Any]) -> None:
+        nonlocal latest_page_state_snapshot
+        if isinstance(state, dict):
+            latest_page_state_snapshot = dict(state)
 
     start_ts = datetime.utcnow().isoformat()
 
     requested_policy = str(payload.get("browser_profile_policy") or "").strip().lower()
+    if require_existing_page:
+        requested_policy = "attach_existing_debug"
     if requested_policy not in {"bill_profile", "isolated_temp_profile", "attach_existing_debug"}:
-        requested_policy = "attach_existing_debug" if attach_to_existing else "bill_profile"
+        requested_policy = "attach_existing_debug"
     payload["browser_profile_policy"] = requested_policy
     if requested_policy == "attach_existing_debug":
         payload.setdefault("cdp_url", cdp_url)
@@ -963,12 +1174,14 @@ def run(
         list_page: Page | None = bundle["page"]
         should_close_context = bool(bundle["should_close_context"])
         should_close_browser = bool(bundle["should_close_browser"])
+        attached_existing_page = False
 
         if attach_to_existing and browser is not None:
             existing_page = _find_existing_clients_page(browser)
             if existing_page is not None:
                 list_page = existing_page
                 context = existing_page.context
+                attached_existing_page = True
                 if progress_callback:
                     progress_callback("attached to existing HealthSherpa clients tab")
                 list_page.bring_to_front()
@@ -977,6 +1190,14 @@ def run(
                     "Connected to existing browser, but no HealthSherpa clients tab was found. "
                     "Open the clients page first, then rerun."
                 )
+
+        print(
+            "[worker] SMART_SHERPA_EXECUTOR_CONFIG "
+            f"attach_to_existing={attach_to_existing} "
+            f"require_existing_page={require_existing_page} "
+            f"allow_launch_fallback={allow_launch_fallback} "
+            f"attached_existing_page={attached_existing_page}"
+        )
 
         if list_page is None:
             raise RuntimeError("Smart Sherpa Sync could not initialize a browser page")
@@ -998,7 +1219,19 @@ def run(
 
                 if progress_callback:
                     progress_callback("opening Smart Sherpa list page")
-                list_page.goto(start_url, wait_until="load", timeout=page_timeout_ms)
+                _goto_clients_page(
+                    list_page=list_page,
+                    target_url=start_url,
+                    reason="startup_open_list_page",
+                    timeout_ms=page_timeout_ms,
+                    is_recovery=False,
+                    attach_to_existing=attach_to_existing,
+                    require_existing_page=require_existing_page,
+                    allow_launch_fallback=allow_launch_fallback,
+                    attached_existing_page=attached_existing_page,
+                    progress_callback=progress_callback,
+                    verbose_trace=verbose_trace_logging,
+                )
 
             clients_list_url = _derive_healthsherpa_clients_list_url(list_page.url) or start_url
             if not clients_list_url:
@@ -1054,6 +1287,7 @@ def run(
             consecutive_empty_row_scans = 0
             consecutive_accounts_recoveries = 0
             while True:
+                last_failed_action = "scan_clients_loop"
                 _emit_trace(
                     progress_callback,
                     verbose_trace_logging,
@@ -1095,7 +1329,19 @@ def run(
                         )
                     if clients_list_url:
                         _acct_recovery_url = _set_url_page_param(clients_list_url, max(1, current_logical_page))
-                        list_page.goto(_acct_recovery_url, wait_until="domcontentloaded", timeout=page_timeout_ms)
+                        _goto_clients_page(
+                            list_page=list_page,
+                            target_url=_acct_recovery_url,
+                            reason="accounts_page_recovery",
+                            timeout_ms=page_timeout_ms,
+                            is_recovery=True,
+                            attach_to_existing=attach_to_existing,
+                            require_existing_page=require_existing_page,
+                            allow_launch_fallback=allow_launch_fallback,
+                            attached_existing_page=attached_existing_page,
+                            progress_callback=progress_callback,
+                            verbose_trace=verbose_trace_logging,
+                        )
                         try:
                             list_page.wait_for_load_state("networkidle", timeout=min(page_timeout_ms, 10000))
                         except TimeoutError:
@@ -1121,6 +1367,11 @@ def run(
                     current_logical_page=current_logical_page,
                     timeout_ms=page_timeout_ms,
                     progress_callback=progress_callback,
+                    verbose_trace=verbose_trace_logging,
+                    attach_to_existing=attach_to_existing,
+                    require_existing_page=require_existing_page,
+                    allow_launch_fallback=allow_launch_fallback,
+                    attached_existing_page=attached_existing_page,
                 )
                 if not in_list:
                     raise RuntimeError("Worker is not on HealthSherpa clients list and automatic recovery failed")
@@ -1132,6 +1383,11 @@ def run(
                     current_logical_page=current_logical_page,
                     timeout_ms=page_timeout_ms,
                     progress_callback=progress_callback,
+                    verbose_trace=verbose_trace_logging,
+                    attach_to_existing=attach_to_existing,
+                    require_existing_page=require_existing_page,
+                    allow_launch_fallback=allow_launch_fallback,
+                    attached_existing_page=attached_existing_page,
                 )
                 if enforced_page < current_logical_page:
                     raise RuntimeError(
@@ -1183,6 +1439,7 @@ def run(
                         progress_callback("no client rows detected yet; attempting clients list recovery")
                     if consecutive_empty_row_scans <= 4 and clients_list_url:
                         recovered_navigations += 1
+                        attempted_fallbacks.append("empty_row_recovery")
                         recovery_url = _set_url_page_param(clients_list_url, current_logical_page)
                         _emit_trace(
                             progress_callback,
@@ -1192,7 +1449,19 @@ def run(
                                 f"{recovery_url}"
                             ),
                         )
-                        list_page.goto(recovery_url, wait_until="domcontentloaded", timeout=page_timeout_ms)
+                        _goto_clients_page(
+                            list_page=list_page,
+                            target_url=recovery_url,
+                            reason="empty_row_recovery",
+                            timeout_ms=page_timeout_ms,
+                            is_recovery=True,
+                            attach_to_existing=attach_to_existing,
+                            require_existing_page=require_existing_page,
+                            allow_launch_fallback=allow_launch_fallback,
+                            attached_existing_page=attached_existing_page,
+                            progress_callback=progress_callback,
+                            verbose_trace=verbose_trace_logging,
+                        )
                         try:
                             list_page.wait_for_load_state("networkidle", timeout=min(page_timeout_ms, 10000))
                         except TimeoutError:
@@ -1234,6 +1503,7 @@ def run(
                         progress_callback=progress_callback,
                         verbose_trace=verbose_trace_logging,
                     ):
+                        last_failed_action = "advance_page"
                         completion_reason = "no_next_page_control"
                         break
                     pages_advanced += 1
@@ -1271,7 +1541,19 @@ def run(
                                 verbose_trace_logging,
                                 f"post-advance rows not ready; recovering via {recovery_url}",
                             )
-                            list_page.goto(recovery_url, wait_until="domcontentloaded", timeout=page_timeout_ms)
+                            _goto_clients_page(
+                                list_page=list_page,
+                                target_url=recovery_url,
+                                reason="post_advance_rows_recovery",
+                                timeout_ms=page_timeout_ms,
+                                is_recovery=True,
+                                attach_to_existing=attach_to_existing,
+                                require_existing_page=require_existing_page,
+                                allow_launch_fallback=allow_launch_fallback,
+                                attached_existing_page=attached_existing_page,
+                                progress_callback=progress_callback,
+                                verbose_trace=verbose_trace_logging,
+                            )
                             try:
                                 list_page.wait_for_load_state("networkidle", timeout=min(page_timeout_ms, 10000))
                             except TimeoutError:
@@ -1296,6 +1578,7 @@ def run(
                 )
 
                 try:
+                    last_failed_action = "open_client_page"
                     client_page, opened_new_tab = _open_client_page(
                         list_page=list_page,
                         context=context,
@@ -1339,12 +1622,18 @@ def run(
                                 timeout_ms=page_timeout_ms,
                                 progress_callback=progress_callback,
                                 verbose_trace=verbose_trace_logging,
+                                attach_to_existing=attach_to_existing,
+                                require_existing_page=require_existing_page,
+                                allow_launch_fallback=allow_launch_fallback,
+                                attached_existing_page=attached_existing_page,
                             )
                             if not returned_to_list:
+                                last_failed_action = "return_to_clients_list"
                                 raise RuntimeError(
                                     "Fail-fast: unable to return to clients list via site control or direct URL"
                                 )
                             recovered_navigations += 1
+                            attempted_fallbacks.append("return_to_list_via_site_control_or_url")
 
                     in_list, clients_list_url = _ensure_clients_list_context(
                         list_page=list_page,
@@ -1352,6 +1641,11 @@ def run(
                         current_logical_page=current_logical_page,
                         timeout_ms=page_timeout_ms,
                         progress_callback=progress_callback,
+                        verbose_trace=verbose_trace_logging,
+                        attach_to_existing=attach_to_existing,
+                        require_existing_page=require_existing_page,
+                        allow_launch_fallback=allow_launch_fallback,
+                        attached_existing_page=attached_existing_page,
                     )
                     if not in_list:
                         failed_clients += 1
@@ -1379,6 +1673,14 @@ def run(
                         _dismiss_mui_overlay_if_present(list_page)
                     except Exception:
                         pass
+                    attempted_fallbacks.append("client_exception_recovery")
+                    _log_page_state_snapshot(
+                        list_page,
+                        reason=f"client_processing_exception action={last_failed_action} error={error}",
+                        progress_callback=progress_callback,
+                        verbose_trace=verbose_trace_logging,
+                        snapshot_collector=_collect_snapshot,
+                    )
                     if opened_new_tab and client_page is not list_page:
                         try:
                             client_page.close()
@@ -1393,11 +1695,28 @@ def run(
                                 current_logical_page=current_logical_page,
                                 timeout_ms=page_timeout_ms,
                                 progress_callback=progress_callback,
+                                verbose_trace=verbose_trace_logging,
+                                attach_to_existing=attach_to_existing,
+                                require_existing_page=require_existing_page,
+                                allow_launch_fallback=allow_launch_fallback,
+                                attached_existing_page=attached_existing_page,
                             )
                             if not in_list and clients_list_url:
                                 recovered_navigations += 1
                                 recovery_url = _set_url_page_param(clients_list_url, current_logical_page)
-                                list_page.goto(recovery_url, wait_until="domcontentloaded", timeout=page_timeout_ms)
+                                _goto_clients_page(
+                                    list_page=list_page,
+                                    target_url=recovery_url,
+                                    reason="exception_recovery",
+                                    timeout_ms=page_timeout_ms,
+                                    is_recovery=True,
+                                    attach_to_existing=attach_to_existing,
+                                    require_existing_page=require_existing_page,
+                                    allow_launch_fallback=allow_launch_fallback,
+                                    attached_existing_page=attached_existing_page,
+                                    progress_callback=progress_callback,
+                                    verbose_trace=verbose_trace_logging,
+                                )
                         except Exception:
                             pass
 
@@ -1424,6 +1743,43 @@ def run(
                 "started_at": start_ts,
                 "completed_at": datetime.utcnow().isoformat(),
             }
+        except Exception as error:
+            failed_action = last_failed_action or "unknown"
+            try:
+                if list_page is not None:
+                    _log_page_state_snapshot(
+                        list_page,
+                        reason=f"fatal_exception action={failed_action} error={error}",
+                        progress_callback=progress_callback,
+                        verbose_trace=verbose_trace_logging,
+                        snapshot_collector=_collect_snapshot,
+                    )
+            except Exception:
+                pass
+
+            web_resilience_payload: dict[str, Any] = {
+                "failed_action": failed_action,
+                "attempted_fallbacks": attempted_fallbacks,
+            }
+            if list_page is not None:
+                try:
+                    web_resilience_payload = _WEB_RESILIENCE.snapshot_for_failure(
+                        list_page,
+                        failed_action=failed_action,
+                        attempted_fallbacks=attempted_fallbacks,
+                    )
+                except Exception:
+                    if latest_page_state_snapshot:
+                        web_resilience_payload["page_state_snapshot"] = latest_page_state_snapshot
+
+            raise WorkflowExecutionError(
+                f"smart_sherpa_sync failed during {failed_action}: {error}",
+                {
+                    "task_type": "smart_sherpa_sync",
+                    "status": "failed",
+                    "web_resilience": web_resilience_payload,
+                },
+            ) from error
         finally:
             if should_close_context and context is not None:
                 context.close()

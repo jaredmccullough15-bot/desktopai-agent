@@ -1,0 +1,616 @@
+{
+  "tenant_id": "internal",
+  "workflow_id": "bi_weekly_client_audit",
+  "workflow_name": "Bi-Weekly Client Audit",
+  "description": "Internal bi-weekly audit workflow: TrackVia → Carrier Portal → HealthSherpa → CRM. Identifies past-due policies, verifies agent of record, and creates appropriate CRM tasks.",
+  "version": "1.0.0",
+  "enabled": true,
+  "created_at": "2026-04-28T00:00:00Z",
+  "updated_at": "2026-04-28T00:00:00Z",
+  "tags": ["audit", "insurance", "bi-weekly"],
+
+  "systems": [
+    {
+      "system_key": "trackvia",
+      "system_name": "TrackVia",
+      "base_url": "https://go.trackvia.com",
+      "login_url": "https://go.trackvia.com",
+      "selectors": {
+        "search_input": "input[placeholder*='Search'], input[type='search']",
+        "search_button": "button[type='submit'], button:has-text('Search')",
+        "results_container": ".record-list, .view-records",
+        "result_row": ".record-row, tr[data-record-id]",
+        "next_page_button": "button.next-page, [aria-label='Next page']",
+        "no_results_indicator": ".no-records, .empty-state",
+        "extra": {
+          "client_name_cell": ".field-name, td[data-field='name']",
+          "policy_number_cell": "td[data-field='policy_number'], .field-policy_number"
+        }
+      },
+      "search_strategy": "form_submit",
+      "extraction_fields": [
+        {
+          "field_key": "name",
+          "display_label": "Client Name",
+          "selector": "td[data-field='name'], .field-name",
+          "attribute": "textContent",
+          "transform": "strip",
+          "required": true
+        },
+        {
+          "field_key": "external_contact_id",
+          "display_label": "Keap ID",
+          "selector": "td[data-field='keap_id'], .field-keap_id",
+          "attribute": "textContent",
+          "transform": "strip",
+          "required": false,
+          "notes": "Mapped from Keap ID column in TrackVia"
+        },
+        {
+          "field_key": "policy_number",
+          "display_label": "Policy Number",
+          "selector": "td[data-field='policy_number'], .field-policy_number",
+          "attribute": "textContent",
+          "transform": "strip",
+          "required": false
+        },
+        {
+          "field_key": "marketplace_id",
+          "display_label": "FFM ID",
+          "selector": "td[data-field='ffm_id'], .field-ffm_id",
+          "attribute": "textContent",
+          "transform": "strip",
+          "required": false,
+          "notes": "Federal Marketplace ID, mapped from FFM ID column"
+        }
+      ],
+      "navigation_steps": [
+        {
+          "step": 1,
+          "action": "open_url",
+          "url": "https://go.trackvia.com",
+          "description": "Navigate to TrackVia"
+        }
+      ],
+      "notes": "TrackVia holds the master client list for each audit run."
+    },
+
+    {
+      "system_key": "carrier_portal",
+      "system_name": "Carrier Portal",
+      "base_url": "",
+      "login_url": "",
+      "selectors": {
+        "search_input": "#member-search, input[name='member_id'], input[placeholder*='Member']",
+        "search_button": "button:has-text('Search'), button[type='submit']",
+        "results_container": ".member-results, #search-results",
+        "result_row": ".member-row, tr.result-row",
+        "next_page_button": "a.next, button:has-text('Next')",
+        "no_results_indicator": ".no-results, .not-found",
+        "extra": {
+          "paid_through_date": ".paid-through-date, td[data-field='paid_thru'], #paidThroughDate",
+          "member_status": ".member-status, td[data-field='status']",
+          "in_book_of_business": ".book-indicator, .agent-book-checkbox"
+        }
+      },
+      "search_strategy": "form_submit",
+      "extraction_fields": [
+        {
+          "field_key": "paid_through_date",
+          "display_label": "Paid Through Date",
+          "selector": ".paid-through-date, td[data-field='paid_thru'], #paidThroughDate",
+          "attribute": "textContent",
+          "transform": "date_mdy",
+          "required": false,
+          "notes": "Format varies by carrier. Normalize to ISO 8601 before comparison."
+        },
+        {
+          "field_key": "member_status",
+          "display_label": "Member Status",
+          "selector": ".member-status, td[data-field='status']",
+          "attribute": "textContent",
+          "transform": "lowercase",
+          "required": false
+        },
+        {
+          "field_key": "in_book_of_business",
+          "display_label": "In Book of Business",
+          "selector": ".book-indicator",
+          "attribute": "textContent",
+          "transform": "strip",
+          "required": false
+        }
+      ],
+      "navigation_steps": [],
+      "notes": "Carrier portal URL and login are environment-specific. Configure via .env or worker config before running."
+    },
+
+    {
+      "system_key": "healthsherpa",
+      "system_name": "HealthSherpa",
+      "base_url": "https://www.healthsherpa.com",
+      "login_url": "https://www.healthsherpa.com/sign_in",
+      "selectors": {
+        "search_input": "#client-search, input[placeholder*='Search clients']",
+        "search_button": "button.search-submit, button:has-text('Search')",
+        "results_container": ".clients-list, #clients-table",
+        "result_row": "tr.client-row, .client-item",
+        "next_page_button": "a[rel='next'], .pagination-next",
+        "no_results_indicator": ".no-clients, .empty-clients",
+        "extra": {
+          "agent_of_record": ".agent-of-record, td[data-field='agent_name'], .aor-field",
+          "enrollment_status": ".enrollment-status, td[data-field='enrollment_status']",
+          "plan_year": ".plan-year, td[data-field='plan_year']"
+        }
+      },
+      "search_strategy": "url_param",
+      "extraction_fields": [
+        {
+          "field_key": "agent_of_record",
+          "display_label": "Agent of Record",
+          "selector": ".agent-of-record, td[data-field='agent_name']",
+          "attribute": "textContent",
+          "transform": "strip",
+          "required": false
+        },
+        {
+          "field_key": "enrollment_status",
+          "display_label": "Enrollment Status",
+          "selector": ".enrollment-status, td[data-field='enrollment_status']",
+          "attribute": "textContent",
+          "transform": "lowercase",
+          "required": false
+        },
+        {
+          "field_key": "marketplace_id",
+          "display_label": "FFM Application ID",
+          "selector": "td[data-field='application_id'], .ffm-id",
+          "attribute": "textContent",
+          "transform": "strip",
+          "required": false,
+          "notes": "Used to cross-reference with TrackVia FFM ID"
+        }
+      ],
+      "navigation_steps": [
+        {
+          "step": 1,
+          "action": "open_url",
+          "url": "https://www.healthsherpa.com/agents/{agent_id}/clients",
+          "description": "Open clients list page. Replace {agent_id} at runtime."
+        }
+      ],
+      "notes": "smart_sherpa_sync.py executor handles pagination and multi-client enumeration for this system."
+    },
+
+    {
+      "system_key": "crm",
+      "system_name": "Keap / Infusionsoft",
+      "base_url": "https://app.infusionsoft.com",
+      "login_url": "https://app.infusionsoft.com",
+      "selectors": {
+        "search_input": "#global-search, input[placeholder*='Search contacts']",
+        "search_button": "button.search-btn, button:has-text('Search')",
+        "results_container": "#search-results, .contact-list",
+        "result_row": ".contact-row, tr.contact-item",
+        "next_page_button": "a.next-page",
+        "no_results_indicator": ".no-contacts, .empty-search",
+        "extra": {
+          "contact_id_field": ".contact-id, [data-field='contact_id']",
+          "task_create_button": "button:has-text('Add Task'), button:has-text('New Task'), #add-task-btn",
+          "task_title_input": "#task-title, input[name='task_title']",
+          "task_due_date_input": "#task-due-date, input[name='due_date']",
+          "task_notes_input": "#task-notes, textarea[name='notes']",
+          "task_save_button": "button:has-text('Save Task'), button[type='submit']",
+          "tag_field": "input[placeholder*='tag'], .tag-input"
+        }
+      },
+      "search_strategy": "form_submit",
+      "extraction_fields": [
+        {
+          "field_key": "external_contact_id",
+          "display_label": "Keap Contact ID",
+          "selector": ".contact-id, [data-field='contact_id']",
+          "attribute": "textContent",
+          "transform": "strip",
+          "required": false,
+          "notes": "Internally mapped from tenant alias 'keap_id'"
+        }
+      ],
+      "navigation_steps": [
+        {
+          "step": 1,
+          "action": "open_url",
+          "url": "https://app.infusionsoft.com/Contact/search",
+          "description": "Open contact search"
+        }
+      ],
+      "notes": "CRM is Keap/Infusionsoft for this internal tenant. system_key stays 'crm' in all rules and actions — the brand name only appears here in system_name."
+    }
+  ],
+
+  "actions": [
+    {
+      "action_key": "crm.mark_past_due",
+      "action_type": "ui_sequence",
+      "description": "Apply 'Past Due' tag to client contact in CRM and log the event.",
+      "required_identity_score": 70,
+      "requires_human_approval": false,
+      "steps": [
+        {
+          "step": 1,
+          "system_key": "crm",
+          "action": "open_url",
+          "url": "https://app.infusionsoft.com/Contact/{identity.external_contact_id}",
+          "description": "Open client contact record",
+          "on_failure": "stop"
+        },
+        {
+          "step": 2,
+          "system_key": "crm",
+          "action": "take_screenshot",
+          "description": "Screenshot before modifying contact (safety_policy: screenshot_before_action)",
+          "on_failure": "skip"
+        },
+        {
+          "step": 3,
+          "system_key": "crm",
+          "action": "click_selector",
+          "selector": "button:has-text('Add Tag'), .add-tag-btn",
+          "description": "Click Add Tag",
+          "on_failure": "stop"
+        },
+        {
+          "step": 4,
+          "system_key": "crm",
+          "action": "type_text",
+          "selector": "input[placeholder*='tag'], .tag-input",
+          "value": "Past Due",
+          "description": "Type tag name 'Past Due'",
+          "on_failure": "stop"
+        },
+        {
+          "step": 5,
+          "system_key": "crm",
+          "action": "click_selector",
+          "selector": "li:has-text('Past Due'), .tag-option:has-text('Past Due')",
+          "description": "Select 'Past Due' tag from dropdown",
+          "on_failure": "stop"
+        },
+        {
+          "step": 6,
+          "system_key": "crm",
+          "action": "take_screenshot",
+          "description": "Screenshot after applying tag (safety_policy: screenshot_after_action)",
+          "on_failure": "skip"
+        }
+      ],
+      "verification_steps": [
+        {
+          "step": 1,
+          "system_key": "crm",
+          "action": "wait_for_element",
+          "selector": ".tag:has-text('Past Due'), .contact-tag:has-text('Past Due')",
+          "description": "Verify 'Past Due' tag is visible on contact",
+          "on_failure": "escalate"
+        }
+      ],
+      "rollback_or_recovery_notes": "If tag application fails, do not retry automatically. Escalate to human review to prevent double-tagging."
+    },
+
+    {
+      "action_key": "crm.create_carrier_followup_task",
+      "action_type": "ui_sequence",
+      "description": "Create a carrier follow-up task in CRM: client not found in carrier portal but is agent of record in HealthSherpa.",
+      "required_identity_score": 70,
+      "requires_human_approval": false,
+      "steps": [
+        {
+          "step": 1,
+          "system_key": "crm",
+          "action": "open_url",
+          "url": "https://app.infusionsoft.com/Contact/{identity.external_contact_id}",
+          "description": "Open client contact record",
+          "on_failure": "stop"
+        },
+        {
+          "step": 2,
+          "system_key": "crm",
+          "action": "take_screenshot",
+          "description": "Screenshot before creating task",
+          "on_failure": "skip"
+        },
+        {
+          "step": 3,
+          "system_key": "crm",
+          "action": "click_selector",
+          "selector": "button:has-text('Add Task'), button:has-text('New Task'), #add-task-btn",
+          "description": "Open task creation dialog",
+          "on_failure": "stop"
+        },
+        {
+          "step": 4,
+          "system_key": "crm",
+          "action": "type_text",
+          "selector": "#task-title, input[name='task_title']",
+          "value": "Carrier Follow-Up: Client not found in carrier portal (Audit {audit.run_date})",
+          "description": "Set task title",
+          "on_failure": "stop"
+        },
+        {
+          "step": 5,
+          "system_key": "crm",
+          "action": "type_text",
+          "selector": "#task-notes, textarea[name='notes']",
+          "value": "Audit found client is AOR on HealthSherpa but client is NOT found in carrier portal. Action required: verify enrollment status directly with carrier.\n\nAudit Date: {audit.run_date}\nPolicy Number: {identity.policy_number}\nHealthSherpa FFM ID: {identity.marketplace_id}\nAudit Status: {audit.status}",
+          "description": "Set task notes",
+          "on_failure": "skip"
+        },
+        {
+          "step": 6,
+          "system_key": "crm",
+          "action": "click_selector",
+          "selector": "button:has-text('Save Task'), button[type='submit']",
+          "description": "Save task",
+          "on_failure": "stop"
+        },
+        {
+          "step": 7,
+          "system_key": "crm",
+          "action": "take_screenshot",
+          "description": "Screenshot after creating task",
+          "on_failure": "skip"
+        }
+      ],
+      "verification_steps": [
+        {
+          "step": 1,
+          "system_key": "crm",
+          "action": "wait_for_element",
+          "selector": ".task-created-confirmation, .success-banner",
+          "description": "Verify task was created successfully",
+          "on_failure": "escalate"
+        }
+      ],
+      "rollback_or_recovery_notes": "If task creation fails, screenshot and escalate. Do not retry. Duplicate tasks cause confusion."
+    },
+
+    {
+      "action_key": "crm.create_client_outreach_task",
+      "action_type": "ui_sequence",
+      "description": "Create a client outreach task in CRM: client not found in carrier portal and is NOT agent of record.",
+      "required_identity_score": 70,
+      "requires_human_approval": false,
+      "steps": [
+        {
+          "step": 1,
+          "system_key": "crm",
+          "action": "open_url",
+          "url": "https://app.infusionsoft.com/Contact/{identity.external_contact_id}",
+          "description": "Open client contact record",
+          "on_failure": "stop"
+        },
+        {
+          "step": 2,
+          "system_key": "crm",
+          "action": "take_screenshot",
+          "description": "Screenshot before creating task",
+          "on_failure": "skip"
+        },
+        {
+          "step": 3,
+          "system_key": "crm",
+          "action": "click_selector",
+          "selector": "button:has-text('Add Task'), button:has-text('New Task'), #add-task-btn",
+          "description": "Open task creation dialog",
+          "on_failure": "stop"
+        },
+        {
+          "step": 4,
+          "system_key": "crm",
+          "action": "type_text",
+          "selector": "#task-title, input[name='task_title']",
+          "value": "Client Outreach Needed: Not found in carrier, not AOR (Audit {audit.run_date})",
+          "description": "Set task title",
+          "on_failure": "stop"
+        },
+        {
+          "step": 5,
+          "system_key": "crm",
+          "action": "type_text",
+          "selector": "#task-notes, textarea[name='notes']",
+          "value": "Audit found client is NOT in carrier portal and we are NOT the agent of record in HealthSherpa. Direct outreach to client required to verify coverage and determine next steps.\n\nAudit Date: {audit.run_date}\nPolicy Number: {identity.policy_number}\nHealthSherpa FFM ID: {identity.marketplace_id}\nAudit Status: {audit.status}\nAgent of Record: {audit.agent_of_record}",
+          "description": "Set task notes",
+          "on_failure": "skip"
+        },
+        {
+          "step": 6,
+          "system_key": "crm",
+          "action": "click_selector",
+          "selector": "button:has-text('Save Task'), button[type='submit']",
+          "description": "Save task",
+          "on_failure": "stop"
+        },
+        {
+          "step": 7,
+          "system_key": "crm",
+          "action": "take_screenshot",
+          "description": "Screenshot after creating task",
+          "on_failure": "skip"
+        }
+      ],
+      "verification_steps": [
+        {
+          "step": 1,
+          "system_key": "crm",
+          "action": "wait_for_element",
+          "selector": ".task-created-confirmation, .success-banner",
+          "description": "Verify task was created successfully",
+          "on_failure": "escalate"
+        }
+      ],
+      "rollback_or_recovery_notes": "If task creation fails, screenshot and escalate. Do not retry."
+    },
+
+    {
+      "action_key": "audit.log_only",
+      "action_type": "noop",
+      "description": "Client is active and in good standing. Log the audit result only — no CRM modification.",
+      "required_identity_score": 0,
+      "requires_human_approval": false,
+      "steps": [],
+      "verification_steps": [],
+      "rollback_or_recovery_notes": null,
+      "notes": "Intentional no-op. Audit record written to Bill Core audit log. No CRM changes."
+    }
+  ],
+
+  "identity_policy": {
+    "fields": [
+      {
+        "generic_key": "external_contact_id",
+        "tenant_alias": "keap_id",
+        "match_type": "exact",
+        "weight": 50,
+        "case_sensitive": false,
+        "normalize_whitespace": true,
+        "notes": "Keap contact ID. Exact match required. Highest weight because this is a primary database key."
+      },
+      {
+        "generic_key": "policy_number",
+        "tenant_alias": "policy_number",
+        "match_type": "exact",
+        "weight": 30,
+        "case_sensitive": false,
+        "normalize_whitespace": true,
+        "notes": "Insurance policy number. Strong secondary identifier."
+      },
+      {
+        "generic_key": "marketplace_id",
+        "tenant_alias": "ffm_id",
+        "match_type": "exact",
+        "weight": 30,
+        "case_sensitive": false,
+        "normalize_whitespace": true,
+        "notes": "Federal Marketplace / FFM application ID. Second strong identifier."
+      },
+      {
+        "generic_key": "name",
+        "tenant_alias": "name",
+        "match_type": "fuzzy",
+        "weight": 20,
+        "case_sensitive": false,
+        "normalize_whitespace": true,
+        "notes": "Full name fuzzy match. Supports typos and middle name variations. Low weight — name alone is insufficient."
+      }
+    ],
+    "auto_proceed_score": 70,
+    "human_review_score": 40,
+    "block_below_score": 40,
+    "notes": "A client match requires at least keap_id+name OR policy_number+marketplace_id to reach auto_proceed. Name-only match (score=20) is always blocked per safety policy."
+  },
+
+  "decision_rules": [
+    {
+      "rule_id": "past_due_mark",
+      "description": "Client has a past-due policy: apply CRM past-due tag.",
+      "priority": 10,
+      "conditions": [
+        {
+          "field": "audit.status",
+          "operator": "eq",
+          "value": "past_due"
+        }
+      ],
+      "condition_logic": "all",
+      "action_key": "crm.mark_past_due"
+    },
+    {
+      "rule_id": "not_found_aor_true",
+      "description": "Client not found in carrier portal AND we are the agent of record → carrier follow-up needed.",
+      "priority": 20,
+      "conditions": [
+        {
+          "field": "audit.status",
+          "operator": "eq",
+          "value": "not_found"
+        },
+        {
+          "field": "audit.agent_of_record",
+          "operator": "eq",
+          "value": true
+        }
+      ],
+      "condition_logic": "all",
+      "action_key": "crm.create_carrier_followup_task"
+    },
+    {
+      "rule_id": "not_found_aor_false",
+      "description": "Client not found in carrier portal AND we are NOT the agent of record → client outreach needed.",
+      "priority": 30,
+      "conditions": [
+        {
+          "field": "audit.status",
+          "operator": "eq",
+          "value": "not_found"
+        },
+        {
+          "field": "audit.agent_of_record",
+          "operator": "eq",
+          "value": false
+        }
+      ],
+      "condition_logic": "all",
+      "action_key": "crm.create_client_outreach_task"
+    },
+    {
+      "rule_id": "active_log_only",
+      "description": "Client is active and in good standing → log only, no CRM modifications.",
+      "priority": 40,
+      "conditions": [
+        {
+          "field": "audit.status",
+          "operator": "eq",
+          "value": "active"
+        }
+      ],
+      "condition_logic": "all",
+      "action_key": "audit.log_only"
+    },
+    {
+      "rule_id": "unknown_status_escalate",
+      "description": "Audit status is unknown or unrecognized → cannot determine action, escalate.",
+      "priority": 99,
+      "conditions": [
+        {
+          "field": "audit.status",
+          "operator": "not_in",
+          "value": ["past_due", "not_found", "active"]
+        }
+      ],
+      "condition_logic": "all",
+      "action_key": "audit.log_only",
+      "notes": "Fallback rule. Unknown status is logged but triggers no CRM change. Human should review unrecognized statuses."
+    }
+  ],
+
+  "safety_policy": {
+    "never_update_on_name_only": true,
+    "require_identity_score_for_crm_actions": true,
+    "dry_run_default": true,
+    "require_human_approval_for_first_n_runs": 50,
+    "screenshot_before_action": true,
+    "screenshot_after_action": true,
+    "audit_log_required": true,
+    "duplicate_action_check_required": true,
+    "notes": "dry_run_default=true means no CRM writes happen until explicitly disabled by operator. require_human_approval_for_first_n_runs=50 means the first 50 client actions always pause for human confirmation regardless of identity score."
+  },
+
+  "metadata": {
+    "run_schedule": "bi-weekly",
+    "typical_client_count_per_run": "200-400",
+    "estimated_time_per_client_seconds": 45,
+    "systems_requiring_active_sessions": ["carrier_portal", "healthsherpa", "crm"],
+    "owner": "internal",
+    "contact": "ops team"
+  }
+}

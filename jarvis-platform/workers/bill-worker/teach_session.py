@@ -26,13 +26,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
+import subprocess
 import sys
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 try:
     import requests
@@ -595,6 +599,50 @@ def _post_observation_answer(api_base: str, draft_id: str, answer_payload: dict[
     return None
 
 
+def _event_to_browser_action(event: dict[str, Any]) -> dict[str, Any]:
+    et = str(event.get("event_type") or "")
+    action_type = "click"
+    if et == "type_text":
+        action_type = "type"
+    elif et == "navigate":
+        action_type = "navigate"
+    elif et == "select_option":
+        action_type = "select"
+    elif et == "submit":
+        action_type = "submit"
+
+    el = event.get("element") or {}
+    label = _label(el)
+    selector = event.get("selector") or ""
+    sensitive_terms = ("password", "ssn", "code", "token", "mfa", "dob", "phone", "email")
+    label_selector_text = f"{label} {selector}".lower()
+    looks_sensitive = any(term in label_selector_text for term in sensitive_terms)
+
+    return {
+        "id": str(uuid4()),
+        "type": action_type,
+        "selector": None if looks_sensitive else (selector or None),
+        "label": "[sensitive]" if looks_sensitive and label else (label or None),
+        "value_redacted": "[redacted]" if action_type == "type" or looks_sensitive else None,
+        "url": event.get("url") or None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _post_teaching_action(api_base: str, session_id: str, action_payload: dict[str, Any]) -> bool:
+    if not session_id:
+        return False
+    endpoint = f"{api_base.rstrip('/')}/api/teaching/session/{session_id}/actions"
+    try:
+        resp = requests.post(endpoint, json={"action": action_payload}, timeout=APPEND_TIMEOUT)
+        if resp.status_code == 200:
+            return True
+        print(f"  [teach] Action capture failed ({resp.status_code}): {resp.text[:120]}", file=sys.stderr)
+    except Exception as exc:
+        print(f"  [teach] Action capture HTTP error: {exc}", file=sys.stderr)
+    return False
+
+
 def _load_observation_settings(api_base: str) -> dict[str, Any]:
     endpoint = f"{api_base.rstrip('/')}/api/brain/preferences"
     settings = {
@@ -644,9 +692,46 @@ def _extract_observation_prompt(result: dict[str, Any] | None) -> tuple[dict[str
     return None, settings
 
 
+def _detect_chrome_path() -> Path:
+    candidates = [
+        os.getenv("CHROME_PATH"),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return Path(candidate)
+    raise FileNotFoundError("Google Chrome executable not found")
+
+
+def _is_debug_chrome_ready(port: int) -> bool:
+    try:
+        resp = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=1.5)
+        return resp.ok and bool(resp.text)
+    except Exception:
+        return False
+
+
+def _wait_for_debug_chrome(port: int, timeout_seconds: float = 12.0) -> bool:
+    started = time.monotonic()
+    while time.monotonic() - started < timeout_seconds:
+        if _is_debug_chrome_ready(port):
+            return True
+        time.sleep(0.3)
+    return False
+
+
 # ── Session runner ────────────────────────────────────────────────────────────
 
-def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> dict[str, Any]:
+def run_session(
+    draft_id: str,
+    api_base: str,
+    start_url: str | None = None,
+    session_id: str | None = None,
+    chrome_user_data_dir: str | None = None,
+    profile_directory: str = "Default",
+    remote_debugging_port: int = 9222,
+) -> dict[str, Any]:
     sep = "=" * 62
     print(f"\n{sep}")
     print(f"  Bill Teach Mode — Observation Session")
@@ -665,7 +750,12 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
     last_url: list[str] = [""]
     step_num: list[int] = [0]
     step_lock = threading.Lock()
-    launch_command = "playwright.chromium.launch(headless=False, args=['--start-maximized', '--disable-infobars'])"
+    user_data_dir = Path(chrome_user_data_dir or (Path.home() / "AppData" / "Local" / "BillCore" / "ChromeProfiles" / "BillTeaching")).resolve()
+    launch_command = (
+        f"chrome --remote-debugging-port={remote_debugging_port} "
+        f"--user-data-dir={user_data_dir} "
+        f"--profile-directory={profile_directory} --start-maximized"
+    )
     browser_launch_succeeded = False
     observation_settings = _load_observation_settings(api_base)
 
@@ -686,6 +776,8 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
                 if result is not None:
                     ui_queue.put({"type": "apply_settings", "settings": result})
                     print(f"  [obs ] {result.get('status', 'saved')} -> prompt {item.get('data', {}).get('prompt_id', '?')}")
+            elif kind == "teaching_action":
+                _post_teaching_action(api_base, str(session_id or ""), dict(item.get("data") or {}))
             else:
                 step = dict(item.get("data") or {})
                 result = _post_step(api_base, draft_id, step)
@@ -711,6 +803,11 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
     def _enqueue_observation_answer(answer_event: dict[str, Any]) -> None:
         post_queue.put({"kind": "observation_answer", "data": answer_event})
 
+    def _enqueue_teaching_action(action_payload: dict[str, Any]) -> None:
+        if not session_id:
+            return
+        post_queue.put({"kind": "teaching_action", "data": action_payload})
+
     def record(event: dict[str, Any]) -> None:
         et = event.get("event_type", "")
         if et == "_attached":
@@ -735,6 +832,7 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
         if now - last_event_ts.get(et, 0.0) < EVENT_DEBOUNCE:
             return
         last_event_ts[et] = now
+        _enqueue_teaching_action(_event_to_browser_action(event))
         _enqueue_step(_event_to_step(event))
 
     def on_navigate(url: str) -> None:
@@ -744,7 +842,9 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
             return
         last_url[0] = url
         last_event_ts["navigate"] = time.monotonic()
-        _enqueue_step(_event_to_step({"event_type": "navigate", "url": url, "element": {}}))
+        nav_event = {"event_type": "navigate", "url": url, "element": {}}
+        _enqueue_teaching_action(_event_to_browser_action(nav_event))
+        _enqueue_step(_event_to_step(nav_event))
 
     def attach_page(p: Any) -> None:
         p.on("framenavigated", lambda frame: on_navigate(frame.url) if frame == p.main_frame else None)
@@ -826,19 +926,35 @@ def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> d
     with sync_playwright() as pw:
         print(f"  [teach] final Chrome launch command: {launch_command}")
         try:
-            browser = pw.chromium.launch(
-                headless=False,
-                args=["--start-maximized", "--disable-infobars"],
-            )
+            user_data_dir.mkdir(parents=True, exist_ok=True)
+            if not _is_debug_chrome_ready(remote_debugging_port):
+                chrome_path = _detect_chrome_path()
+                chrome_args = [
+                    str(chrome_path),
+                    f"--remote-debugging-port={remote_debugging_port}",
+                    f"--user-data-dir={str(user_data_dir)}",
+                    f"--profile-directory={profile_directory}",
+                    "--start-maximized",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ]
+                if start_url:
+                    chrome_args.append(start_url)
+                subprocess.Popen(chrome_args)
+
+            if not _wait_for_debug_chrome(remote_debugging_port):
+                raise RuntimeError(f"Chrome debug endpoint unavailable on 127.0.0.1:{remote_debugging_port}")
+
+            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{remote_debugging_port}")
         except Exception as exc:
             print(f"  [teach] browser launch succeeded: False ({exc})", file=sys.stderr)
             raise RuntimeError(f"Unable to launch Chromium for teach session: {exc}") from exc
 
-        context = browser.new_context(viewport=None)
+        context = browser.contexts[0] if browser.contexts else browser.new_context(viewport=None)
         context.add_init_script(f"window.__billTeachApiBase = {json.dumps(api_base.rstrip('/'))};")
         context.add_init_script(_LISTENER_JS)
 
-        page = context.new_page()
+        page = context.pages[0] if context.pages else context.new_page()
         browser_launch_succeeded = True
         print("  [teach] browser launch succeeded: True")
         attach_page(page)
@@ -899,8 +1015,18 @@ def main() -> None:
     parser.add_argument("--draft-id", required=True, help="Workflow learning draft ID")
     parser.add_argument("--api-base", default=DEFAULT_API_BASE, help="Bill Core API base URL")
     parser.add_argument("--start-url", default=None, help="Optional URL to open when the browser launches")
+    parser.add_argument("--chrome-user-data-dir", default=None, help="Chrome --user-data-dir path")
+    parser.add_argument("--profile-directory", default="Default", help="Chrome --profile-directory value")
+    parser.add_argument("--remote-debugging-port", type=int, default=9222, help="Chrome remote debugging port")
     args = parser.parse_args()
-    run_session(args.draft_id, args.api_base, args.start_url)
+    run_session(
+        args.draft_id,
+        args.api_base,
+        args.start_url,
+        chrome_user_data_dir=args.chrome_user_data_dir,
+        profile_directory=args.profile_directory,
+        remote_debugging_port=args.remote_debugging_port,
+    )
 
 
 if __name__ == "__main__":

@@ -93,6 +93,14 @@ from schemas import (
     NavigationRuleMapping,
     TeachingStartupState,
     TeachingStartupStatusRequest,
+    TeachingSession,
+    TeachingSessionReviewResponse,
+    TeachingSessionReviewStepSummary,
+    TeachingSessionReviewSummary,
+    TeachingSessionActionRequest,
+    TeachingSessionMessageRequest,
+    TeachingSessionMessageResponse,
+    WorkflowStep,
 )
 
 # ---------------------------------------------------------------------------
@@ -1568,6 +1576,204 @@ def _parse_command_parameters(command_text: str) -> dict[str, Any]:
         params["worker_override"] = worker_override_match.group(1).strip()
 
     return params
+
+
+def start_teaching_mode_from_command(
+    *,
+    endpoint: str,
+    tenant_id: str,
+    user_id: str,
+    message: str,
+    workflow_name: str | None,
+    target_machine_uuid: str | None,
+    session_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    logger.info(
+        "TEACHING_STARTUP_CANONICAL_PATH endpoint=%s tenant_id=%s user_id=%s target_machine_uuid=%s",
+        endpoint,
+        tenant_id,
+        user_id,
+        target_machine_uuid,
+    )
+
+    resolved_workflow_name = (workflow_name or "").strip() or _extract_workflow_name_from_conversation(message)
+    if not resolved_workflow_name:
+        return {
+            "status": "needs_workflow_name",
+            "next_required_input": "workflow_name",
+            "before_execution": "I recognized a request to start teaching a new workflow.",
+            "after_execution": "What should we call this workflow?",
+            "suggested_next_action": "Try: 'Let's create a new workflow called Member Renewal Followup'.",
+            "reply": "What should we call this workflow?",
+            "task": None,
+            "teaching_mode": None,
+            "selected_worker": None,
+            "task_id": None,
+            "draft_id": None,
+            "session_id": None,
+            "workflow_id": None,
+        }
+
+    machines = list_machines()
+    selected_worker: MachineRecord | None = None
+    if target_machine_uuid:
+        selected_worker = _find_worker_by_hint(machines, target_machine_uuid)
+        if not selected_worker or not selected_worker.online:
+            return {
+                "status": "needs_worker",
+                "next_required_input": "target_machine_uuid",
+                "before_execution": "I recognized a request to start a new teaching workflow.",
+                "after_execution": "The requested worker is not online right now.",
+                "suggested_next_action": "Choose an online worker or ask 'which worker is free'.",
+                "reply": "The requested worker is not online. Which worker should I use?",
+                "task": None,
+                "teaching_mode": None,
+                "selected_worker": None,
+                "task_id": None,
+                "draft_id": None,
+                "session_id": None,
+                "workflow_id": resolved_workflow_name,
+            }
+    else:
+        selected_worker = _select_best_worker(machines, None)
+
+    if not selected_worker:
+        return {
+            "status": "needs_worker",
+            "next_required_input": "target_machine_uuid",
+            "before_execution": "I recognized a request to start a new teaching workflow.",
+            "after_execution": "No online worker is available to open the teaching browser.",
+            "suggested_next_action": "Bring a worker online, then retry the command.",
+            "reply": "No online worker is available right now. Which worker should I use once one is online?",
+            "task": None,
+            "teaching_mode": None,
+            "selected_worker": None,
+            "task_id": None,
+            "draft_id": None,
+            "session_id": None,
+            "workflow_id": resolved_workflow_name,
+        }
+
+    draft_request = WorkflowLearningCreateRequest(
+        learning_path="demonstration",
+        workflow_name=resolved_workflow_name,
+        goal=f"Teach workflow '{resolved_workflow_name}' from conversational command.",
+        source_text="",
+    )
+    draft = _build_workflow_draft(draft_request)
+    draft_id = str(draft.get("draft_id") or "").strip()
+    session_id = str(uuid4()).strip()
+    worker_uuid = str(selected_worker.machine_uuid or "").strip()
+    if not draft_id or not session_id or not worker_uuid:
+        logger.error(
+            "TEACHING_TASK_PAYLOAD_VALIDATION_FAILED draft_id=%s session_id=%s target_machine_uuid=%s",
+            draft_id,
+            session_id,
+            worker_uuid,
+        )
+        return {
+            "status": "validation_failed",
+            "next_required_input": None,
+            "before_execution": "I recognized a request to start a new teaching workflow.",
+            "after_execution": "I could not safely create a complete teaching startup payload.",
+            "suggested_next_action": "Retry the command after verifying worker availability.",
+            "reply": "I could not start Teaching Mode because startup payload validation failed.",
+            "task": None,
+            "teaching_mode": None,
+            "selected_worker": selected_worker,
+            "task_id": None,
+            "draft_id": draft_id or None,
+            "session_id": session_id or None,
+            "workflow_id": resolved_workflow_name,
+        }
+
+    logger.info(
+        "TEACHING_TASK_PAYLOAD_VALIDATED draft_id=%s session_id=%s target_machine_uuid=%s",
+        draft_id,
+        session_id,
+        worker_uuid,
+    )
+
+    workflow_learning_drafts.append(draft)
+    _save_workflow_learning_drafts()
+
+    task_payload = {
+        "task_type": "teach_session",
+        "draft_id": draft_id,
+        "workflow_name": resolved_workflow_name,
+        "api_base": _resolve_teach_session_worker_api_base(""),
+        "start_url": "",
+        "target_machine_uuid": worker_uuid,
+        "session_id": session_id,
+    }
+    task = _create_task_record(task_payload)
+    logger.info(
+        "TEACHING_TASK_QUEUED source=%s task_id=%s draft_id=%s session_id=%s target_machine_uuid=%s workflow_name=%s",
+        endpoint,
+        task.id,
+        task_payload.get("draft_id"),
+        task_payload.get("session_id"),
+        task_payload.get("target_machine_uuid"),
+        task_payload.get("workflow_name"),
+    )
+
+    now_iso = datetime.utcnow().isoformat()
+    teaching_session = TeachingSession(
+        session_id=session_id,
+        workflow_name=resolved_workflow_name,
+        workflow_summary=None,
+        status="intro",
+        steps=[],
+    )
+    _teaching_startup_sessions[session_id] = {
+        "session_id": session_id,
+        "task_id": task.id,
+        "draft_id": draft_id,
+        "workflow_name": resolved_workflow_name,
+        "target_machine_uuid": worker_uuid,
+        "status": "browser_opening",
+        "message": "Waiting for the teaching browser to open on the worker.",
+        "overlay_enabled": True,
+        "voice_prompt_text": (
+            f"Teaching mode is starting for {resolved_workflow_name}. "
+            "Open the browser on your computer and walk me through the process step by step."
+        ),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "teaching_session": teaching_session.model_dump(),
+    }
+    logger.info(
+        "TEACHING_SESSION_CREATED session_id=%s task_id=%s workflow=%s worker=%s",
+        session_id,
+        task.id,
+        resolved_workflow_name,
+        worker_uuid,
+    )
+
+    teaching_mode = TeachingStartupState(**_teaching_startup_sessions[session_id])
+    return {
+        "status": "queued",
+        "next_required_input": None,
+        "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+        "after_execution": (
+            f"Started teaching workflow '{resolved_workflow_name}' as task {task.id} on "
+            f"{selected_worker.machine_name} ({selected_worker.machine_uuid})."
+        ),
+        "suggested_next_action": (
+            "Use the teaching overlay while performing the process; Bill will capture steps and ask guiding questions."
+        ),
+        "reply": (
+            f"Sounds good. I started a teaching session for {resolved_workflow_name}. "
+            "Can you give me a quick explanation of what this workflow does?"
+        ),
+        "task": task,
+        "teaching_mode": teaching_mode,
+        "selected_worker": selected_worker,
+        "task_id": task.id,
+        "draft_id": draft_id,
+        "session_id": session_id,
+        "workflow_id": resolved_workflow_name,
+    }
 
 
 def _create_workflow_task(
@@ -5616,6 +5822,535 @@ def update_teaching_session_status(
     return rec
 
 
+@app.post("/api/teaching/session/{session_id}/conversation", response_model=TeachingSessionMessageResponse)
+def teaching_session_conversation(
+    session_id: str,
+    payload: TeachingSessionMessageRequest,
+) -> TeachingSessionMessageResponse:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+
+    message = (payload.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    session_data = rec.get("teaching_session") or {
+        "session_id": session_id,
+        "workflow_name": rec.get("workflow_name") or "Workflow",
+        "workflow_summary": None,
+        "status": "intro",
+        "steps": [],
+    }
+    teaching_session = TeachingSession(**session_data)
+
+    def _classify_teaching_message(text: str) -> str:
+        lower = text.lower()
+        compact = re.sub(r"\s+", " ", lower).strip()
+        if len(compact) < 8:
+            return "vague"
+
+        exception_keywords = (
+            "except",
+            "unless",
+            "if not",
+            "error",
+            "fails",
+            "failure",
+            "blank",
+            "missing",
+            "invalid",
+        )
+        decision_keywords = (
+            "always",
+            "only if",
+            "when",
+            "must",
+            "should",
+            "before submitting",
+            "check",
+            "required",
+            "if ",
+        )
+        action_keywords = (
+            "log in",
+            "login",
+            "open",
+            "go to",
+            "navigate",
+            "click",
+            "type",
+            "enter",
+            "select",
+            "search",
+            "submit",
+            "upload",
+            "download",
+        )
+
+        if any(token in compact for token in exception_keywords):
+            return "exception"
+        if any(token in compact for token in decision_keywords):
+            return "decision_rule"
+        if any(token in compact for token in action_keywords):
+            return "step_instruction"
+        return "vague"
+
+    def _create_step_title(text: str) -> str:
+        lower = text.lower()
+        if "healthsherpa" in lower and "clients page" in lower and ("log" in lower or "open" in lower):
+            return "Open HealthSherpa clients page"
+
+        cleaned = re.sub(r"^[\s,.;:-]*(first|next|then|after that|finally)\b", "", text, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"^(i|we)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+        if " and " in cleaned and any(k in lower for k in ["open", "click", "submit", "select", "type"]):
+            parts = [p.strip() for p in cleaned.split(" and ") if p.strip()]
+            if parts:
+                cleaned = parts[-1]
+
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+        if not cleaned:
+            return "Capture workflow action"
+        if len(cleaned) > 64:
+            cleaned = cleaned[:64].rstrip() + "..."
+        return cleaned[:1].upper() + cleaned[1:]
+
+    def _create_step_summary(text: str) -> str:
+        normalized = re.sub(r"\s+", " ", text).strip().rstrip(".")
+        normalized = re.sub(r"^(first|next|then|after that|finally)\s+", "", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"^(i|we)\s+", "", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"\blog into\b", "logging into", normalized, count=1, flags=re.IGNORECASE)
+        normalized = re.sub(r"\bopen\b", "opening", normalized, count=1, flags=re.IGNORECASE)
+        normalized = normalized[:1].lower() + normalized[1:] if normalized else normalized
+        return f"You start by {normalized}." if normalized else "You start this step."
+
+    def _find_step_for_annotation(step_id: str | None) -> Any:
+        if step_id:
+            for step in teaching_session.steps:
+                if step.id == step_id:
+                    return step
+        for step in teaching_session.steps:
+            if not step.confirmed:
+                return step
+        return teaching_session.steps[-1] if teaching_session.steps else None
+
+    if not teaching_session.workflow_summary:
+        summary = re.sub(r"\s+", " ", message).strip()
+        teaching_session.workflow_summary = summary
+        teaching_session.status = "teaching"
+        reply = f"Got it. We're learning how to {summary}. Where do we start?"
+    else:
+        category = _classify_teaching_message(message)
+        target_step_id = (payload.step_id or "").strip() or None
+
+        if category == "step_instruction":
+            step = WorkflowStep(
+                id=str(uuid4()),
+                order=len(teaching_session.steps) + 1,
+                title=_create_step_title(message),
+                employee_explanation=message,
+                bill_summary=_create_step_summary(message),
+                decision_rules=[],
+                exceptions=[],
+                required_inputs=[],
+                confirmed=False,
+            )
+            teaching_session.steps.append(step)
+            reply = f"I'll treat that as Step {step.order}: {step.title}. Is that correct?"
+        elif category == "decision_rule":
+            step = _find_step_for_annotation(target_step_id)
+            if step is None:
+                reply = "I heard a decision rule. Which step should I attach it to?"
+            else:
+                step.decision_rules.append(message)
+                reply = f"Got it. I added that decision rule to Step {step.order}: {step.title}."
+        elif category == "exception":
+            step = _find_step_for_annotation(target_step_id)
+            if step is None:
+                reply = "I heard an exception. Which step should I attach it to?"
+            else:
+                step.exceptions.append(message)
+                reply = f"Got it. I added that exception to Step {step.order}: {step.title}."
+        else:
+            reply = "I need a little more detail. What action should Bill perform or watch for?"
+
+    rec["teaching_session"] = teaching_session.model_dump()
+    rec["updated_at"] = datetime.utcnow().isoformat()
+
+    return TeachingSessionMessageResponse(reply=reply, teaching_session=teaching_session)
+
+
+@app.post("/api/teaching/session/{session_id}/steps/{step_id}/confirm", response_model=TeachingSessionMessageResponse)
+def confirm_teaching_session_step(session_id: str, step_id: str) -> TeachingSessionMessageResponse:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+
+    session_data = rec.get("teaching_session") or {
+        "session_id": session_id,
+        "workflow_name": rec.get("workflow_name") or "Workflow",
+        "workflow_summary": None,
+        "status": "intro",
+        "steps": [],
+    }
+    teaching_session = TeachingSession(**session_data)
+
+    matched = False
+    for step in teaching_session.steps:
+        if step.id == step_id:
+            step.confirmed = True
+            matched = True
+            break
+
+    if not matched:
+        raise HTTPException(status_code=404, detail=f"Step '{step_id}' not found")
+
+    rec["teaching_session"] = teaching_session.model_dump()
+    rec["updated_at"] = datetime.utcnow().isoformat()
+    return TeachingSessionMessageResponse(
+        reply="Perfect. I marked that step as confirmed.",
+        teaching_session=teaching_session,
+    )
+
+
+@app.post("/api/teaching/session/{session_id}/actions", response_model=TeachingSessionMessageResponse)
+def teaching_session_capture_action(
+    session_id: str,
+    payload: TeachingSessionActionRequest,
+) -> TeachingSessionMessageResponse:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+
+    session_data = rec.get("teaching_session") or {
+        "session_id": session_id,
+        "workflow_name": rec.get("workflow_name") or "Workflow",
+        "workflow_summary": None,
+        "status": "intro",
+        "steps": [],
+    }
+    teaching_session = TeachingSession(**session_data)
+
+    target_step = None
+    requested_step_id = (payload.step_id or "").strip() or None
+    if requested_step_id:
+        for step in teaching_session.steps:
+            if step.id == requested_step_id:
+                target_step = step
+                break
+    if target_step is None:
+        for step in teaching_session.steps:
+            if not step.confirmed:
+                target_step = step
+                break
+    if target_step is None and teaching_session.steps:
+        target_step = teaching_session.steps[-1]
+    if target_step is None:
+        target_step = WorkflowStep(
+            id=str(uuid4()),
+            order=1,
+            title="Observed browser activity",
+            employee_explanation="",
+            bill_summary="Bill observed browser activity while you were teaching.",
+            decision_rules=[],
+            exceptions=[],
+            required_inputs=[],
+            confirmed=False,
+            observed_actions=[],
+        )
+        teaching_session.steps.append(target_step)
+
+    action = payload.action.model_copy(deep=True)
+    action.id = action.id or str(uuid4())
+
+    sensitive_terms = ("password", "ssn", "code", "token", "mfa", "dob", "phone", "email")
+    label_selector_text = f"{action.label or ''} {action.selector or ''}".lower()
+    looks_sensitive = any(term in label_selector_text for term in sensitive_terms)
+
+    if action.type == "type":
+        action.value_redacted = "[redacted]"
+    if looks_sensitive:
+        action.value_redacted = "[redacted]"
+        if action.label:
+            action.label = "[sensitive]"
+        action.selector = None
+
+    target_step.observed_actions.append(action)
+    rec["teaching_session"] = teaching_session.model_dump()
+    rec["updated_at"] = datetime.utcnow().isoformat()
+
+    return TeachingSessionMessageResponse(
+        reply=f"Captured observed browser action for Step {target_step.order}.",
+        teaching_session=teaching_session,
+    )
+
+
+def _build_teaching_review_summary(teaching_session: TeachingSession) -> TeachingSessionReviewSummary:
+    ordered_steps = sorted(teaching_session.steps, key=lambda step: step.order)
+    confirmed_steps = sum(1 for step in ordered_steps if step.confirmed)
+    summaries = [
+        TeachingSessionReviewStepSummary(
+            step_id=step.id,
+            order=step.order,
+            title=step.title,
+            confirmed=bool(step.confirmed),
+            bill_summary=step.bill_summary,
+            employee_explanation=step.employee_explanation,
+            observed_actions=list(step.observed_actions or []),
+            decision_rules=list(step.decision_rules or []),
+            exceptions=list(step.exceptions or []),
+            required_inputs=list(step.required_inputs or []),
+        )
+        for step in ordered_steps
+    ]
+    return TeachingSessionReviewSummary(
+        workflow_summary=str(teaching_session.workflow_summary or ""),
+        total_steps=len(ordered_steps),
+        confirmed_steps=confirmed_steps,
+        unconfirmed_steps=len(ordered_steps) - confirmed_steps,
+        steps=summaries,
+    )
+
+
+def _resolve_teaching_session_draft_id(rec: dict[str, Any]) -> str | None:
+    candidate = str(rec.get("draft_id") or "").strip()
+    if candidate:
+        return candidate
+
+    task_id = str(rec.get("task_id") or "").strip()
+    if not task_id:
+        return None
+    for task in tasks:
+        if str(task.get("id") or "").strip() != task_id:
+            continue
+        payload = task.get("payload") or {}
+        draft_id = str(payload.get("draft_id") or "").strip()
+        if draft_id:
+            rec["draft_id"] = draft_id
+            return draft_id
+    return None
+
+
+def _teaching_action_to_draft_step_fields(action: Any) -> dict[str, Any]:
+    action_type = str(getattr(action, "type", "") or "")
+    if action_type == "navigate":
+        return {
+            "action": "open_url",
+            "url": str(getattr(action, "url", "") or ""),
+        }
+    if action_type == "type":
+        selector = str(getattr(action, "selector", "") or "")
+        return {
+            "action": "type_text",
+            "selector": selector,
+            "value": str(getattr(action, "value_redacted", "") or ""),
+        }
+    if action_type == "select":
+        selector = str(getattr(action, "selector", "") or "")
+        return {
+            "action": "select_option",
+            "selector": selector,
+            "value": str(getattr(action, "value_redacted", "") or ""),
+        }
+    selector = str(getattr(action, "selector", "") or "")
+    return {
+        "action": "click_selector",
+        "selector": selector,
+    }
+
+
+def _teaching_step_to_draft_step(step: WorkflowStep) -> dict[str, Any]:
+    observed_actions = list(step.observed_actions or [])
+    primary = observed_actions[0] if observed_actions else None
+    step_payload: dict[str, Any] = {
+        "step_order": int(step.order),
+        "name": f"step_{int(step.order)}",
+        "step_name": str(step.title or f"Step {int(step.order)}"),
+        "instruction": str(step.employee_explanation or step.bill_summary or step.title or ""),
+        "description": str(step.bill_summary or step.employee_explanation or ""),
+        "intent": str(step.bill_summary or ""),
+        "decision_rules": list(step.decision_rules or []),
+        "exceptions": list(step.exceptions or []),
+        "required_inputs": [str(x) for x in (step.required_inputs or []) if str(x).strip()],
+        "teaching_notes": {
+            "confirmed": bool(step.confirmed),
+            "observed_actions": [a.model_dump() for a in observed_actions],
+        },
+    }
+    if primary is not None:
+        step_payload.update(_teaching_action_to_draft_step_fields(primary))
+    if not step_payload.get("action"):
+        step_payload["action"] = "manual_step"
+        step_payload["manual_review_required"] = True
+    return _normalize_step(step_payload, int(step.order))
+
+
+def _create_or_update_draft_from_teaching_session(
+    rec: dict[str, Any],
+    teaching_session: TeachingSession,
+    review_status: str,
+    review_summary: TeachingSessionReviewSummary,
+    warnings: list[str],
+) -> tuple[dict[str, Any], str]:
+    draft_id = _resolve_teaching_session_draft_id(rec)
+    now_iso = datetime.utcnow().isoformat()
+    step_rows = [_teaching_step_to_draft_step(step) for step in sorted(teaching_session.steps, key=lambda s: s.order)]
+
+    required_inputs: list[str] = []
+    for step in teaching_session.steps:
+        for field in (step.required_inputs or []):
+            normalized = str(field).strip()
+            if normalized and normalized not in required_inputs:
+                required_inputs.append(normalized)
+
+    draft: dict[str, Any] | None = None
+    draft_idx: int | None = None
+    if draft_id:
+        draft_idx, draft = _find_workflow_draft(draft_id)
+
+    created_new = draft is None or draft_idx is None
+    if created_new:
+        draft_payload = WorkflowLearningCreateRequest(
+            learning_path="demonstration",
+            workflow_name=teaching_session.workflow_name,
+            goal=f"Teach workflow '{teaching_session.workflow_name}' from teaching session.",
+            source_text="",
+        )
+        draft = _build_workflow_draft(draft_payload)
+        draft["draft_id"] = draft_id or str(draft.get("draft_id") or str(uuid4()))
+        workflow_learning_drafts.append(draft)
+        draft_idx = len(workflow_learning_drafts) - 1
+        draft_id = str(draft["draft_id"])
+
+    updated = dict(draft)
+    updated["workflow_name"] = _normalize_workflow_name(teaching_session.workflow_name)
+    updated["goal"] = str(updated.get("goal") or f"Execute learned workflow {teaching_session.workflow_name}")
+    updated["description"] = str(teaching_session.workflow_summary or updated.get("description") or "")
+    updated["steps"] = step_rows
+    updated["required_inputs"] = required_inputs
+    updated["teaching_complete"] = True
+    updated["teaching_pending_step"] = None
+    updated["review_status"] = review_status
+    updated["reviewer_notes"] = "\n".join(warnings) if warnings else None
+    updated["updated_at"] = now_iso
+    updated["teaching_review_summary"] = review_summary.model_dump()
+
+    workflow_learning_drafts[draft_idx] = updated
+    _save_workflow_learning_drafts()
+
+    rec["draft_id"] = draft_id
+    return updated, "created" if created_new else "updated"
+
+
+@app.post("/api/teaching/session/{session_id}/review", response_model=TeachingSessionReviewResponse)
+def teaching_session_review(session_id: str) -> TeachingSessionReviewResponse:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+
+    session_data = rec.get("teaching_session") or {
+        "session_id": session_id,
+        "workflow_name": rec.get("workflow_name") or "Workflow",
+        "workflow_summary": None,
+        "status": "intro",
+        "steps": [],
+    }
+    teaching_session = TeachingSession(**session_data)
+    teaching_session.status = "review"
+
+    review_summary = _build_teaching_review_summary(teaching_session)
+    warnings: list[str] = []
+    if review_summary.total_steps == 0:
+        warnings.append("No steps were captured yet. Add at least one step before approving.")
+    if review_summary.unconfirmed_steps > 0:
+        warnings.append("Some steps are not confirmed yet. You can approve anyway, but Bill may need more training.")
+
+    rec["teaching_session"] = teaching_session.model_dump()
+    rec["updated_at"] = datetime.utcnow().isoformat()
+
+    return TeachingSessionReviewResponse(
+        reply="Teaching session moved to review. Please review the workflow draft details.",
+        teaching_session=teaching_session,
+        review_summary=review_summary,
+        warnings=warnings,
+        draft_result=None,
+    )
+
+
+@app.post("/api/teaching/session/{session_id}/approve", response_model=TeachingSessionReviewResponse)
+def teaching_session_approve(session_id: str) -> TeachingSessionReviewResponse:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+
+    session_data = rec.get("teaching_session") or {
+        "session_id": session_id,
+        "workflow_name": rec.get("workflow_name") or "Workflow",
+        "workflow_summary": None,
+        "status": "intro",
+        "steps": [],
+    }
+    teaching_session = TeachingSession(**session_data)
+    if not teaching_session.steps:
+        raise HTTPException(status_code=400, detail="Cannot approve without at least one captured step.")
+
+    teaching_session.status = "approved"
+    review_summary = _build_teaching_review_summary(teaching_session)
+
+    warnings: list[str] = []
+    if review_summary.unconfirmed_steps > 0:
+        warnings.append("Some steps are not confirmed yet. You can approve anyway, but Bill may need more training.")
+
+    updated_draft, action = _create_or_update_draft_from_teaching_session(
+        rec=rec,
+        teaching_session=teaching_session,
+        review_status="approved",
+        review_summary=review_summary,
+        warnings=warnings,
+    )
+
+    rec["teaching_session"] = teaching_session.model_dump()
+    rec["updated_at"] = datetime.utcnow().isoformat()
+
+    return TeachingSessionReviewResponse(
+        reply="Workflow approved. Bill created a playbook draft for review.",
+        teaching_session=teaching_session,
+        review_summary=review_summary,
+        warnings=warnings,
+        draft_result={
+            "status": "ok",
+            "action": action,
+            "draft_id": updated_draft.get("draft_id"),
+            "review_status": updated_draft.get("review_status"),
+            "workflow_name": updated_draft.get("workflow_name"),
+        },
+    )
+
+
+@app.post("/api/teaching/session/{session_id}/continue", response_model=TeachingSessionMessageResponse)
+def teaching_session_continue(session_id: str) -> TeachingSessionMessageResponse:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+
+    session_data = rec.get("teaching_session") or {
+        "session_id": session_id,
+        "workflow_name": rec.get("workflow_name") or "Workflow",
+        "workflow_summary": None,
+        "status": "intro",
+        "steps": [],
+    }
+    teaching_session = TeachingSession(**session_data)
+    teaching_session.status = "teaching"
+    rec["teaching_session"] = teaching_session.model_dump()
+    rec["updated_at"] = datetime.utcnow().isoformat()
+
+    return TeachingSessionMessageResponse(
+        reply="Continuing teaching mode. Keep walking Bill through the workflow.",
+        teaching_session=teaching_session,
+    )
+
+
 @app.post("/api/brain/command", response_model=BrainCommandResponse)
 def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     command_text = (payload.command or "").strip()
@@ -5639,6 +6374,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     pending_interaction_id: str | None = None
     pending_questions: list[str] = []
     teach_session_id: str | None = None  # set when a teach_session task is created
+    assistant_reply: str | None = None
 
     worker_hint_match = re.search(r"on worker\s+(.+)$", command_text, flags=re.IGNORECASE)
     worker_hint = worker_hint_match.group(1).strip() if worker_hint_match else None
@@ -5716,84 +6452,26 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
 
     if _is_new_workflow_command(command_lower):
         recognized_intent = "start_new_workflow"
-        workflow_name = _extract_workflow_name_from_conversation(command_text)
-
-        if not workflow_name:
-            before_execution = "I recognized a request to start teaching a new workflow."
-            after_execution = "What should we call this workflow?"
-            suggested_next_action = "Try: 'Let's create a new workflow called Member Renewal Followup'."
-        else:
-            selected_workflow = workflow_name
-
-            # If a specific worker was requested, require it to be online.
-            if payload.target_machine_uuid and (not selected_worker or not selected_worker.online):
-                before_execution = "I recognized a request to start a new teaching workflow."
-                after_execution = "The requested worker is not online right now."
-                suggested_next_action = "Choose an online worker or ask 'which worker is free'."
-            else:
-                if not selected_worker:
-                    selected_worker = _select_best_worker(machines, payload.target_machine_uuid)
-
-                if not selected_worker:
-                    before_execution = "I recognized a request to start a new teaching workflow."
-                    after_execution = "No online worker is available to open the teaching browser."
-                    suggested_next_action = "Bring a worker online, then retry the command."
-                else:
-                    draft_request = WorkflowLearningCreateRequest(
-                        learning_path="demonstration",
-                        workflow_name=workflow_name,
-                        goal=f"Teach workflow '{workflow_name}' from conversational command.",
-                        source_text="",
-                    )
-                    draft = _build_workflow_draft(draft_request)
-                    workflow_learning_drafts.append(draft)
-                    _save_workflow_learning_drafts()
-
-                    teach_session_id = str(uuid.uuid4())
-                    task_payload = {
-                        "task_type": "teach_session",
-                        "draft_id": draft.get("draft_id"),
-                        "workflow_name": workflow_name,
-                        "api_base": _resolve_teach_session_worker_api_base(""),
-                        "start_url": "",
-                        "target_machine_uuid": selected_worker.machine_uuid,
-                        "session_id": teach_session_id,
-                    }
-                    task = _create_task_record(task_payload)
-
-                    # ── Register teaching startup state so the frontend can poll ──
-                    _now_iso = datetime.utcnow().isoformat()
-                    _teaching_startup_sessions[teach_session_id] = {
-                        "session_id": teach_session_id,
-                        "task_id": task.id,
-                        "workflow_name": workflow_name,
-                        "target_machine_uuid": selected_worker.machine_uuid,
-                        "status": "browser_opening",
-                        "message": "Waiting for the teaching browser to open on the worker.",
-                        "overlay_enabled": True,
-                        "voice_prompt_text": (
-                            f"Teaching mode is starting for {workflow_name}. "
-                            "Open the browser on your computer and walk me through the process step by step."
-                        ),
-                        "created_at": _now_iso,
-                        "updated_at": _now_iso,
-                    }
-                    logger.info(
-                        "TEACHING_SESSION_CREATED session_id=%s task_id=%s workflow=%s worker=%s",
-                        teach_session_id,
-                        task.id,
-                        workflow_name,
-                        selected_worker.machine_uuid,
-                    )
-
-                    before_execution = "I created a teach-mode draft and prepared a worker-targeted teaching session."
-                    after_execution = (
-                        f"Started teaching workflow '{workflow_name}' as task {task.id} on "
-                        f"{selected_worker.machine_name} ({selected_worker.machine_uuid})."
-                    )
-                    suggested_next_action = (
-                        "Use the teaching overlay while performing the process; Bill will capture steps and ask guiding questions."
-                    )
+        startup = start_teaching_mode_from_command(
+            endpoint="brain_command",
+            tenant_id="internal",
+            user_id="",
+            message=command_text,
+            workflow_name=_extract_workflow_name_from_conversation(command_text),
+            target_machine_uuid=payload.target_machine_uuid,
+            session_context={
+                "interaction_id": payload.interaction_id,
+                "guided_answers": dict(payload.guided_answers or {}),
+            },
+        )
+        selected_workflow = startup.get("workflow_id")
+        selected_worker = startup.get("selected_worker") or selected_worker
+        task = startup.get("task") or task
+        teach_session_id = startup.get("session_id") or teach_session_id
+        before_execution = str(startup.get("before_execution") or before_execution)
+        after_execution = str(startup.get("after_execution") or after_execution)
+        suggested_next_action = startup.get("suggested_next_action") or suggested_next_action
+        assistant_reply = str(startup.get("reply") or "").strip() or None
 
     elif "show online workers" in command_lower or "list online workers" in command_lower:
         recognized_intent = "worker_query"
@@ -6374,11 +7052,20 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         selected_workflow=selected_workflow,
     )
 
+    teaching_mode_state = (
+        TeachingStartupState(**_teaching_startup_sessions[teach_session_id])
+        if teach_session_id and teach_session_id in _teaching_startup_sessions
+        else None
+    )
+    if teaching_mode_state is not None:
+        logger.info("TEACHING_MODE_RESPONSE_INCLUDED session_id=%s", teaching_mode_state.session_id)
+
     return BrainCommandResponse(
         recognized_intent=recognized_intent,
         command=command_text,
         before_execution=before_execution,
         after_execution=after_execution,
+        reply=assistant_reply,
         selected_workflow=selected_workflow,
         selected_worker_uuid=selected_worker.machine_uuid if selected_worker else None,
         selected_worker_name=selected_worker.machine_name if selected_worker else None,
@@ -6394,11 +7081,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         suggested_emotion=suggested_emotion,
         suggested_style_profile=suggested_style_profile,
         voice_event_type=voice_event_type,
-        teaching_mode=(
-            TeachingStartupState(**_teaching_startup_sessions[teach_session_id])
-            if teach_session_id and teach_session_id in _teaching_startup_sessions
-            else None
-        ),
+        teaching_mode=teaching_mode_state,
     )
 
 
@@ -8465,6 +9148,17 @@ def get_next_task(machine_uuid: str):
                 _append_task_log(task, f"Task assigned to machine_uuid={machine_uuid}")
             save_task_db(task)
             logger.info("Task assigned: id=%s machine_uuid=%s", task["id"], machine_uuid)
+            payload = task.get("payload") or {}
+            if str(payload.get("task_type") or "") == "teach_session":
+                logger.info(
+                    "TEACHING_TASK_ASSIGNED task_id=%s machine_uuid=%s draft_id=%s session_id=%s target_machine_uuid=%s workflow_name=%s",
+                    task.get("id"),
+                    machine_uuid,
+                    payload.get("draft_id"),
+                    payload.get("session_id"),
+                    payload.get("target_machine_uuid"),
+                    payload.get("workflow_name"),
+                )
             return TaskRecord(**task)
 
     return None
@@ -8845,6 +9539,11 @@ def bill_chat(payload: dict = Body(default={})) -> dict:
             message=str(payload.get("message") or ""),
             target_machine_uuid=payload.get("target_machine_uuid") or None,
         )
+        logger.info(
+            "BILL_CHAT_REQUEST message=%r target_machine_uuid=%s",
+            request.message,
+            request.target_machine_uuid,
+        )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -8852,9 +9551,22 @@ def bill_chat(payload: dict = Body(default={})) -> dict:
         create_task_fn=_create_task_record,
         get_workers_fn=_bill_chat_get_workers,
         rename_worker_fn=_bill_chat_rename_worker,
+        start_teaching_mode_fn=start_teaching_mode_from_command,
     )
 
     response = service.handle_message(request)
+    if getattr(response, "teaching_mode", None):
+        logger.info(
+            "TEACHING_MODE_RESPONSE_INCLUDED session_id=%s",
+            (response.teaching_mode or {}).get("session_id"),
+        )
+    logger.info(
+        "BILL_CHAT_RESPONSE intent=%s action=%s task_id=%s workflow_id=%s",
+        response.intent,
+        response.action,
+        response.task_id,
+        response.workflow_id,
+    )
     return response.model_dump()
 
 

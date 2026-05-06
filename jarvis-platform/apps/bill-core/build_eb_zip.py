@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import zipfile
@@ -9,11 +10,12 @@ BASE_DIR = Path(__file__).resolve().parent
 CLEAN_DIR = BASE_DIR / "bill-core-deploy-clean"
 ZIP_PATH = BASE_DIR / "bill-core-deploy.zip"
 
+logger = logging.getLogger("bill-core.build-eb-zip")
+
 REQUIRED_ROOT_FILES = [
     "main.py",
     "Procfile",
     "requirements.txt",
-    ".ebignore",
     "db.py",
     "models_db.py",
     "db_writes.py",
@@ -22,6 +24,11 @@ REQUIRED_ROOT_FILES = [
     "error_explainer.py",  # Flat import dependency for main.py
     "timeout_recovery.py",  # Flat import dependency for main.py
     "schemas.py",  # Flat import dependency for main.py
+    "tenant_schemas.py",  # Tenant entity schemas
+    "tenant_service.py",  # Tenant entity storage/service
+    "tenant_template_schemas.py",  # Tenant template schemas
+    "tenant_template_service.py",  # Tenant template service
+    "tenant_workflow_schemas.py",  # Formal tenant workflow runtime contract
     "recovery.py",  # Phase 6: Human recovery system
     "recovery_suggestion_schemas.py",  # Phase 7.5: Suggested fix schemas
     "recovery_suggestion_service.py",  # Phase 7.5: Suggested fix service
@@ -31,10 +38,13 @@ REQUIRED_ROOT_FILES = [
     "emotion_engine.py",  # Phase Voice: rules-based emotion/style routing
     "elevenlabs_voice_service.py",  # Phase Voice: ElevenLabs TTS service
     "bill_voice_events.py",  # Phase Voice: event-to-speech mapping
+    "task_service.py",  # Task service used by main.py and conversational module
 ]
 
 REQUIRED_DIRS = [
     "app",
+    "tenant_templates",
+    "conversational",
 ]
 
 # Exclusions to keep deployment Linux/EB clean.
@@ -62,13 +72,28 @@ def should_exclude_file(path: Path) -> bool:
     return False
 
 
-def ensure_required_files_exist() -> None:
+def get_existing_required_root_files() -> list[str]:
+    existing: list[str] = []
     missing: list[str] = []
+
     for file_name in REQUIRED_ROOT_FILES:
         src = BASE_DIR / file_name
-        if not src.is_file():
+        if src.is_file():
+            existing.append(file_name)
+        else:
             missing.append(file_name)
 
+    if missing:
+        logger.warning(
+            "Skipping missing required root files: %s",
+            ", ".join(missing),
+        )
+
+    return existing
+
+
+def ensure_required_dirs_exist() -> None:
+    missing: list[str] = []
     for dir_name in REQUIRED_DIRS:
         src = BASE_DIR / dir_name
         if not src.is_dir():
@@ -83,7 +108,7 @@ def rebuild_clean_folder() -> None:
         shutil.rmtree(CLEAN_DIR)
     CLEAN_DIR.mkdir(parents=True, exist_ok=True)
 
-    for file_name in REQUIRED_ROOT_FILES:
+    for file_name in get_existing_required_root_files():
         src = BASE_DIR / file_name
         if should_exclude_file(src):
             continue
@@ -150,7 +175,9 @@ def validate_zip(entries: list[str]) -> tuple[bool, bool, bool]:
 
 
 def main() -> None:
-    ensure_required_files_exist()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    ensure_required_dirs_exist()
 
     dep_status = validate_requirements(BASE_DIR / "requirements.txt")
 

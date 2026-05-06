@@ -86,6 +86,13 @@ from schemas import (
     TeachingSessionAnswerRequest,
     AppendStepRequest,
     TeachSessionStartRequest,
+    ObservationQuestionAnswerRequest,
+    ObservationQuestionAnswerResponse,
+    NavigationMapping,
+    NavigationRule,
+    NavigationRuleMapping,
+    TeachingStartupState,
+    TeachingStartupStatusRequest,
 )
 
 # ---------------------------------------------------------------------------
@@ -284,6 +291,7 @@ INTERACTIONS_PATH = Path(os.getenv("BILL_CORE_INTERACTIONS") or (Path(__file__).
 CONVERSATION_PREFS_PATH = Path(os.getenv("BILL_CORE_CONVERSATION_PREFS") or (Path(__file__).resolve().parent / "conversation_preferences.json"))
 WORKFLOW_DRAFTS_PATH = Path(os.getenv("BILL_CORE_WORKFLOW_DRAFTS") or (Path(__file__).resolve().parent / "workflow_learning_drafts.json"))
 LEARNED_PROCEDURES_PATH = Path(os.getenv("BILL_CORE_LEARNED_PROCEDURES") or (Path(__file__).resolve().parent / "learned_procedure_templates.json"))
+NAVIGATION_RULES_PATH = Path(os.getenv("BILL_CORE_NAVIGATION_RULES") or (Path(__file__).resolve().parent / "navigation_rules_by_tenant.json"))
 
 DEFAULT_WORKFLOW_RECORDS: list[dict[str, Any]] = [
     {
@@ -331,6 +339,7 @@ def log_server_binding() -> None:
     logger.info("Loaded workflow learning drafts: %s", len(workflow_learning_drafts))
     logger.info("Loaded learned procedure templates: %s", len(learned_procedure_templates))
     logger.info("Loaded worker releases: %s (packages dir: %s)", len(worker_releases), WORKER_PACKAGES_DIR)
+    logger.info("Loaded navigation rules for %s tenant(s)", len(navigation_rules_by_tenant))
     active = _get_active_release()
     if active:
         logger.info("Active worker release: v%s id=%s channel=%s", active["version"], active["id"], active["channel"])
@@ -653,8 +662,8 @@ PROCEDURE_TEMPLATES: dict[str, dict] = {
             "strict_selectors_only": True,
             "mode": "interactive_visible",
             "attach_to_existing": True,
-            "require_existing_page": False,
-            "allow_launch_fallback": True,
+            "require_existing_page": True,
+            "allow_launch_fallback": False,
             "cdp_url": "http://127.0.0.1:9222",
             "start_url": "https://www.healthsherpa.com/agents/jared-chapdelaine-mccullough/clients?_agent_id=jared-chapdelaine-mccullough&ffm_applications[agent_archived]=not_archived&ffm_applications[plan_year][]=2026&ffm_applications[search]=true&term=&renewal=all&desc[]=created_at&agent_id=jared-chapdelaine-mccullough&page=1&per_page=10&exchange=onEx&include_shared_applications=false&include_all_applications=false",
             "view_button_selector": "#applications .MuiDataGrid-row button:has-text('View')||#applications .MuiDataGrid-row a:has-text('View')||#applications .MuiDataGrid-row [role='button']:has-text('View')||#applications [role='row'] button:has-text('View')||#applications [role='row'] a:has-text('View')||#applications [role='row'] [role='button']:has-text('View')||#applications tbody tr button:has-text('View')||#applications tbody tr a:has-text('View')||#applications tbody tr [role='button']:has-text('View')",
@@ -766,6 +775,46 @@ interactive_prompts: list[dict[str, Any]] = _load_json_list(INTERACTIONS_PATH, "
 conversation_preferences: list[dict[str, Any]] = _load_json_list(CONVERSATION_PREFS_PATH, "conversation preferences")
 workflow_learning_drafts: list[dict[str, Any]] = _load_json_list(WORKFLOW_DRAFTS_PATH, "workflow learning drafts")
 
+# ── Teaching startup session state (in-memory only, no persistence needed) ──
+# Keyed by session_id (uuid).  Holds startup state while the worker is opening
+# the teaching browser.  Frontend polls GET /api/teaching/session/{id}/status.
+_teaching_startup_sessions: dict[str, dict[str, Any]] = {}
+
+
+def _load_navigation_rules_by_tenant() -> dict[str, list[dict[str, Any]]]:
+    """Load navigation rules indexed by tenant_id."""
+    try:
+        if not NAVIGATION_RULES_PATH.exists():
+            logger.info("Navigation rules file does not exist: %s", NAVIGATION_RULES_PATH)
+            return {}
+        with open(NAVIGATION_RULES_PATH, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                logger.info("Navigation rules file is empty: %s", NAVIGATION_RULES_PATH)
+                return {}
+            data = json.loads(content)
+            if isinstance(data, dict):
+                return data
+            logger.warning("Navigation rules file is not a dict; treating as empty")
+            return {}
+    except Exception as error:
+        logger.warning("Failed to load navigation rules from %s: %s", NAVIGATION_RULES_PATH, error)
+        return {}
+
+
+def _save_navigation_rules_by_tenant() -> None:
+    """Save navigation rules indexed by tenant_id."""
+    try:
+        NAVIGATION_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(NAVIGATION_RULES_PATH, "w", encoding="utf-8") as f:
+            json.dump(navigation_rules_by_tenant, f, indent=2)
+        logger.debug("Saved navigation rules to %s", NAVIGATION_RULES_PATH)
+    except Exception as error:
+        logger.error("Failed to save navigation rules to %s: %s", NAVIGATION_RULES_PATH, error)
+
+
+navigation_rules_by_tenant: dict[str, list[dict[str, Any]]] = _load_navigation_rules_by_tenant()
+
 
 def _append_task_log(task: dict, message: str, level: str = "info") -> None:
     logs = task.setdefault("logs", [])
@@ -779,6 +828,10 @@ def _append_task_log(task: dict, message: str, level: str = "info") -> None:
 
 
 def _create_task_record(normalized_payload: dict) -> TaskCreateResponse:
+    normalized_payload = _ensure_smart_sherpa_batch_mode(normalized_payload)
+    if _is_smart_sherpa_payload(normalized_payload):
+        _log_smart_sherpa_final_payload(normalized_payload)
+
     task_id = str(uuid4())
     task = {
         "id": task_id,
@@ -1128,6 +1181,109 @@ def deploy_specific_release(release_id: str, payload: WorkerDeployRequest) -> Wo
     )
 
 
+_IDENTITY_FIELDS = ("client_name", "external_contact_id", "policy_number", "marketplace_id")
+
+
+def _normalize_run_mode(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _record_has_identity(record: dict[str, Any] | None) -> bool:
+    record = record or {}
+    return any(str(record.get(field) or "").strip() for field in _IDENTITY_FIELDS)
+
+
+def _payload_has_identity(payload: dict[str, Any] | None) -> bool:
+    payload = payload or {}
+    source_record = payload.get("source_record") if isinstance(payload.get("source_record"), dict) else {}
+    target_contact = payload.get("target_contact") if isinstance(payload.get("target_contact"), dict) else {}
+    if _record_has_identity(source_record) or _record_has_identity(target_contact):
+        return True
+    return any(str(payload.get(field) or "").strip() for field in _IDENTITY_FIELDS)
+
+
+def _is_explicit_smart_sherpa_batch_mode(
+    workflow_id: str,
+    payload: dict[str, Any] | None,
+    source_record: dict[str, Any] | None,
+    target_contact: dict[str, Any] | None,
+) -> bool:
+    if str(workflow_id or "").strip().lower() != "smart_sherpa_sync":
+        return False
+    payload = payload or {}
+    source_record = source_record or {}
+    target_contact = target_contact or {}
+    return any(
+        _normalize_run_mode(candidate) == "batch"
+        for candidate in (
+            payload.get("run_mode"),
+            source_record.get("run_mode"),
+            target_contact.get("run_mode"),
+        )
+    )
+
+
+def _is_smart_sherpa_payload(payload: dict[str, Any] | None) -> bool:
+    payload = payload or {}
+    workflow_hint = str(payload.get("workflow_id") or payload.get("workflow_name") or "").strip().lower()
+    task_type = str(payload.get("task_type") or "").strip().lower()
+    return workflow_hint == "smart_sherpa_sync" or task_type == "smart_sherpa_sync"
+
+
+def _normalize_smart_sherpa_runtime_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    if not _is_smart_sherpa_payload(normalized):
+        return normalized
+
+    normalized["task_type"] = "smart_sherpa_sync"
+    normalized["workflow_id"] = "smart_sherpa_sync"
+    normalized["workflow_name"] = "smart_sherpa_sync"
+    normalized["attach_to_existing"] = True
+    normalized["require_existing_page"] = True
+    normalized["allow_launch_fallback"] = False
+    normalized["browser_profile_policy"] = "attach_existing_debug"
+    return normalized
+
+
+def _log_smart_sherpa_final_payload(payload: dict[str, Any]) -> None:
+    source_record = payload.get("source_record") if isinstance(payload.get("source_record"), dict) else {}
+    target_contact = payload.get("target_contact") if isinstance(payload.get("target_contact"), dict) else {}
+    run_mode = (
+        _normalize_run_mode(payload.get("run_mode"))
+        or _normalize_run_mode(source_record.get("run_mode"))
+        or _normalize_run_mode(target_contact.get("run_mode"))
+        or "client"
+    )
+    logger.info(
+        "SMART_SHERPA_FINAL_PAYLOAD attach_to_existing=%s require_existing_page=%s allow_launch_fallback=%s run_mode=%s",
+        payload.get("attach_to_existing"),
+        payload.get("require_existing_page"),
+        payload.get("allow_launch_fallback"),
+        run_mode,
+    )
+
+
+def _ensure_smart_sherpa_batch_mode(payload: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = _normalize_smart_sherpa_runtime_payload(payload)
+    workflow_hint = str(normalized.get("workflow_id") or normalized.get("workflow_name") or "").strip().lower()
+    if workflow_hint != "smart_sherpa_sync":
+        return normalized
+
+    source_record = dict(normalized.get("source_record") or {})
+    target_contact = dict(normalized.get("target_contact") or {})
+    if _is_explicit_smart_sherpa_batch_mode("smart_sherpa_sync", normalized, source_record, target_contact):
+        return normalized
+    if _payload_has_identity(normalized):
+        return normalized
+
+    normalized["run_mode"] = "batch"
+    source_record["run_mode"] = "batch"
+    target_contact["run_mode"] = "batch"
+    normalized["source_record"] = source_record
+    normalized["target_contact"] = target_contact
+    return normalized
+
+
 @app.post("/api/tasks", response_model=TaskCreateResponse)
 async def create_task(payload: TaskCreateRequest, request: Request) -> TaskCreateResponse:
     normalized_payload = payload.normalized_payload()
@@ -1135,6 +1291,24 @@ async def create_task(payload: TaskCreateRequest, request: Request) -> TaskCreat
     raw_body = await request.json()
     if isinstance(raw_body, dict) and raw_body.get("mode") and "mode" not in normalized_payload:
         normalized_payload["mode"] = raw_body["mode"]
+
+    tenant_id = str(normalized_payload.get("tenant_id") or "").strip()
+    workflow_id = str(normalized_payload.get("workflow_id") or normalized_payload.get("workflow_name") or "").strip()
+    if tenant_id and workflow_id:
+        normalized_payload = _ensure_smart_sherpa_batch_mode(normalized_payload)
+        if not globals().get("_tenant_templates_available", False):
+            raise HTTPException(status_code=503, detail="Tenant template runtime is unavailable")
+        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_id, input_data=normalized_payload).queued_task
+
+    if str(normalized_payload.get("workflow_name") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Legacy workflow execution is disabled. "
+                "Submit tenant_id/workflow_id or use /api/tenants/{tenant_id}/workflows/{workflow_id}/run"
+            ),
+        )
+
     return _create_task_record(normalized_payload)
 
 
@@ -1145,22 +1319,34 @@ def list_procedures() -> list[ProcedureTemplate]:
 
 @app.post("/api/procedures/{procedure_name}/run", response_model=TaskCreateResponse)
 def run_procedure(procedure_name: str, payload: ProcedureRunRequest) -> TaskCreateResponse:
-    template = PROCEDURE_TEMPLATES.get(procedure_name)
-    if not template:
-        raise HTTPException(status_code=404, detail="Procedure not found")
-
-    normalized_payload = dict(template.get("payload") or {})
-    if payload.payload:
-        normalized_payload.update(payload.payload)
+    tenant_id = (os.getenv("BILL_DEFAULT_TENANT_ID") or "internal").strip() or "internal"
+    input_data = dict(payload.payload or {})
     if payload.mode:
-        normalized_payload["mode"] = payload.mode
+        input_data["mode"] = payload.mode
     if payload.target_machine_uuid:
-        normalized_payload["target_machine_uuid"] = payload.target_machine_uuid
+        input_data["target_machine_uuid"] = payload.target_machine_uuid
+    if str(procedure_name or "").strip().lower() == "smart_sherpa_sync":
+        input_data.setdefault("workflow_id", procedure_name)
+        input_data.setdefault("workflow_name", procedure_name)
+        input_data = _ensure_smart_sherpa_batch_mode(input_data)
 
-    if "task_type" not in normalized_payload:
-        normalized_payload["task_type"] = template.get("task_type")
+    try:
+        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=procedure_name, input_data=input_data).queued_task
+    except NameError:
+        pass
+    except FileNotFoundError:
+        pass
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
-    return _create_task_record(normalized_payload)
+    if procedure_name not in PROCEDURE_TEMPLATES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Procedure not found: {procedure_name}",
+        )
+    template_def = PROCEDURE_TEMPLATES[procedure_name]
+    task_payload = {**(template_def.get("payload") or {}), **input_data}
+    return _create_task_record(task_payload)
 
 
 def _worker_is_idle(machine: MachineRecord) -> bool:
@@ -1298,6 +1484,34 @@ def _extract_name_with_patterns(command_text: str, patterns: list[str]) -> str |
     return None
 
 
+def _is_new_workflow_command(command_lower: str) -> bool:
+    phrases = (
+        "start a new workflow",
+        "start new workflow",
+        "create a new workflow",
+        "create new workflow",
+        "create a workflow",
+        "new workflow",
+        "teach this process",
+        "teach this workflow",
+        "start teaching this",
+        "teach this",
+    )
+    return any(phrase in command_lower for phrase in phrases)
+
+
+def _extract_workflow_name_from_conversation(command_text: str) -> str | None:
+    patterns = [
+        r"\b(?:workflow\s+)?called\s+([A-Za-z][A-Za-z0-9 _-]{1,80})",
+        r"\b(?:workflow\s+)?named\s+([A-Za-z][A-Za-z0-9 _-]{1,80})",
+        r"\bworkflow\s+([A-Za-z][A-Za-z0-9 _-]{1,80})",
+    ]
+    value = _extract_name_with_patterns(command_text, patterns)
+    if not value:
+        return None
+    return re.sub(r"\s+", "_", value.strip()).strip("_-")[:80] or None
+
+
 def _parse_command_parameters(command_text: str) -> dict[str, Any]:
     command_lower = command_text.lower()
     params: dict[str, Any] = {}
@@ -1356,29 +1570,220 @@ def _parse_command_parameters(command_text: str) -> dict[str, Any]:
     return params
 
 
+def start_teaching_mode_from_command(
+    *,
+    endpoint: str,
+    tenant_id: str,
+    user_id: str,
+    message: str,
+    workflow_name: str | None,
+    target_machine_uuid: str | None,
+    session_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    logger.info(
+        "TEACHING_STARTUP_CANONICAL_PATH endpoint=%s tenant_id=%s user_id=%s target_machine_uuid=%s",
+        endpoint,
+        tenant_id,
+        user_id,
+        target_machine_uuid,
+    )
+
+    resolved_workflow_name = (workflow_name or "").strip() or _extract_workflow_name_from_conversation(message)
+    if not resolved_workflow_name:
+        return {
+            "status": "needs_workflow_name",
+            "next_required_input": "workflow_name",
+            "before_execution": "I recognized a request to start teaching a new workflow.",
+            "after_execution": "What should we call this workflow?",
+            "suggested_next_action": "Try: 'Let's create a new workflow called Member Renewal Followup'.",
+            "reply": "What should we call this workflow?",
+            "task": None,
+            "teaching_mode": None,
+            "selected_worker": None,
+            "task_id": None,
+            "draft_id": None,
+            "session_id": None,
+            "workflow_id": None,
+        }
+
+    machines = list_machines()
+    selected_worker: MachineRecord | None = None
+    if target_machine_uuid:
+        selected_worker = _find_worker_by_hint(machines, target_machine_uuid)
+        if not selected_worker or not selected_worker.online:
+            return {
+                "status": "needs_worker",
+                "next_required_input": "target_machine_uuid",
+                "before_execution": "I recognized a request to start a new teaching workflow.",
+                "after_execution": "The requested worker is not online right now.",
+                "suggested_next_action": "Choose an online worker or ask 'which worker is free'.",
+                "reply": "The requested worker is not online. Which worker should I use?",
+                "task": None,
+                "teaching_mode": None,
+                "selected_worker": None,
+                "task_id": None,
+                "draft_id": None,
+                "session_id": None,
+                "workflow_id": resolved_workflow_name,
+            }
+    else:
+        selected_worker = _select_best_worker(machines, None)
+
+    if not selected_worker:
+        return {
+            "status": "needs_worker",
+            "next_required_input": "target_machine_uuid",
+            "before_execution": "I recognized a request to start a new teaching workflow.",
+            "after_execution": "No online worker is available to open the teaching browser.",
+            "suggested_next_action": "Bring a worker online, then retry the command.",
+            "reply": "No online worker is available right now. Which worker should I use once one is online?",
+            "task": None,
+            "teaching_mode": None,
+            "selected_worker": None,
+            "task_id": None,
+            "draft_id": None,
+            "session_id": None,
+            "workflow_id": resolved_workflow_name,
+        }
+
+    draft_request = WorkflowLearningCreateRequest(
+        learning_path="demonstration",
+        workflow_name=resolved_workflow_name,
+        goal=f"Teach workflow '{resolved_workflow_name}' from conversational command.",
+        source_text="",
+    )
+    draft = _build_workflow_draft(draft_request)
+    draft_id = str(draft.get("draft_id") or "").strip()
+    session_id = str(uuid4()).strip()
+    worker_uuid = str(selected_worker.machine_uuid or "").strip()
+    if not draft_id or not session_id or not worker_uuid:
+        logger.error(
+            "TEACHING_TASK_PAYLOAD_VALIDATION_FAILED draft_id=%s session_id=%s target_machine_uuid=%s",
+            draft_id,
+            session_id,
+            worker_uuid,
+        )
+        return {
+            "status": "validation_failed",
+            "next_required_input": None,
+            "before_execution": "I recognized a request to start a new teaching workflow.",
+            "after_execution": "I could not safely create a complete teaching startup payload.",
+            "suggested_next_action": "Retry the command after verifying worker availability.",
+            "reply": "I could not start Teaching Mode because startup payload validation failed.",
+            "task": None,
+            "teaching_mode": None,
+            "selected_worker": selected_worker,
+            "task_id": None,
+            "draft_id": draft_id or None,
+            "session_id": session_id or None,
+            "workflow_id": resolved_workflow_name,
+        }
+
+    logger.info(
+        "TEACHING_TASK_PAYLOAD_VALIDATED draft_id=%s session_id=%s target_machine_uuid=%s",
+        draft_id,
+        session_id,
+        worker_uuid,
+    )
+
+    workflow_learning_drafts.append(draft)
+    _save_workflow_learning_drafts()
+
+    task_payload = {
+        "task_type": "teach_session",
+        "draft_id": draft_id,
+        "workflow_name": resolved_workflow_name,
+        "api_base": _resolve_teach_session_worker_api_base(""),
+        "start_url": "",
+        "target_machine_uuid": worker_uuid,
+        "session_id": session_id,
+    }
+    task = _create_task_record(task_payload)
+    logger.info(
+        "TEACHING_TASK_QUEUED source=%s task_id=%s draft_id=%s session_id=%s target_machine_uuid=%s workflow_name=%s",
+        endpoint,
+        task.id,
+        task_payload.get("draft_id"),
+        task_payload.get("session_id"),
+        task_payload.get("target_machine_uuid"),
+        task_payload.get("workflow_name"),
+    )
+
+    now_iso = datetime.utcnow().isoformat()
+    _teaching_startup_sessions[session_id] = {
+        "session_id": session_id,
+        "task_id": task.id,
+        "workflow_name": resolved_workflow_name,
+        "target_machine_uuid": worker_uuid,
+        "status": "browser_opening",
+        "message": "Waiting for the teaching browser to open on the worker.",
+        "overlay_enabled": True,
+        "voice_prompt_text": (
+            f"Teaching mode is starting for {resolved_workflow_name}. "
+            "Open the browser on your computer and walk me through the process step by step."
+        ),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    logger.info(
+        "TEACHING_SESSION_CREATED session_id=%s task_id=%s workflow=%s worker=%s",
+        session_id,
+        task.id,
+        resolved_workflow_name,
+        worker_uuid,
+    )
+
+    teaching_mode = TeachingStartupState(**_teaching_startup_sessions[session_id])
+    return {
+        "status": "queued",
+        "next_required_input": None,
+        "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+        "after_execution": (
+            f"Started teaching workflow '{resolved_workflow_name}' as task {task.id} on "
+            f"{selected_worker.machine_name} ({selected_worker.machine_uuid})."
+        ),
+        "suggested_next_action": (
+            "Use the teaching overlay while performing the process; Bill will capture steps and ask guiding questions."
+        ),
+        "reply": (
+            f"Started teaching workflow '{resolved_workflow_name}' on "
+            f"{selected_worker.machine_name}. Teaching overlay is ready."
+        ),
+        "task": task,
+        "teaching_mode": teaching_mode,
+        "selected_worker": selected_worker,
+        "task_id": task.id,
+        "draft_id": draft_id,
+        "session_id": session_id,
+        "workflow_id": resolved_workflow_name,
+    }
+
+
 def _create_workflow_task(
     workflow_name: str,
     target_machine_uuid: str | None = None,
     extra_payload: dict[str, Any] | None = None,
 ) -> TaskCreateResponse:
-    workflow = next((record for record in WORKFLOW_REGISTRY if record.workflow_name == workflow_name), None)
-    if workflow is None:
-        raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_name}")
-
-    procedure_name = workflow.procedure_name or workflow.workflow_name
-    template = PROCEDURE_TEMPLATES.get(procedure_name)
-    if template is None:
-        raise HTTPException(status_code=404, detail=f"Procedure template missing: {procedure_name}")
-
-    normalized_payload = dict(template.get("payload") or {})
-    if "task_type" not in normalized_payload:
-        normalized_payload["task_type"] = template.get("task_type")
-    if extra_payload:
-        normalized_payload.update(extra_payload)
+    tenant_id = (os.getenv("BILL_DEFAULT_TENANT_ID") or "internal").strip() or "internal"
+    input_data = dict(extra_payload or {})
     if target_machine_uuid:
-        normalized_payload["target_machine_uuid"] = target_machine_uuid
+        input_data["target_machine_uuid"] = target_machine_uuid
+    if str(workflow_name or "").strip().lower() == "smart_sherpa_sync":
+        input_data.setdefault("workflow_id", workflow_name)
+        input_data.setdefault("workflow_name", workflow_name)
+        input_data = _ensure_smart_sherpa_batch_mode(input_data)
 
-    return _create_task_record(normalized_payload)
+    try:
+        return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_name, input_data=input_data).queued_task
+    except NameError as exc:
+        raise HTTPException(status_code=503, detail="Tenant runtime is unavailable") from exc
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template-driven workflow not found for tenant={tenant_id} workflow={workflow_name}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 def _find_task_by_ref(task_ref: str | None) -> dict | None:
@@ -1623,6 +2028,24 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
     if not recovery_strategy:
         recovery_strategy = "Retry once; if still failing, pause and require human review."
 
+    raw_system_context = step.get("system_context") or {}
+    system_context = dict(raw_system_context) if isinstance(raw_system_context, dict) else {}
+    observation_triggers = [
+        str(item).strip()
+        for item in (step.get("observation_triggers") or [])
+        if str(item).strip()
+    ]
+    observation_questions = [
+        dict(item)
+        for item in (step.get("observation_questions") or [])
+        if isinstance(item, dict)
+    ]
+    observation_answers = [
+        dict(item)
+        for item in (step.get("observation_answers") or [])
+        if isinstance(item, dict)
+    ]
+
     return {
         "step_order": int(step.get("step_order") or default_order),
         "name": str(step.get("name") or f"step_{default_order}"),
@@ -1647,6 +2070,12 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
         "recovery_strategy": recovery_strategy,
         # Keep legacy field for backwards compat
         "failure_behavior": recovery_strategy,
+        "event_type": str(step.get("event_type") or "").strip(),
+        "system_context": system_context,
+        "observation_triggers": observation_triggers,
+        "observation_questions": observation_questions,
+        "observation_answers": observation_answers,
+        "known_step": bool(step.get("known_step", False)),
     }
 
 
@@ -1911,6 +2340,12 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         "review_status": "draft",
         "reviewer_notes": None,
         "published_workflow_name": None,
+        "observation_question_frequency": "medium",
+        "observation_questions_paused": False,
+        "observation_skip_all_questions": False,
+        "rule_suggestions": [],
+        "workflow_annotations": [],
+        "training_memory": [],
     }
 
 
@@ -1954,6 +2389,12 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
         "review_status": str(item.get("review_status") or "draft").strip().lower(),
         "reviewer_notes": item.get("reviewer_notes"),
         "published_workflow_name": item.get("published_workflow_name"),
+        "observation_question_frequency": str(item.get("observation_question_frequency") or "medium").strip().lower() or "medium",
+        "observation_questions_paused": bool(item.get("observation_questions_paused", False)),
+        "observation_skip_all_questions": bool(item.get("observation_skip_all_questions", False)),
+        "rule_suggestions": [dict(x) for x in (item.get("rule_suggestions") or []) if isinstance(x, dict)],
+        "workflow_annotations": [dict(x) for x in (item.get("workflow_annotations") or []) if isinstance(x, dict)],
+        "training_memory": [dict(x) for x in (item.get("training_memory") or []) if isinstance(x, dict)],
     }
 
 
@@ -2086,6 +2527,377 @@ def _apply_step_teaching_answers(
     updated["teaching_complete"] = next_step is None
     updated["updated_at"] = datetime.utcnow().isoformat()
     return updated
+
+
+def _sanitize_observation_frequency(raw_value: Any) -> str:
+    value = str(raw_value or "medium").strip().lower()
+    if value not in {"low", "medium", "high"}:
+        return "medium"
+    return value
+
+
+def _build_system_context(url: str, provided: dict[str, Any] | None = None) -> dict[str, Any]:
+    context = dict(provided or {})
+    safe_url = str(url or "").strip()
+    if safe_url:
+        parsed = urlparse(safe_url)
+        host = (parsed.netloc or "").strip().lower()
+        context.setdefault("url", safe_url)
+        context.setdefault("host", host)
+        context.setdefault("system", host.split(":")[0] if host else "")
+        path = (parsed.path or "").strip()
+        if path:
+            context.setdefault("path", path)
+    return context
+
+
+def _detect_observation_triggers(previous_step: dict[str, Any] | None, step: dict[str, Any]) -> list[str]:
+    triggers: list[str] = []
+    current_context = dict(step.get("system_context") or {})
+    previous_context = dict((previous_step or {}).get("system_context") or {})
+    current_host = str(current_context.get("host") or "").strip().lower()
+    previous_host = str(previous_context.get("host") or "").strip().lower()
+    if current_host and previous_host and current_host != previous_host:
+        triggers.append("system_switch")
+        # Also mark as navigation trigger when system changes
+        triggers.append("domain_navigation")
+
+    action = str(step.get("action") or "").strip().lower()
+    label_blob = " ".join(
+        [
+            str(step.get("step_name") or ""),
+            str(step.get("description") or ""),
+            str(step.get("value") or ""),
+            str(step.get("option") or ""),
+            str((step.get("system_context") or {}).get("element_label") or ""),
+        ]
+    ).lower()
+
+    decision_terms = ["next", "continue", "submit", "save", "approve", "deny", "mark", "assign", "select"]
+    classification_terms = ["status", "result", "classification", "classify", "tag", "type", "outcome"]
+    navigation_terms = ["portal", "system", "go to", "navigate", "switch", "use", "carrier", "health", "trackvia", "crm"]
+
+    if action == "select_option" or any(term in label_blob for term in classification_terms):
+        triggers.append("classification_step")
+
+    if action in {"click_selector", "select_option"} and any(term in label_blob for term in decision_terms + classification_terms):
+        triggers.append("decision_point")
+
+    # Navigation-specific triggers
+    if action == "select_option" and any(term in label_blob for term in navigation_terms):
+        triggers.append("system_selection")
+
+    if action == "open_url":
+        triggers.append("domain_navigation")
+        if any(term in label_blob for term in decision_terms + navigation_terms):
+            triggers.append("navigation_decision")
+
+    if action in {"click_selector", "select_option"} and any(term in label_blob for term in navigation_terms):
+        triggers.append("navigation_decision")
+
+    if action == "manual_step" or (action != "open_url" and not str(step.get("selector") or "").strip()):
+        triggers.append("unknown_pattern")
+
+    ordered: list[str] = []
+    for trigger in triggers:
+        if trigger not in ordered:
+            ordered.append(trigger)
+    return ordered
+
+
+def _prompt_allowed_for_trigger(trigger: str, frequency: str) -> bool:
+    if frequency == "high":
+        return True
+    if frequency == "medium":
+        return trigger in {
+            "system_switch",
+            "decision_point",
+            "classification_step",
+            "unknown_pattern",
+            "domain_navigation",
+            "navigation_decision",
+        }
+    return trigger in {"system_switch", "unknown_pattern", "domain_navigation"}
+
+
+def _observation_prompt_for_trigger(
+    draft_id: str,
+    step_order: int,
+    trigger: str,
+    system_context: dict[str, Any],
+) -> dict[str, Any]:
+    question_map = {
+        "system_switch": (
+            "check",
+            "What are you checking here before switching systems?",
+        ),
+        "decision_point": (
+            "decision",
+            "What determines the next step?",
+        ),
+        "classification_step": (
+            "classification",
+            "How do you classify this result?",
+        ),
+        "unknown_pattern": (
+            "why_action",
+            "Why are you performing this action?",
+        ),
+        "system_selection": (
+            "navigation_which",
+            "What determines which system you use?",
+        ),
+        "domain_navigation": (
+            "navigation_why",
+            "How did you know to go to this system?",
+        ),
+        "navigation_decision": (
+            "navigation_source",
+            "Where does that information come from?",
+        ),
+    }
+    category_map = {
+        "system_switch": "navigation_reasoning",
+        "decision_point": "success_verification",
+        "classification_step": "carrier_validation",
+        "unknown_pattern": "crm_action",
+        "system_selection": "navigation_reasoning",
+        "domain_navigation": "navigation_reasoning",
+        "navigation_decision": "identity_verification",
+    }
+    question_type, question = question_map.get(trigger, ("check", "What are you checking here?"))
+    category = category_map.get(trigger, "success_verification")
+    return {
+        "prompt_id": str(uuid4()),
+        "draft_id": draft_id,
+        "step_order": step_order,
+        "trigger_type": trigger,
+        "question_type": question_type,
+        "category": category,
+        "question": question,
+        "system_context": dict(system_context or {}),
+        "status": "pending",
+        "can_skip": True,
+        "can_answer_later": True,
+        "voice_supported": True,
+    }
+
+
+def _build_static_audit_prompt(draft: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
+    categories = [
+        (
+            "navigation_reasoning",
+            "How did you decide to use this system/page for this step?",
+        ),
+        (
+            "identity_verification",
+            "What identity details do you verify before continuing?",
+        ),
+        (
+            "carrier_validation",
+            "How do you validate carrier or plan details at this point?",
+        ),
+        (
+            "healthsherpa_aor",
+            "Do you verify HealthSherpa AOR here? What confirms it?",
+        ),
+        (
+            "crm_action",
+            "What CRM action should be recorded after this step?",
+        ),
+        (
+            "success_verification",
+            "How do you confirm this step completed successfully?",
+        ),
+    ]
+    step_order = int(step.get("step_order") or 1)
+    category, question = categories[(max(step_order, 1) - 1) % len(categories)]
+    return {
+        "prompt_id": str(uuid4()),
+        "draft_id": str(draft.get("draft_id") or ""),
+        "step_order": step_order,
+        "trigger_type": "unknown_pattern",
+        "question_type": "check",
+        "category": category,
+        "question": question,
+        "system_context": dict(step.get("system_context") or {}),
+        "status": "pending",
+        "can_skip": True,
+        "can_answer_later": True,
+        "voice_supported": True,
+    }
+
+
+def _build_observation_prompts(
+    draft: dict[str, Any],
+    step: dict[str, Any],
+    previous_step: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if bool(step.get("known_step")):
+        return []
+
+    if bool(draft.get("observation_skip_all_questions")) or bool(draft.get("observation_questions_paused")):
+        return []
+
+    frequency = _sanitize_observation_frequency(
+        draft.get("observation_question_frequency")
+        or _get_conversation_preference("observation.question_frequency")
+    )
+    triggers = _detect_observation_triggers(previous_step, step)
+    prompts = [
+        _observation_prompt_for_trigger(
+            draft_id=str(draft.get("draft_id") or ""),
+            step_order=int(step.get("step_order") or 0),
+            trigger=trigger,
+            system_context=dict(step.get("system_context") or {}),
+        )
+        for trigger in triggers
+        if _prompt_allowed_for_trigger(trigger, frequency)
+    ]
+    if not prompts:
+        return [_build_static_audit_prompt(draft, step)]
+    if frequency != "high" and prompts:
+        return [prompts[0]]
+    return prompts[:2]
+
+
+def _extract_navigation_mapping(
+    step: dict[str, Any],
+    prompt: dict[str, Any],
+    answer_text: str,
+) -> NavigationMapping | None:
+    """Extract field → system mapping from a navigation question answer."""
+    cleaned = " ".join(str(answer_text or "").split())
+    if not cleaned:
+        return None
+    
+    trigger_type = str(prompt.get("trigger_type") or "").lower()
+    question_type = str(prompt.get("question_type") or "").lower()
+    system_context = dict(prompt.get("system_context") or step.get("system_context") or {})
+    
+    # Detect source field (what data determines the choice)
+    source_field = ""
+    source_field_match = re.search(
+        r"\b(?:from|from the|in|in the|check|look at)\s+(?:the\s+)?(\w+(?:\s+\w+)?)",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if source_field_match:
+        source_field = source_field_match.group(1).strip()
+    
+    # Detect source value (what the actual value is)
+    source_value = ""
+    if "carrier" in cleaned.lower():
+        source_value = "carrier"
+    elif "health" in cleaned.lower():
+        source_value = "health_plan"
+    elif "trackvia" in cleaned.lower():
+        source_value = "trackvia_match"
+    else:
+        # Try to extract a quoted value
+        quoted = re.search(r'["\']([^"\']+)["\']', cleaned)
+        if quoted:
+            source_value = quoted.group(1).strip()
+    
+    # Detect target system based on current host or answeredtext
+    target_system = ""
+    target_url = ""
+    current_host = str(system_context.get("host") or "").lower()
+    
+    # Map known systems
+    if "carrier" in cleaned.lower():
+        target_system = "carrier_portal"
+        target_url = "https://carrier.portal/*"
+    elif "health" in cleaned.lower():
+        target_system = "healthsherpa"
+        target_url = "https://www.healthsherpa.com/*"
+    elif "trackvia" in cleaned.lower():
+        target_system = "trackvia"
+        target_url = "https://trackvia.com/*"
+    elif "crm" in cleaned.lower() or "salesforce" in cleaned.lower():
+        target_system = "crm"
+        target_url = "https://salesforce.com/*"
+    elif current_host:
+        target_system = current_host.split(".")[0]  # e.g. "carrier" from "carrier.portal.com"
+        target_url = f"https://{current_host}/*"
+    
+    if not target_system or not source_field:
+        return None
+    
+    return {
+        "mapping_id": str(uuid4()),
+        "source_field": source_field,
+        "source_value": source_value or "variable",
+        "target_system": target_system,
+        "target_url_pattern": target_url,
+        "confidence": 0.9,
+        "learned_from_answers": 1,
+        "is_rule_always": True,
+        "captured_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _extract_observation_structures(
+    step: dict[str, Any],
+    prompt: dict[str, Any],
+    answer_text: str,
+    response_mode: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    cleaned = " ".join(str(answer_text or "").split())
+    condition = ""
+    outcome = ""
+
+    condition_match = re.search(r"\b(?:if|when|whenever|unless|based on)\b\s+(.*?)(?:\bthen\b|,|$)", cleaned, re.IGNORECASE)
+    if condition_match:
+        condition = condition_match.group(1).strip(" ,.")
+
+    outcome_match = re.search(r"\b(?:then|next|so|that means)\b\s+(.+)$", cleaned, re.IGNORECASE)
+    if outcome_match:
+        outcome = outcome_match.group(1).strip(" .")
+
+    if not condition:
+        condition = str(step.get("intent") or prompt.get("trigger_type") or "observed condition").strip()
+    if not outcome:
+        outcome = cleaned or str(step.get("step_name") or "observed outcome")
+
+    system_context = dict(prompt.get("system_context") or step.get("system_context") or {})
+    rule_candidate = {
+        "candidate_id": str(uuid4()),
+        "draft_id": str(prompt.get("draft_id") or ""),
+        "step_order": int(step.get("step_order") or 0),
+        "trigger_type": str(prompt.get("trigger_type") or ""),
+        "question_type": str(prompt.get("question_type") or ""),
+        "condition": condition,
+        "outcome": outcome,
+        "system_context": system_context,
+        "source": "interactive_observation",
+        "answer": cleaned,
+        "status": "candidate",
+        "captured_at": datetime.utcnow().isoformat(),
+    }
+    annotation = {
+        "annotation_id": str(uuid4()),
+        "step_order": int(step.get("step_order") or 0),
+        "question": str(prompt.get("question") or ""),
+        "question_type": str(prompt.get("question_type") or ""),
+        "trigger_type": str(prompt.get("trigger_type") or ""),
+        "note": cleaned,
+        "system_context": system_context,
+        "captured_at": datetime.utcnow().isoformat(),
+    }
+    memory_entry = {
+        "memory_id": str(uuid4()),
+        "kind": "observation_answer",
+        "step_order": int(step.get("step_order") or 0),
+        "question_type": str(prompt.get("question_type") or ""),
+        "trigger_type": str(prompt.get("trigger_type") or ""),
+        "summary": cleaned,
+        "response_mode": response_mode,
+        "system_context": system_context,
+        "captured_at": datetime.utcnow().isoformat(),
+    }
+    return rule_candidate, annotation, memory_entry
 
 
 def _normalize_all_workflow_drafts() -> None:
@@ -2272,6 +3084,180 @@ def _get_conversation_preference(key: str) -> Any:
         if str(item.get("key") or "") == key:
             return item.get("value")
     return None
+
+
+def _get_tenant_navigation_rules(tenant_id: str) -> list[dict[str, Any]]:
+    """Get navigation rules for a specific tenant."""
+    return navigation_rules_by_tenant.get(str(tenant_id).strip(), [])
+
+
+def _append_tenant_navigation_rule(tenant_id: str, rule: dict[str, Any]) -> None:
+    """Append a navigation rule to a tenant's rule set."""
+    tenant_key = str(tenant_id).strip()
+    navigation_rules_by_tenant.setdefault(tenant_key, [])
+    rule_copy = dict(rule)
+    navigation_rules_by_tenant[tenant_key].append(rule_copy)
+    _save_navigation_rules_by_tenant()
+
+
+def _merge_tenant_navigation_mappings(tenant_id: str, new_mappings: list[dict[str, Any]]) -> None:
+    """Merge new navigation mappings into a tenant's existing rules, updating confidence and counts."""
+    tenant_key = str(tenant_id).strip()
+    existing_rules = navigation_rules_by_tenant.setdefault(tenant_key, [])
+    
+    for new_mapping in new_mappings:
+        source_field = str(new_mapping.get("source_field", "")).strip().lower()
+        source_value = str(new_mapping.get("source_value", "")).strip().lower()
+        target_system = str(new_mapping.get("target_system", "")).strip().lower()
+        
+        # Find matching existing rule
+        matched = False
+        for existing_rule in existing_rules:
+            if (
+                str(existing_rule.get("source_field", "")).strip().lower() == source_field
+                and str(existing_rule.get("source_value", "")).strip().lower() == source_value
+                and str(existing_rule.get("target_system", "")).strip().lower() == target_system
+            ):
+                # Update confidence and count
+                existing_rule["learned_from_answers"] = int(existing_rule.get("learned_from_answers", 1)) + 1
+                existing_rule["confidence"] = min(1.0, float(existing_rule.get("confidence", 0.9)) + 0.05)
+                existing_rule["updated_at"] = datetime.utcnow().isoformat()
+                matched = True
+                break
+        
+        if not matched:
+            # Add as new mapping to rules
+            existing_rules.append(new_mapping)
+    
+    _save_navigation_rules_by_tenant()
+
+
+def _apply_navigation_rules(
+    tenant_id: str,
+    current_system: str,
+    step_context: dict[str, Any],
+    session_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Apply learned navigation rules to determine next system.
+    
+    Args:
+        tenant_id: Tenant identifier
+        current_system: Current system name
+        step_context: Context about the current step (field values, etc.)
+        session_state: Session state with run variables
+    
+    Returns:
+        Navigation destination {target_system, url_pattern, matched_rule_id} or None
+    """
+    tenant_rules = _get_tenant_navigation_rules(tenant_id)
+    if not tenant_rules:
+        return None
+    
+    session_state = session_state or {}
+    
+    # Try to match rules based on condition
+    for rule in tenant_rules:
+        if str(rule.get("status", "")).lower() != "candidate":
+            continue
+        
+        # Check if this rule's condition matches the current step context
+        condition = str(rule.get("condition", "")).lower()
+        source_field = str(rule.get("source_field", "")).lower() if "source_field" in rule else ""
+        target_system = str(rule.get("target_system", "")).lower()
+        
+        # Try to extract field name from condition (e.g., "carrier equals carrier" -> "carrier")
+        if not source_field and condition:
+            field_match = re.search(r"(\w+)\s+equals", condition)
+            if field_match:
+                source_field = field_match.group(1).lower()
+        
+        # Check if the field exists in step context or session state
+        if source_field:
+            field_value_step = str(step_context.get(source_field, "")).lower()
+            field_value_session = str(session_state.get(source_field, "")).lower()
+            
+            # Simple match: if we have the field and target system is valid, use it
+            if field_value_step or field_value_session:
+                confidence = float(rule.get("confidence", 0.9))
+                if confidence >= 0.7:  # Only apply rules with reasonable confidence
+                    return {
+                        "target_system": target_system,
+                        "url_pattern": str(rule.get("target_url_pattern", "")),
+                        "matched_rule_id": str(rule.get("rule_id", "")),
+                        "confidence": confidence,
+                    }
+    
+    return None
+
+
+def _validate_navigation_rules(
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Validate navigation rules and return warnings/issues.
+    
+    Checks for:
+    - Low-confidence rules
+    - Conflicting mappings
+    - Missing critical mappings
+    - Invalid target systems
+    """
+    tenant_rules = _get_tenant_navigation_rules(tenant_id)
+    warnings: list[str] = []
+    issues: list[str] = []
+    stats: dict[str, int] = {
+        "total_rules": len(tenant_rules),
+        "low_confidence_rules": 0,
+        "conflicting_rules": 0,
+        "validated_rules": 0,
+    }
+    
+    # Track unique source fields and their mappings
+    field_mappings: dict[str, set[str]] = {}
+    
+    for rule in tenant_rules:
+        if str(rule.get("status", "")).lower() != "candidate":
+            continue
+        
+        confidence = float(rule.get("confidence", 0.9))
+        if confidence < 0.8:
+            stats["low_confidence_rules"] += 1
+            warnings.append(
+                f"Low confidence rule: {rule.get('condition', 'unknown')} "
+                f"→ {rule.get('target_system', 'unknown')} (confidence: {confidence:.1%})"
+            )
+        else:
+            stats["validated_rules"] += 1
+        
+        # Check for conflicts (same source field → multiple systems)
+        source_field = str(rule.get("source_field", "")).lower()
+        if source_field:
+            target_sys = str(rule.get("target_system", "")).lower()
+            if source_field not in field_mappings:
+                field_mappings[source_field] = set()
+            
+            if field_mappings[source_field] and target_sys not in field_mappings[source_field]:
+                stats["conflicting_rules"] += 1
+                issues.append(
+                    f"Conflicting mappings for field '{source_field}': "
+                    f"maps to both {field_mappings[source_field]} and {target_sys}"
+                )
+            field_mappings[source_field].add(target_sys)
+    
+    # Warn about missing mappings for common navigation fields
+    common_fields = {"carrier", "health_plan", "marketplace", "system", "portal"}
+    for field in common_fields:
+        if not any(str(rule.get("source_field", "")).lower() == field for rule in tenant_rules):
+            warnings.append(f"No mapping found for common field: '{field}'")
+    
+    return {
+        "tenant_id": tenant_id,
+        "is_valid": len(issues) == 0,
+        "warnings": warnings,
+        "issues": issues,
+        "stats": stats,
+        "field_mappings": {k: list(v) for k, v in field_mappings.items()},
+    }
+
 
 
 def _parse_conversation_preference_updates(command_text: str) -> list[dict[str, Any]]:
@@ -3943,6 +4929,17 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
 
     steps = [dict(s) for s in (draft.get("steps") or [])]
     next_order = max((int(s.get("step_order") or 0) for s in steps), default=0) + 1
+    previous_step = dict(steps[-1]) if steps else None
+
+    system_context = _build_system_context(
+        payload.url,
+        {
+            **dict(payload.system_context or {}),
+            "element_label": payload.element_label,
+            "element_tag": payload.element_tag,
+            "element_type": payload.element_type,
+        },
+    )
 
     raw_step: dict[str, Any] = {
         "step_order":   next_order,
@@ -3956,6 +4953,12 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
         "description":  payload.description or payload.step_name or "",
         "instruction":  payload.description or payload.step_name or "",
         "element_label": payload.element_label,
+        "event_type": payload.event_type or payload.action,
+        "system_context": system_context,
+        "observation_triggers": [str(item).strip() for item in (payload.observation_triggers or []) if str(item).strip()],
+        "observation_questions": [],
+        "observation_answers": [],
+        "known_step": False,
     }
 
     # Auto-populate variable_inputs for text fields so the teaching loop can
@@ -4005,6 +5008,9 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
         )
 
     normalized = _normalize_step(raw_step, next_order)
+    prompts = _build_observation_prompts(draft, normalized, previous_step)
+    normalized["observation_triggers"] = [str(item.get("trigger_type") or "") for item in prompts if str(item.get("trigger_type") or "")]
+    normalized["observation_questions"] = prompts
     steps.append(normalized)
 
     updated = dict(draft)
@@ -4031,6 +5037,326 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
     workflow_learning_drafts[idx] = updated
     _save_workflow_learning_drafts()
     return WorkflowLearningDraftRecord(**updated)
+
+
+@app.post(
+    "/api/brain/workflow-learning/drafts/{draft_id}/observation/answer",
+    response_model=ObservationQuestionAnswerResponse,
+)
+def answer_observation_question(
+    draft_id: str,
+    payload: ObservationQuestionAnswerRequest,
+) -> ObservationQuestionAnswerResponse:
+    idx, draft = _find_workflow_draft(draft_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
+
+    updated = dict(draft)
+    updated["observation_question_frequency"] = _sanitize_observation_frequency(
+        updated.get("observation_question_frequency") or _get_conversation_preference("observation.question_frequency")
+    )
+    steps = [dict(s) for s in (updated.get("steps") or [])]
+
+    target_idx: int | None = None
+    for i, step in enumerate(steps):
+        if int(step.get("step_order") or 0) == int(payload.step_order):
+            target_idx = i
+            break
+    if target_idx is None:
+        raise HTTPException(status_code=404, detail="Observation step not found")
+
+    step = dict(steps[target_idx])
+    prompts = [dict(item) for item in (step.get("observation_questions") or []) if isinstance(item, dict)]
+    prompt = next((item for item in prompts if str(item.get("prompt_id") or "") == payload.prompt_id), None)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail="Observation prompt not found")
+
+    generated_rule_candidate: dict[str, Any] | None = None
+    saved_answer = False
+    action = str(payload.action or "answer").strip().lower()
+
+    if action == "set_frequency":
+        frequency = _sanitize_observation_frequency(payload.question_frequency)
+        updated["observation_question_frequency"] = frequency
+        _set_conversation_preference("observation.question_frequency", frequency)
+        prompt["status"] = "pending"
+    elif action == "pause":
+        updated["observation_questions_paused"] = True
+        _set_conversation_preference("observation.pause_questions", True)
+        prompt["status"] = "later"
+    elif action == "resume":
+        updated["observation_questions_paused"] = False
+        _set_conversation_preference("observation.pause_questions", False)
+        prompt["status"] = "pending"
+    elif action == "skip_all":
+        updated["observation_skip_all_questions"] = True
+        _set_conversation_preference("observation.skip_all_questions", True)
+        prompt["status"] = "skipped"
+    elif action == "known":
+        step["known_step"] = True
+        prompt["status"] = "known"
+    elif action == "later":
+        prompt["status"] = "later"
+    elif action == "skip":
+        prompt["status"] = "skipped"
+    else:
+        prompt["status"] = "answered"
+        cleaned_answer = " ".join(str(payload.answer or "").split())
+        answer_record = {
+            "answer_id": str(uuid4()),
+            "prompt_id": payload.prompt_id,
+            "question": str(prompt.get("question") or ""),
+            "question_type": str(payload.question_type or prompt.get("question_type") or ""),
+            "trigger_type": str(payload.trigger_type or prompt.get("trigger_type") or ""),
+            "category": str(prompt.get("category") or prompt.get("trigger_type") or "general"),
+            "answer": cleaned_answer,
+            "response_mode": str(payload.response_mode or "text"),
+            "system_context": dict(payload.system_context or prompt.get("system_context") or step.get("system_context") or {}),
+            "workflow_id": str(updated.get("published_workflow_name") or updated.get("workflow_name") or ""),
+            "tenant_id": str(updated.get("tenant_id") or ""),
+            "session_id": str(updated.get("draft_id") or draft_id),
+            "task_id": str((payload.system_context or {}).get("task_id") or ""),
+            "page_url": str((payload.system_context or {}).get("url") or (payload.system_context or {}).get("page_url") or ""),
+            "page_domain": str((payload.system_context or {}).get("host") or ""),
+            "screenshot_ref": str((payload.system_context or {}).get("screenshot_ref") or ""),
+            "captured_at": datetime.utcnow().isoformat(),
+        }
+        answers = [dict(item) for item in (step.get("observation_answers") or []) if isinstance(item, dict)]
+        answers.append(answer_record)
+        step["observation_answers"] = answers
+        generated_rule_candidate, annotation, memory_entry = _extract_observation_structures(
+            step=step,
+            prompt=prompt,
+            answer_text=cleaned_answer,
+            response_mode=str(payload.response_mode or "text"),
+        )
+        updated.setdefault("rule_suggestions", [])
+        updated.setdefault("workflow_annotations", [])
+        updated.setdefault("training_memory", [])
+        updated["rule_suggestions"] = [
+            dict(item) for item in (updated.get("rule_suggestions") or []) if isinstance(item, dict)
+        ] + [generated_rule_candidate]
+        updated["workflow_annotations"] = [
+            dict(item) for item in (updated.get("workflow_annotations") or []) if isinstance(item, dict)
+        ] + [annotation]
+        updated["training_memory"] = [
+            dict(item) for item in (updated.get("training_memory") or []) if isinstance(item, dict)
+        ] + [memory_entry]
+        
+        # Extract navigation mapping if this is a navigation-related question
+        trigger_type = str(prompt.get("trigger_type") or "").lower()
+        if trigger_type in {"system_selection", "domain_navigation", "navigation_decision"}:
+            nav_mapping = _extract_navigation_mapping(step, prompt, cleaned_answer)
+            if nav_mapping:
+                # Create a navigation rule from the mapping
+                navigation_rule = {
+                    "rule_id": str(uuid4()),
+                    "draft_id": str(updated.get("draft_id") or ""),
+                    "step_order": int(step.get("step_order") or 0),
+                    "trigger_type": trigger_type,
+                    "question_type": str(prompt.get("question_type") or ""),
+                    "condition": f"{nav_mapping.get('source_field')} equals {nav_mapping.get('source_value')}",
+                    "current_system": str(step.get("system_context", {}).get("system") or ""),
+                    "target_system": nav_mapping.get("target_system", ""),
+                    "target_url_pattern": nav_mapping.get("target_url_pattern", ""),
+                    "system_context": dict(step.get("system_context") or {}),
+                    "mappings": [dict(nav_mapping)],
+                    "answer": cleaned_answer,
+                    "response_mode": str(payload.response_mode or "text"),
+                    "status": "candidate",
+                    "source": "interactive_observation",
+                    "captured_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+                updated.setdefault("navigation_rules", [])
+                updated["navigation_rules"] = [
+                    dict(item) for item in (updated.get("navigation_rules") or []) if isinstance(item, dict)
+                ] + [navigation_rule]
+                
+                # Also save to tenant-specific navigation rule store if tenant_id is present
+                tenant_id = str(updated.get("tenant_id") or "").strip()
+                if tenant_id:
+                    _append_tenant_navigation_rule(tenant_id, navigation_rule)
+        
+        saved_answer = True
+
+    prompt["updated_at"] = datetime.utcnow().isoformat()
+    step["observation_questions"] = prompts
+    steps[target_idx] = _normalize_step(step, int(step.get("step_order") or payload.step_order or 1))
+    updated["steps"] = steps
+    updated["updated_at"] = datetime.utcnow().isoformat()
+
+    workflow_learning_drafts[idx] = updated
+    _save_workflow_learning_drafts()
+
+    return ObservationQuestionAnswerResponse(
+        draft_id=draft_id,
+        step_order=int(payload.step_order),
+        prompt_id=payload.prompt_id,
+        status=str(prompt.get("status") or "pending"),
+        saved_answer=saved_answer,
+        observation_question_frequency=_sanitize_observation_frequency(updated.get("observation_question_frequency")),
+        observation_questions_paused=bool(updated.get("observation_questions_paused", False)),
+        observation_skip_all_questions=bool(updated.get("observation_skip_all_questions", False)),
+        generated_rule_candidate=generated_rule_candidate,
+    )
+
+
+def _next_pending_observation_prompt(draft: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    steps = [dict(s) for s in (draft.get("steps") or []) if isinstance(s, dict)]
+    ordered_steps = sorted(steps, key=lambda item: int(item.get("step_order") or 0))
+    for step in ordered_steps:
+        prompts = [dict(item) for item in (step.get("observation_questions") or []) if isinstance(item, dict)]
+        for prompt in prompts:
+            if str(prompt.get("status") or "pending") == "pending":
+                return step, prompt
+    return None, None
+
+
+@app.get("/api/teach-sessions/{session_id}/questions/next")
+def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
+    idx, draft = _find_workflow_draft(session_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Teach session not found")
+
+    step, prompt = _next_pending_observation_prompt(draft)
+    steps_recorded = len([s for s in (draft.get("steps") or []) if isinstance(s, dict)])
+    return {
+        "session_id": session_id,
+        "workflow_id": str(draft.get("published_workflow_name") or draft.get("workflow_name") or ""),
+        "tenant_id": str(draft.get("tenant_id") or ""),
+        "question": prompt,
+        "step_order": int((step or {}).get("step_order") or 0),
+        "teaching_complete": bool(draft.get("teaching_complete", False)),
+        "observation_questions_paused": bool(draft.get("observation_questions_paused", False)),
+        "observation_skip_all_questions": bool(draft.get("observation_skip_all_questions", False)),
+        "steps_recorded": steps_recorded,
+    }
+
+
+@app.post("/api/teach-sessions/{session_id}/answers")
+def submit_teach_session_answer(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
+    request = ObservationQuestionAnswerRequest(
+        prompt_id=str(payload.get("prompt_id") or ""),
+        step_order=int(payload.get("step_order") or 0),
+        action="answer",
+        answer=str(payload.get("answer") or ""),
+        response_mode=str(payload.get("response_mode") or "text"),
+        question_type=payload.get("question_type"),
+        trigger_type=payload.get("trigger_type"),
+        question_frequency=payload.get("question_frequency"),
+        system_context=dict(payload.get("system_context") or {}),
+    )
+    result = answer_observation_question(session_id, request)
+    return result.model_dump() if hasattr(result, "model_dump") else dict(result)
+
+
+@app.post("/api/teach-sessions/{session_id}/questions/skip")
+def skip_teach_session_question(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
+    request = ObservationQuestionAnswerRequest(
+        prompt_id=str(payload.get("prompt_id") or ""),
+        step_order=int(payload.get("step_order") or 0),
+        action="skip",
+        answer="",
+        response_mode="control",
+        question_type=payload.get("question_type"),
+        trigger_type=payload.get("trigger_type"),
+        question_frequency=payload.get("question_frequency"),
+        system_context=dict(payload.get("system_context") or {}),
+    )
+    result = answer_observation_question(session_id, request)
+    return result.model_dump() if hasattr(result, "model_dump") else dict(result)
+
+
+@app.post("/api/teach-sessions/{session_id}/questions/pause")
+def pause_teach_session_questions(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
+    idx, draft = _find_workflow_draft(session_id)
+    if draft is None or idx is None:
+        raise HTTPException(status_code=404, detail="Teach session not found")
+
+    should_resume = bool(payload.get("resume", False))
+    step, prompt = _next_pending_observation_prompt(draft)
+
+    if step is not None and prompt is not None:
+        request = ObservationQuestionAnswerRequest(
+            prompt_id=str(prompt.get("prompt_id") or ""),
+            step_order=int(step.get("step_order") or 0),
+            action="resume" if should_resume else "pause",
+            answer="",
+            response_mode="control",
+            question_type=str(prompt.get("question_type") or ""),
+            trigger_type=str(prompt.get("trigger_type") or ""),
+            question_frequency=payload.get("question_frequency"),
+            system_context=dict(prompt.get("system_context") or {}),
+        )
+        result = answer_observation_question(session_id, request)
+        return result.model_dump() if hasattr(result, "model_dump") else dict(result)
+
+    updated = dict(draft)
+    updated["observation_questions_paused"] = not should_resume
+    updated["updated_at"] = datetime.utcnow().isoformat()
+    workflow_learning_drafts[idx] = updated
+    _save_workflow_learning_drafts()
+    _set_conversation_preference("observation.pause_questions", not should_resume)
+
+    return {
+        "session_id": session_id,
+        "status": "resumed" if should_resume else "paused",
+        "observation_questions_paused": bool(updated.get("observation_questions_paused", False)),
+    }
+
+
+@app.get("/api/brain/navigation/rules/{tenant_id}")
+def get_tenant_navigation_rules(tenant_id: str) -> dict[str, Any]:
+    """Retrieve all learned navigation rules for a specific tenant."""
+    rules = _get_tenant_navigation_rules(tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "rule_count": len(rules),
+        "rules": rules,
+    }
+
+
+@app.post("/api/brain/navigation/apply/{tenant_id}")
+def apply_navigation_rules_endpoint(
+    tenant_id: str,
+    current_system: str = "",
+    step_context: dict[str, Any] = {},
+    session_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply navigation rules to determine the next system.
+    
+    This endpoint is called at runtime to use learned navigation mappings
+    to automatically determine which system to navigate to.
+    """
+    result = _apply_navigation_rules(tenant_id, current_system, step_context, session_state)
+    if result:
+        return {
+            "found_navigation_rule": True,
+            "target_system": result.get("target_system"),
+            "url_pattern": result.get("url_pattern"),
+            "confidence": result.get("confidence"),
+            "matched_rule_id": result.get("matched_rule_id"),
+        }
+    return {
+        "found_navigation_rule": False,
+        "target_system": None,
+        "url_pattern": None,
+    }
+
+
+@app.get("/api/brain/navigation/validate/{tenant_id}")
+def validate_tenant_navigation_rules(tenant_id: str) -> dict[str, Any]:
+    """Validate navigation rules for a tenant and return warnings/issues.
+    
+    This endpoint checks for:
+    - Low-confidence mappings
+    - Conflicting rules
+    - Missing critical mappings
+    - Invalid target systems
+    """
+    return _validate_navigation_rules(tenant_id)
+
 
 
 @app.post("/api/brain/workflow-learning/drafts/{draft_id}/teach-session/start")
@@ -4439,6 +5765,46 @@ def _voice_metadata_for_command_response(
     return speak_response, candidate_text, emotion, style_profile, event_type
 
 
+# ── Teaching startup status endpoints ──────────────────────────────────────────
+# The worker calls POST after the browser opens/fails.
+# The frontend polls GET every 2 s until status is active or failed.
+
+@app.get("/api/teaching/session/{session_id}/status")
+def get_teaching_session_status(session_id: str) -> dict[str, Any]:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+    return rec
+
+
+@app.post("/api/teaching/session/{session_id}/status")
+def update_teaching_session_status(
+    session_id: str,
+    payload: TeachingStartupStatusRequest,
+) -> dict[str, Any]:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+
+    allowed = {"active", "failed"}
+    if payload.status not in allowed:
+        raise HTTPException(status_code=422, detail=f"status must be one of {allowed}")
+
+    rec["status"] = payload.status
+    rec["message"] = payload.message or rec.get("message", "")
+    if payload.task_id:
+        rec["task_id"] = payload.task_id
+    rec["updated_at"] = datetime.utcnow().isoformat()
+
+    logger.info(
+        "TEACHING_SESSION_STATUS_UPDATE session_id=%s status=%s task_id=%s",
+        session_id,
+        payload.status,
+        rec.get("task_id"),
+    )
+    return rec
+
+
 @app.post("/api/brain/command", response_model=BrainCommandResponse)
 def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     command_text = (payload.command or "").strip()
@@ -4461,6 +5827,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     requires_confirmation = False
     pending_interaction_id: str | None = None
     pending_questions: list[str] = []
+    teach_session_id: str | None = None  # set when a teach_session task is created
 
     worker_hint_match = re.search(r"on worker\s+(.+)$", command_text, flags=re.IGNORECASE)
     worker_hint = worker_hint_match.group(1).strip() if worker_hint_match else None
@@ -4536,7 +5903,29 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         command_lower = "what failed last"
     # ────────────────────────────────────────────────────────────────────────
 
-    if "show online workers" in command_lower or "list online workers" in command_lower:
+    if _is_new_workflow_command(command_lower):
+        recognized_intent = "start_new_workflow"
+        startup = start_teaching_mode_from_command(
+            endpoint="brain_command",
+            tenant_id="internal",
+            user_id="",
+            message=command_text,
+            workflow_name=_extract_workflow_name_from_conversation(command_text),
+            target_machine_uuid=payload.target_machine_uuid,
+            session_context={
+                "interaction_id": payload.interaction_id,
+                "guided_answers": dict(payload.guided_answers or {}),
+            },
+        )
+        selected_workflow = startup.get("workflow_id")
+        selected_worker = startup.get("selected_worker") or selected_worker
+        task = startup.get("task") or task
+        teach_session_id = startup.get("session_id") or teach_session_id
+        before_execution = str(startup.get("before_execution") or before_execution)
+        after_execution = str(startup.get("after_execution") or after_execution)
+        suggested_next_action = startup.get("suggested_next_action") or suggested_next_action
+
+    elif "show online workers" in command_lower or "list online workers" in command_lower:
         recognized_intent = "worker_query"
         online = [machine for machine in _sorted_workers(machines) if machine.online]
         before_execution = "I checked worker heartbeat freshness and status."
@@ -5115,6 +6504,14 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         selected_workflow=selected_workflow,
     )
 
+    teaching_mode_state = (
+        TeachingStartupState(**_teaching_startup_sessions[teach_session_id])
+        if teach_session_id and teach_session_id in _teaching_startup_sessions
+        else None
+    )
+    if teaching_mode_state is not None:
+        logger.info("TEACHING_MODE_RESPONSE_INCLUDED session_id=%s", teaching_mode_state.session_id)
+
     return BrainCommandResponse(
         recognized_intent=recognized_intent,
         command=command_text,
@@ -5135,6 +6532,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         suggested_emotion=suggested_emotion,
         suggested_style_profile=suggested_style_profile,
         voice_event_type=voice_event_type,
+        teaching_mode=teaching_mode_state,
     )
 
 
@@ -5181,9 +6579,14 @@ def rename_machine(machine_uuid: str, payload: dict = Body(...)) -> dict:
     with _workers_lock:
         if machine_uuid not in registered_workers:
             raise HTTPException(status_code=404, detail="Machine not found")
+        old_name = (registered_workers[machine_uuid].get("machine_name") or "").strip()
         registered_workers[machine_uuid]["machine_name"] = new_name
-        _save_workers_store()
-    logger.info("machine %s renamed to %r", machine_uuid, new_name)
+    # Persist outside the lock to avoid blocking worker heartbeats during I/O
+    _save_workers_store()
+    logger.info(
+        "worker renamed: uuid=%s old_name=%r new_name=%r",
+        machine_uuid, old_name, new_name,
+    )
     return {"machine_uuid": machine_uuid, "machine_name": new_name}
 
 
@@ -5240,14 +6643,6 @@ def list_tasks(limit: int = 20) -> list[TaskRecord]:
     safe_limit = max(1, min(limit, 200))
     ordered = sorted(tasks, key=lambda task: task.get("created_at", ""), reverse=True)
     return [TaskRecord(**task) for task in ordered[:safe_limit]]
-
-
-@app.get("/api/tasks/{task_id}", response_model=TaskRecord)
-def get_task(task_id: str) -> TaskRecord:
-    for task in tasks:
-        if task["id"] == task_id:
-            return TaskRecord(**task)
-    raise HTTPException(status_code=404, detail="Task not found")
 
 
 @app.post("/api/tasks/{task_id}/cancel")
@@ -5585,6 +6980,14 @@ def list_paused_tasks(machine_uuid: str = None, include_auto: bool = False) -> d
         })
     
     return {"count": len(paused), "tasks": paused}
+
+
+@app.get("/api/tasks/{task_id}", response_model=TaskRecord)
+def get_task(task_id: str) -> TaskRecord:
+    for task in tasks:
+        if task["id"] == task_id:
+            return TaskRecord(**task)
+    raise HTTPException(status_code=404, detail="Task not found")
 
 
 @app.post("/api/tasks/{task_id}/recovery-action")
@@ -6133,6 +7536,691 @@ if register_playbook_endpoints is not None:
     register_playbook_endpoints(app)
 
 
+# ---------------------------------------------------------------------------
+# Tenant Entity Endpoints (tenant-first model)
+# ---------------------------------------------------------------------------
+
+try:
+    from tenant_schemas import TenantRecord, TenantCreateRequest, TenantUpdateRequest
+    from tenant_service import (
+        create_tenant as _create_tenant,
+        list_tenants as _list_tenants,
+        get_tenant as _get_tenant,
+        update_tenant as _update_tenant,
+        ensure_tenant_workflow_link,
+    )
+    _tenants_available = True
+except Exception as _tenant_import_err:
+    logger.warning("Tenant entity system unavailable: %s", _tenant_import_err)
+    _tenants_available = False
+
+
+# ---------------------------------------------------------------------------
+# Tenant Template Endpoints (internal/admin)
+# ---------------------------------------------------------------------------
+
+try:
+    from tenant_template_schemas import (
+        TenantWorkflowTemplate,
+        TemplateListItem,
+        TemplateValidationResult,
+        IdentityScoreRequest,
+        IdentityScoreResult,
+        DecisionTestRequest,
+        DecisionTestResult,
+    )
+    from tenant_template_service import (
+        list_templates,
+        list_templates_for_tenant,
+        load_template as _load_template,
+        save_template,
+        validate_template,
+        export_template_json,
+        import_template_json,
+        get_action_steps,
+        score_identity_match,
+        decide_next_action,
+    )
+    _tenant_templates_available = True
+except Exception as _tt_import_err:
+    logger.warning("Tenant template system unavailable: %s", _tt_import_err)
+    _tenant_templates_available = False
+
+try:
+    from tenant_workflow_schemas import (
+        AuditActionResult,
+        AuditClientContext,
+        AuditDecisionContext,
+        AuditSourceRecord,
+        AuditTargetContact,
+        TenantWorkflowRunRequest,
+        TenantWorkflowRunResult,
+        TenantWorkflowTaskContext,
+    )
+    _tenant_workflow_schemas_available = True
+except Exception as _tenant_workflow_schema_err:
+    logger.warning("Tenant workflow schemas unavailable: %s", _tenant_workflow_schema_err)
+    _tenant_workflow_schemas_available = False
+
+
+if _tenants_available:
+
+    @app.post("/api/tenants", response_model=TenantRecord, status_code=201, tags=["Tenants"])
+    def tenant_create(payload: TenantCreateRequest) -> TenantRecord:
+        try:
+            return _create_tenant(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.get("/api/tenants", response_model=list[TenantRecord], tags=["Tenants"])
+    def tenants_list() -> list[TenantRecord]:
+        return _list_tenants()
+
+    @app.get("/api/tenants/{tenant_id}", response_model=TenantRecord, tags=["Tenants"])
+    def tenant_get(tenant_id: str) -> TenantRecord:
+        tenant = _get_tenant(tenant_id)
+        if tenant is None:
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+        return tenant
+
+    @app.put("/api/tenants/{tenant_id}", response_model=TenantRecord, tags=["Tenants"])
+    def tenant_update(tenant_id: str, payload: TenantUpdateRequest) -> TenantRecord:
+        try:
+            return _update_tenant(tenant_id, payload)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+
+if _tenant_templates_available:
+
+    def _resolve_ctx_path(context: dict[str, Any], path: str) -> Any:
+        node: Any = context
+        for part in path.split("."):
+            if not isinstance(node, dict):
+                return None
+            node = node.get(part)
+        return node
+
+    def _render_template_value(raw: Any, input_data: dict[str, Any], identity_ctx: dict[str, Any], audit_ctx: dict[str, Any]) -> Any:
+        if not isinstance(raw, str):
+            return raw
+
+        token_re = re.compile(r"\{([^{}]+)\}")
+
+        def _replace(match: re.Match[str]) -> str:
+            token = str(match.group(1) or "").strip()
+            if token.startswith("identity."):
+                value = _resolve_ctx_path({"identity": identity_ctx}, token)
+            elif token.startswith("audit."):
+                value = _resolve_ctx_path({"audit": audit_ctx}, token)
+            elif token.startswith("input."):
+                value = _resolve_ctx_path({"input": input_data}, token)
+            else:
+                value = _resolve_ctx_path({"input": input_data, "identity": identity_ctx, "audit": audit_ctx}, token)
+            return "" if value is None else str(value)
+
+        return token_re.sub(_replace, raw)
+
+    def _validate_template_for_execution(template: TenantWorkflowTemplate) -> list[str]:
+        failures: list[str] = []
+        if not template.actions:
+            failures.append("Template has no actions configured")
+        if not template.decision_rules:
+            failures.append("Template has no decision rules configured")
+        if not template.identity_policy.fields:
+            failures.append("Template has no identity policy fields configured")
+        return failures
+
+    def _resolve_workflow_id_for_tenant(tenant_id: str, workflow_hint: str) -> str:
+        try:
+            _load_template(tenant_id, workflow_hint)
+            return workflow_hint
+        except Exception:
+            pass
+
+        hint = str(workflow_hint or "").strip().lower()
+        for item in list_templates_for_tenant(tenant_id):
+            if str(item.workflow_id or "").strip().lower() == hint:
+                return item.workflow_id
+            if str(item.workflow_name or "").strip().lower() == hint:
+                return item.workflow_id
+        raise FileNotFoundError(f"Template not found: tenant={tenant_id} workflow={workflow_hint}")
+
+    def _require_identity_fields(record: dict[str, Any], label: str, require_all: bool = True) -> None:
+        present = [field for field in _IDENTITY_FIELDS if str(record.get(field) or "").strip()]
+        if require_all:
+            missing = [field for field in _IDENTITY_FIELDS if field not in present]
+            if missing:
+                raise ValueError(f"{label} missing required identity fields: {', '.join(missing)}")
+            return
+        if not present:
+            raise ValueError(f"{label} missing required identity fields: {', '.join(_IDENTITY_FIELDS)}")
+
+    def _coerce_tenant_workflow_run_request(
+        tenant_id: str,
+        workflow_id: str,
+        input_data: TenantWorkflowRunRequest | dict[str, Any],
+    ) -> TenantWorkflowRunRequest:
+        if isinstance(input_data, TenantWorkflowRunRequest):
+            return input_data
+
+        payload = dict(input_data or {})
+        source_raw = dict(payload.get("source_record") or {})
+        target_raw = dict(payload.get("target_contact") or source_raw)
+        decision_raw = dict(payload.get("decision_context") or {})
+        legacy_audit = dict(payload.get("audit_context") or {})
+        audit_node = dict(legacy_audit.get("audit") or {})
+
+        if not source_raw:
+            source_raw = {
+                "client_name": payload.get("client_name"),
+                "external_contact_id": payload.get("external_contact_id"),
+                "policy_number": payload.get("policy_number"),
+                "marketplace_id": payload.get("marketplace_id"),
+            }
+        if not target_raw:
+            target_raw = dict(source_raw)
+
+        source_record_dict = {
+            "source_system": str(payload.get("source_system") or source_raw.get("source_system") or "source").strip(),
+            "client_name": str(source_raw.get("client_name") or payload.get("client_name") or "").strip(),
+            "external_contact_id": str(source_raw.get("external_contact_id") or payload.get("external_contact_id") or "").strip(),
+            "policy_number": str(source_raw.get("policy_number") or payload.get("policy_number") or "").strip(),
+            "marketplace_id": str(source_raw.get("marketplace_id") or payload.get("marketplace_id") or "").strip(),
+            "raw": source_raw,
+        }
+        target_contact_dict = {
+            "target_system": str(payload.get("target_system") or target_raw.get("target_system") or "crm").strip(),
+            "client_name": str(target_raw.get("client_name") or source_record_dict["client_name"] or "").strip(),
+            "external_contact_id": str(target_raw.get("external_contact_id") or source_record_dict["external_contact_id"] or "").strip(),
+            "policy_number": str(target_raw.get("policy_number") or source_record_dict["policy_number"] or "").strip(),
+            "marketplace_id": str(target_raw.get("marketplace_id") or source_record_dict["marketplace_id"] or "").strip(),
+            "agent_of_record": target_raw.get("agent_of_record", payload.get("agent_of_record", audit_node.get("agent_of_record"))),
+            "raw": target_raw,
+        }
+
+        batch_mode = _is_explicit_smart_sherpa_batch_mode(workflow_id, payload, source_raw, target_raw)
+        is_smart_sherpa = str(workflow_id or "").strip().lower() == "smart_sherpa_sync"
+        if batch_mode and is_smart_sherpa:
+            source_raw = dict(source_raw)
+            target_raw = dict(target_raw)
+            source_raw["run_mode"] = "batch"
+            target_raw["run_mode"] = "batch"
+            source_record_dict["raw"] = source_raw
+            target_contact_dict["raw"] = target_raw
+        else:
+            require_all = not is_smart_sherpa
+            _require_identity_fields(source_record_dict, "source_record", require_all=require_all)
+            _require_identity_fields(target_contact_dict, "target_contact", require_all=require_all)
+
+        client_context = AuditClientContext(
+            client_name=source_record_dict["client_name"],
+            external_contact_id=source_record_dict["external_contact_id"],
+            policy_number=source_record_dict["policy_number"],
+            marketplace_id=source_record_dict["marketplace_id"],
+        )
+
+        decision_context = AuditDecisionContext(
+            audit_status=str(
+                decision_raw.get("audit_status")
+                or payload.get("audit_status")
+                or audit_node.get("status")
+                or "unknown"
+            ).strip(),
+            agent_of_record=decision_raw.get("agent_of_record", payload.get("agent_of_record", audit_node.get("agent_of_record"))),
+            identity_score=decision_raw.get("identity_score", payload.get("identity_score")),
+            selected_rule=decision_raw.get("selected_rule", payload.get("selected_rule")),
+            selected_action=decision_raw.get("selected_action", payload.get("selected_action")),
+            dry_run=bool(decision_raw.get("dry_run", payload.get("dry_run", False))),
+            requires_human_approval=bool(
+                decision_raw.get("requires_human_approval", payload.get("requires_human_approval", False))
+            ),
+            audit_context=legacy_audit or {"audit": audit_node},
+        )
+
+        return TenantWorkflowRunRequest(
+            tenant_id=str(tenant_id).strip(),
+            workflow_id=str(workflow_id).strip(),
+            source_system=str(payload.get("source_system") or source_record_dict["source_system"] or "source").strip(),
+            target_system=str(payload.get("target_system") or target_contact_dict["target_system"] or "crm").strip(),
+            client_name=client_context.client_name,
+            external_contact_id=client_context.external_contact_id,
+            policy_number=client_context.policy_number,
+            marketplace_id=client_context.marketplace_id,
+            audit_status=decision_context.audit_status,
+            agent_of_record=decision_context.agent_of_record,
+            dry_run=decision_context.dry_run,
+            requires_human_approval=decision_context.requires_human_approval,
+            mode=str(payload.get("mode") or "interactive_visible"),
+            target_machine_uuid=str(payload.get("target_machine_uuid") or "").strip() or None,
+            source_record=AuditSourceRecord(**source_record_dict),
+            target_contact=AuditTargetContact(**target_contact_dict),
+            decision_context=decision_context,
+            debug_metadata=dict(payload.get("debug_metadata") or {}),
+        )
+
+    def _action_steps_to_browser_steps(
+        action_steps: list[dict[str, Any]],
+        input_data: dict[str, Any],
+        identity_ctx: dict[str, Any],
+        audit_ctx: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        browser_steps: list[dict[str, Any]] = []
+        for idx, step in enumerate(action_steps, start=1):
+            action_name = str(step.get("action") or "manual_step").strip() or "manual_step"
+            browser_steps.append(
+                {
+                    "step_order": idx,
+                    "name": f"step_{idx}",
+                    "step_name": str(step.get("description") or f"Step {idx}"),
+                    "action": action_name,
+                    "selector": _render_template_value(step.get("selector"), input_data, identity_ctx, audit_ctx),
+                    "url": _render_template_value(step.get("url"), input_data, identity_ctx, audit_ctx),
+                    "value": _render_template_value(step.get("value"), input_data, identity_ctx, audit_ctx),
+                    "instruction": str(step.get("description") or ""),
+                    "manual_review_required": action_name == "manual_approval",
+                    "timeout_ms": step.get("timeout_ms"),
+                }
+            )
+        return browser_steps
+
+    def run_tenant_workflow(
+        tenant_id: str,
+        workflow_id: str,
+        input_data: TenantWorkflowRunRequest | dict[str, Any],
+    ) -> TenantWorkflowRunResult:
+        request_model = _coerce_tenant_workflow_run_request(tenant_id, workflow_id, input_data)
+        is_internal_smart_sherpa = (
+            str(request_model.tenant_id or "").strip().lower() == "internal"
+            and str(request_model.workflow_id or "").strip().lower() == "smart_sherpa_sync"
+        )
+
+        try:
+            resolved_workflow_id = _resolve_workflow_id_for_tenant(request_model.tenant_id, request_model.workflow_id)
+            template = _load_template(tenant_id, resolved_workflow_id)
+        except FileNotFoundError:
+            if not is_internal_smart_sherpa:
+                raise
+
+            source_record = request_model.source_record.raw or request_model.source_record.model_dump()
+            target_contact = request_model.target_contact.raw or request_model.target_contact.model_dump()
+            template_payload = dict(PROCEDURE_TEMPLATES.get("smart_sherpa_sync", {}).get("payload") or {})
+            runtime_payload = {
+                **template_payload,
+                "task_type": "smart_sherpa_sync",
+                "workflow_id": "smart_sherpa_sync",
+                "workflow_name": "smart_sherpa_sync",
+                "tenant_id": request_model.tenant_id,
+                "mode": str(request_model.mode or template_payload.get("mode") or "interactive_visible"),
+                "run_mode": "batch",
+                "source_record": source_record,
+                "target_contact": target_contact,
+                "debug_metadata": dict(request_model.debug_metadata or {}),
+            }
+            target_machine_uuid = str(request_model.target_machine_uuid or "").strip()
+            if target_machine_uuid:
+                runtime_payload["target_machine_uuid"] = target_machine_uuid
+
+            queued_task = _create_task_record(runtime_payload)
+            task_context = TenantWorkflowTaskContext(
+                tenant_id=request_model.tenant_id,
+                workflow_id="smart_sherpa_sync",
+                task_id=queued_task.id,
+                source_system=request_model.source_system,
+                target_system=request_model.target_system,
+                client_name=request_model.client_name,
+                external_contact_id=request_model.external_contact_id,
+                policy_number=request_model.policy_number,
+                marketplace_id=request_model.marketplace_id,
+                audit_status=request_model.audit_status,
+                agent_of_record=request_model.agent_of_record,
+                identity_score=100,
+                selected_rule="smart_sherpa_compat",
+                selected_action="queue_smart_sherpa_sync",
+                dry_run=bool(request_model.dry_run),
+                requires_human_approval=bool(request_model.requires_human_approval),
+                target_machine_uuid=target_machine_uuid or None,
+                mode=str(request_model.mode or "interactive_visible"),
+                debug_metadata=dict(request_model.debug_metadata or {}),
+            )
+            action_result = AuditActionResult(
+                selected_rule="smart_sherpa_compat",
+                selected_action="queue_smart_sherpa_sync",
+                action_steps_count=1,
+                dry_run=bool(request_model.dry_run),
+                requires_human_approval=bool(request_model.requires_human_approval),
+            )
+            logger.info(
+                "Tenant runtime: compatibility fallback queued smart_sherpa_sync tenant=%s workflow=%s task_id=%s",
+                request_model.tenant_id,
+                request_model.workflow_id,
+                queued_task.id,
+            )
+            return TenantWorkflowRunResult(
+                tenant_id=request_model.tenant_id,
+                workflow_id="smart_sherpa_sync",
+                task_id=queued_task.id,
+                identity_score=100,
+                selected_rule="smart_sherpa_compat",
+                selected_action="queue_smart_sherpa_sync",
+                dry_run=bool(request_model.dry_run),
+                requires_human_approval=bool(request_model.requires_human_approval),
+                queued_task=queued_task,
+                task_context=task_context,
+                action_result=action_result,
+            )
+
+        if _tenants_available:
+            ensure_tenant_workflow_link(
+                tenant_id=request_model.tenant_id,
+                workflow_id=resolved_workflow_id,
+                systems=[s.system_key for s in template.systems],
+            )
+
+        validation_failures = _validate_template_for_execution(template)
+        if validation_failures:
+            raise ValueError("Template execution validation failed: " + "; ".join(validation_failures))
+
+        source_record = request_model.source_record.raw or request_model.source_record.model_dump()
+        target_contact = request_model.target_contact.raw or request_model.target_contact.model_dump()
+        audit_context = dict(request_model.decision_context.audit_context or {})
+        if not audit_context:
+            audit_context = {
+                "audit": {
+                    "status": request_model.audit_status,
+                    "agent_of_record": request_model.agent_of_record,
+                }
+            }
+
+        is_batch_smart_sherpa = _is_explicit_smart_sherpa_batch_mode(
+            request_model.workflow_id,
+            {"run_mode": (request_model.debug_metadata or {}).get("run_mode")},
+            source_record,
+            target_contact,
+        )
+        if is_batch_smart_sherpa:
+            identity_score = IdentityScoreResult(
+                score=100,
+                max_possible_score=100,
+                field_results=[{"mode": "batch", "reason": "identity_check_bypassed_for_explicit_batch_mode"}],
+                verdict="auto_proceed",
+                notes="Explicit smart_sherpa_sync batch run: identity match scoring bypassed.",
+            )
+        else:
+            identity_score = score_identity_match(template, source_record, target_contact, use_aliases=True)
+            if identity_score.verdict == "block":
+                raise ValueError(f"Identity score blocked execution: score={identity_score.score}")
+
+        logger.info(
+            "Tenant runtime: template loaded tenant=%s workflow=%s score=%s verdict=%s batch_mode=%s",
+            request_model.tenant_id,
+            resolved_workflow_id,
+            identity_score.score,
+            identity_score.verdict,
+            is_batch_smart_sherpa,
+        )
+
+        decision = decide_next_action(template, audit_context)
+        logger.info(
+            "Tenant runtime: rule selected tenant=%s workflow=%s rule=%s action=%s",
+            request_model.tenant_id,
+            resolved_workflow_id,
+            decision.matched_rule_id,
+            decision.action_key,
+        )
+        if not decision.action_key or decision.action_key == "noop":
+            raise ValueError("Decision engine did not select an executable action")
+
+        action_steps = get_action_steps(template, decision.action_key)
+        if not action_steps:
+            raise ValueError(f"No action steps found for action_key={decision.action_key}")
+
+        identity_ctx = {
+            "score": identity_score.score,
+            "verdict": identity_score.verdict,
+            "source_record": source_record,
+            "target_contact": target_contact,
+        }
+        browser_steps = _action_steps_to_browser_steps(action_steps, request_model.model_dump(), identity_ctx, audit_context)
+        mode = str(request_model.mode or "interactive_visible")
+
+        requires_human_approval = bool(request_model.requires_human_approval)
+        dry_run = bool(request_model.dry_run)
+
+        runtime_payload = {
+            "task_type": "browser_workflow",
+            "mode": mode,
+            "workflow_name": template.workflow_id,
+            "workflow_id": template.workflow_id,
+            "tenant_id": request_model.tenant_id,
+            "tenant_workflow_id": template.workflow_id,
+            "tenant_template_version": template.version,
+            "identity_score": identity_score.score,
+            "identity_verdict": identity_score.verdict,
+            "selected_rule": decision.matched_rule_id,
+            "selected_action": decision.action_key,
+            "decision_rule_id": decision.matched_rule_id,
+            "decision_action_key": decision.action_key,
+            "dry_run": dry_run,
+            "requires_human_approval": requires_human_approval,
+            "audit_context": audit_context,
+            "debug_metadata": request_model.debug_metadata,
+            "source_record": request_model.source_record.model_dump(),
+            "target_contact": request_model.target_contact.model_dump(),
+            "steps": browser_steps,
+        }
+        if is_batch_smart_sherpa:
+            runtime_payload["run_mode"] = "batch"
+        target_machine_uuid = str(request_model.target_machine_uuid or "").strip()
+        if target_machine_uuid:
+            runtime_payload["target_machine_uuid"] = target_machine_uuid
+
+        task = _create_task_record(runtime_payload)
+
+        task_context = TenantWorkflowTaskContext(
+            tenant_id=request_model.tenant_id,
+            workflow_id=template.workflow_id,
+            task_id=task.id,
+            source_system=request_model.source_system,
+            target_system=request_model.target_system,
+            client_name=request_model.client_name,
+            external_contact_id=request_model.external_contact_id,
+            policy_number=request_model.policy_number,
+            marketplace_id=request_model.marketplace_id,
+            audit_status=request_model.audit_status,
+            agent_of_record=request_model.agent_of_record,
+            identity_score=identity_score.score,
+            selected_rule=decision.matched_rule_id,
+            selected_action=decision.action_key,
+            dry_run=dry_run,
+            requires_human_approval=requires_human_approval,
+            target_machine_uuid=target_machine_uuid or None,
+            mode=mode,
+            debug_metadata=request_model.debug_metadata,
+        )
+
+        action_result = AuditActionResult(
+            selected_rule=decision.matched_rule_id,
+            selected_action=decision.action_key,
+            action_steps_count=len(action_steps),
+            dry_run=dry_run,
+            requires_human_approval=requires_human_approval,
+        )
+
+        task["payload"]["task_context"] = task_context.model_dump()
+        task["payload"]["audit_action_result"] = action_result.model_dump()
+        save_task_db(task)
+
+        logger.info(
+            "Tenant runtime: action executed tenant=%s workflow=%s action=%s task_id=%s",
+            request_model.tenant_id,
+            resolved_workflow_id,
+            decision.action_key,
+            task.id,
+        )
+        return TenantWorkflowRunResult(
+            tenant_id=request_model.tenant_id,
+            workflow_id=template.workflow_id,
+            task_id=task.id,
+            identity_score=identity_score.score,
+            selected_rule=decision.matched_rule_id,
+            selected_action=decision.action_key,
+            dry_run=dry_run,
+            requires_human_approval=requires_human_approval,
+            queued_task=task,
+            task_context=task_context,
+            action_result=action_result,
+        )
+
+    @app.post(
+        "/api/tenants/{tenant_id}/workflows/{workflow_id}/run",
+        response_model=TenantWorkflowRunResult,
+        tags=["Tenants"],
+    )
+    def run_tenant_workflow_endpoint(
+        tenant_id: str,
+        workflow_id: str,
+        input_data: TenantWorkflowRunRequest | dict[str, Any] = Body(default={}),
+    ) -> TenantWorkflowRunResult:
+        try:
+            return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_id, input_data=input_data or {})
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: tenant={tenant_id} workflow={workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.get("/api/tenant-templates", response_model=list[TemplateListItem], tags=["Tenant Templates"])
+    def tenant_templates_list() -> list[TemplateListItem]:
+        """List all tenant workflow templates."""
+        return list_templates()
+
+    @app.get("/api/tenant-templates/{tenant_id}", response_model=list[TemplateListItem], tags=["Tenant Templates"])
+    def tenant_templates_for_tenant(tenant_id: str) -> list[TemplateListItem]:
+        """List all workflow templates for a specific tenant."""
+        return list_templates_for_tenant(tenant_id)
+
+    @app.get(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}",
+        response_model=TenantWorkflowTemplate,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_get(tenant_id: str, workflow_id: str) -> TenantWorkflowTemplate:
+        """Retrieve a single tenant workflow template."""
+        try:
+            return _load_template(tenant_id, workflow_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: tenant={tenant_id} workflow={workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post(
+        "/api/tenant-templates/{tenant_id}/workflows",
+        response_model=TenantWorkflowTemplate,
+        status_code=201,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_create(tenant_id: str, template: TenantWorkflowTemplate) -> TenantWorkflowTemplate:
+        """Create a new tenant workflow template."""
+        template.tenant_id = tenant_id
+        save_template(template)
+        if _tenants_available:
+            ensure_tenant_workflow_link(
+                tenant_id=tenant_id,
+                workflow_id=template.workflow_id,
+                systems=[s.system_key for s in template.systems],
+            )
+        return template
+
+    @app.put(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}",
+        response_model=TenantWorkflowTemplate,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_update(tenant_id: str, workflow_id: str, template: TenantWorkflowTemplate) -> TenantWorkflowTemplate:
+        """Create or replace a tenant workflow template."""
+        template.tenant_id = tenant_id
+        template.workflow_id = workflow_id
+        save_template(template)
+        if _tenants_available:
+            ensure_tenant_workflow_link(
+                tenant_id=tenant_id,
+                workflow_id=workflow_id,
+                systems=[s.system_key for s in template.systems],
+            )
+        return template
+
+    @app.post(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}/validate",
+        response_model=TemplateValidationResult,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_validate(tenant_id: str, workflow_id: str) -> TemplateValidationResult:
+        """Run semantic validation on a stored tenant workflow template."""
+        try:
+            template = _load_template(tenant_id, workflow_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: {tenant_id}/{workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return validate_template(template)
+
+    @app.post(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}/test-identity-score",
+        response_model=IdentityScoreResult,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_test_identity(
+        tenant_id: str,
+        workflow_id: str,
+        payload: IdentityScoreRequest,
+    ) -> IdentityScoreResult:
+        """
+        Test identity scoring for a tenant workflow template.
+
+        Provide source_record and target_contact as flat dicts using either
+        generic_key names or tenant_alias names (use_aliases=true, the default).
+        """
+        try:
+            template = _load_template(tenant_id, workflow_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: {tenant_id}/{workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return score_identity_match(
+            template,
+            payload.source_record,
+            payload.target_contact,
+            use_aliases=payload.use_aliases,
+        )
+
+    @app.post(
+        "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}/test-decision",
+        response_model=DecisionTestResult,
+        tags=["Tenant Templates"],
+    )
+    def tenant_template_test_decision(
+        tenant_id: str,
+        workflow_id: str,
+        payload: DecisionTestRequest,
+    ) -> DecisionTestResult:
+        """
+        Evaluate decision rules against an audit context.
+
+        audit_context should match the shape your workflow produces, e.g.:
+            {"audit": {"status": "past_due", "agent_of_record": true}}
+        Returns the first matching rule and the action_key it selects.
+        """
+        try:
+            template = _load_template(tenant_id, workflow_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Template not found: {tenant_id}/{workflow_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return decide_next_action(template, payload.audit_context)
+
+
 @app.get("/api/voice/config")
 def get_voice_config() -> dict[str, Any]:
     from bill_voice_events import get_enabled_categories, is_event_voice_enabled
@@ -6355,6 +8443,11 @@ def get_recovery_context(task_id: str) -> dict[str, Any]:
         "last_error": last_error,
         "is_paused_for_recovery": is_paused,
         "is_auto_recovery": is_auto_recovery,
+        "page_state_snapshot": recovery_context.get("page_state_snapshot") or {},
+        "detected_modals": recovery_context.get("detected_modals") or [],
+        "detected_overlays": recovery_context.get("detected_overlays") or [],
+        "failed_action": recovery_context.get("failed_action") or "",
+        "attempted_fallbacks": recovery_context.get("attempted_fallbacks") or [],
         "matched_playbook_id": recovery_context.get("matched_playbook_id"),
         "matched_problem_signature": recovery_context.get("matched_problem_signature"),
         "playbook_auto_attempted": bool(recovery_context.get("playbook_auto_attempted")),
@@ -6506,6 +8599,17 @@ def get_next_task(machine_uuid: str):
                 _append_task_log(task, f"Task assigned to machine_uuid={machine_uuid}")
             save_task_db(task)
             logger.info("Task assigned: id=%s machine_uuid=%s", task["id"], machine_uuid)
+            payload = task.get("payload") or {}
+            if str(payload.get("task_type") or "") == "teach_session":
+                logger.info(
+                    "TEACHING_TASK_ASSIGNED task_id=%s machine_uuid=%s draft_id=%s session_id=%s target_machine_uuid=%s workflow_name=%s",
+                    task.get("id"),
+                    machine_uuid,
+                    payload.get("draft_id"),
+                    payload.get("session_id"),
+                    payload.get("target_machine_uuid"),
+                    payload.get("workflow_name"),
+                )
             return TaskRecord(**task)
 
     return None
@@ -6536,6 +8640,45 @@ def complete_task(task_id: str, payload: TaskCompleteRequest) -> dict[str, str]:
     raise HTTPException(status_code=404, detail="Task not found")
 
 
+def _extract_web_resilience_snapshot(payload: TaskFailRequest) -> dict[str, Any]:
+    recovery_context = payload.recovery_context if isinstance(payload.recovery_context, dict) else {}
+    result_json = payload.result_json if isinstance(payload.result_json, dict) else {}
+    web_resilience = result_json.get("web_resilience") if isinstance(result_json.get("web_resilience"), dict) else {}
+
+    raw_snapshot: dict[str, Any] = {}
+    for source in (recovery_context, web_resilience):
+        if not isinstance(source, dict):
+            continue
+        raw_snapshot = {
+            "page_state_snapshot": source.get("page_state_snapshot"),
+            "detected_modals": source.get("detected_modals"),
+            "detected_overlays": source.get("detected_overlays"),
+            "failed_action": source.get("failed_action"),
+            "attempted_fallbacks": source.get("attempted_fallbacks"),
+        }
+        if any(v for v in raw_snapshot.values()):
+            break
+
+    page_state_snapshot = raw_snapshot.get("page_state_snapshot")
+    detected_modals = raw_snapshot.get("detected_modals")
+    detected_overlays = raw_snapshot.get("detected_overlays")
+    attempted_fallbacks = raw_snapshot.get("attempted_fallbacks")
+
+    safe_page_state = page_state_snapshot if isinstance(page_state_snapshot, dict) else {}
+    safe_visible_text = str(safe_page_state.get("visible_text_sample") or "")
+    if len(safe_visible_text) > 300:
+        safe_visible_text = safe_visible_text[:300]
+    if safe_page_state:
+        safe_page_state = {**safe_page_state, "visible_text_sample": safe_visible_text}
+
+    return {
+        "page_state_snapshot": safe_page_state,
+        "detected_modals": [str(item) for item in (detected_modals or [])][:8],
+        "detected_overlays": [str(item) for item in (detected_overlays or [])][:8],
+        "failed_action": str(raw_snapshot.get("failed_action") or ""),
+        "attempted_fallbacks": [str(item) for item in (attempted_fallbacks or [])][:20],
+    }
+
 @app.post("/worker/tasks/{task_id}/fail")
 def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
     for task in tasks:
@@ -6547,6 +8690,48 @@ def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
         task["result_json"] = payload.result_json
         task["updated_at"] = datetime.utcnow().isoformat()
         task["completed_at"] = datetime.utcnow().isoformat()
+
+        web_resilience_snapshot = _extract_web_resilience_snapshot(payload)
+        has_web_resilience_snapshot = any(
+            bool(web_resilience_snapshot.get(key))
+            for key in ("page_state_snapshot", "detected_modals", "detected_overlays", "failed_action", "attempted_fallbacks")
+        )
+        if has_web_resilience_snapshot:
+            prior_context = task.get("recovery_context") if isinstance(task.get("recovery_context"), dict) else {}
+            task["recovery_context"] = {
+                **prior_context,
+                "task_id": task_id,
+                "workflow_name": (task.get("payload") or {}).get("workflow_name") or (task.get("payload") or {}).get("task_type") or "unknown",
+                "paused_at": prior_context.get("paused_at") or datetime.utcnow().isoformat(),
+                "pause_reason": prior_context.get("pause_reason") or "Failure captured for recovery diagnostics",
+                "machine_uuid": payload.machine_uuid,
+                "last_error": payload.error,
+                "error_classification": classify_error(payload.error),
+                "page_state_snapshot": web_resilience_snapshot.get("page_state_snapshot") or {},
+                "detected_modals": web_resilience_snapshot.get("detected_modals") or [],
+                "detected_overlays": web_resilience_snapshot.get("detected_overlays") or [],
+                "failed_action": web_resilience_snapshot.get("failed_action") or "",
+                "attempted_fallbacks": web_resilience_snapshot.get("attempted_fallbacks") or [],
+            }
+            logger.warning(
+                "WEB_RESILIENCE_SNAPSHOT task_id=%s failed_action=%s detected_modals=%d detected_overlays=%d",
+                task_id,
+                task["recovery_context"].get("failed_action", ""),
+                len(task["recovery_context"].get("detected_modals", [])),
+                len(task["recovery_context"].get("detected_overlays", [])),
+            )
+            _log_recovery_audit(
+                task_id,
+                "web_resilience_snapshot",
+                {
+                    "failed_action": task["recovery_context"].get("failed_action", ""),
+                    "detected_modals": task["recovery_context"].get("detected_modals", []),
+                    "detected_overlays": task["recovery_context"].get("detected_overlays", []),
+                    "attempted_fallbacks": task["recovery_context"].get("attempted_fallbacks", []),
+                    "page_url": (task["recovery_context"].get("page_state_snapshot") or {}).get("url", ""),
+                },
+                machine_uuid=payload.machine_uuid,
+            )
 
         error_class = classify_error(payload.error)
 
@@ -6762,4 +8947,77 @@ def debug_tasks_db() -> list[dict]:
             ]
     except Exception as exc:
         return [{"error": str(exc)}]
+
+
+# ── Phase 9: Conversational Command Center Adapter ────────────────────────────
+
+def _bill_chat_rename_worker(machine_uuid: str, new_name: str) -> dict:
+    """Thin wrapper used by BillChatService to rename a worker."""
+    with _workers_lock:
+        if machine_uuid not in registered_workers:
+            raise ValueError(f"Worker {machine_uuid!r} not found")
+        old_name = (registered_workers[machine_uuid].get("machine_name") or "").strip()
+        registered_workers[machine_uuid]["machine_name"] = new_name
+    _save_workers_store()
+    logger.info(
+        "worker renamed via chat: uuid=%s old_name=%r new_name=%r",
+        machine_uuid, old_name, new_name,
+    )
+    return {"machine_uuid": machine_uuid, "old_name": old_name, "machine_name": new_name}
+
+
+def _bill_chat_get_workers() -> dict[str, dict]:
+    """Return a snapshot of registered workers for BillChatService."""
+    with _workers_lock:
+        return {k: dict(v) for k, v in registered_workers.items()}
+
+
+@app.post("/api/bill/chat")
+def bill_chat(payload: dict = Body(default={})) -> dict:
+    """Phase 9: Conversational Command Center Adapter.
+
+    Accepts a natural-language message and routes it to the appropriate
+    Bill Core service (task queue, worker registry, teaching sessions, etc.).
+    Existing /api/brain/command functionality is NOT replaced by this endpoint.
+    """
+    from conversational.bill_chat_service import BillChatRequest, BillChatService
+
+    try:
+        request = BillChatRequest(
+            tenant_id=str(payload.get("tenant_id") or "internal"),
+            user_id=str(payload.get("user_id") or ""),
+            session_id=str(payload.get("session_id") or ""),
+            message=str(payload.get("message") or ""),
+            target_machine_uuid=payload.get("target_machine_uuid") or None,
+        )
+        logger.info(
+            "BILL_CHAT_REQUEST message=%r target_machine_uuid=%s",
+            request.message,
+            request.target_machine_uuid,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    service = BillChatService(
+        create_task_fn=_create_task_record,
+        get_workers_fn=_bill_chat_get_workers,
+        rename_worker_fn=_bill_chat_rename_worker,
+        start_teaching_mode_fn=start_teaching_mode_from_command,
+    )
+
+    response = service.handle_message(request)
+    if getattr(response, "teaching_mode", None):
+        logger.info(
+            "TEACHING_MODE_RESPONSE_INCLUDED session_id=%s",
+            (response.teaching_mode or {}).get("session_id"),
+        )
+    logger.info(
+        "BILL_CHAT_RESPONSE intent=%s action=%s task_id=%s workflow_id=%s",
+        response.intent,
+        response.action,
+        response.task_id,
+        response.workflow_id,
+    )
+    return response.model_dump()
+
 

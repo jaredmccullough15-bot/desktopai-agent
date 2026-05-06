@@ -32,6 +32,24 @@ class VoiceRuntimeConfig:
     default_style_profile: str
 
 
+def _extract_provider_error_detail(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        return (response.text or "unknown")[:500]
+
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, dict):
+            message = detail.get("message") or detail.get("status") or detail.get("code")
+            if message:
+                return str(message)
+        if detail:
+            return str(detail)
+
+    return str(payload)[:500]
+
+
 def _truthy(value: str | None, default: bool = True) -> bool:
     if value is None:
         return default
@@ -181,24 +199,54 @@ def generate_bill_speech(
         truncated,
     )
 
-    try:
-        response = requests.post(endpoint, json=payload, headers=headers, timeout=35)
-    except requests.RequestException as exc:
-        logger.exception("Voice request failed before response: %s", exc)
-        raise VoiceServiceError("Voice provider request failed") from exc
+    # Some ElevenLabs accounts reject optional payload fields depending on tier/model.
+    # Retry with progressively simpler payloads when we get 400-level validation errors.
+    attempts: list[tuple[str, dict[str, Any]]] = [
+        ("full", payload),
+        (
+            "without_output_format",
+            {
+                k: v
+                for k, v in payload.items()
+                if k != "output_format"
+            },
+        ),
+        ("text_only", {"text": safe_text}),
+    ]
 
-    if response.status_code >= 400:
-        detail = "unknown"
+    response: requests.Response | None = None
+    last_detail = "unknown"
+
+    for attempt_name, attempt_payload in attempts:
         try:
-            detail = response.text[:500]
-        except Exception:
-            pass
+            response = requests.post(endpoint, json=attempt_payload, headers=headers, timeout=35)
+        except requests.RequestException as exc:
+            logger.exception("Voice request failed before response (attempt=%s): %s", attempt_name, exc)
+            raise VoiceServiceError("Voice provider request failed") from exc
+
+        if response.status_code < 400:
+            if attempt_name != "full":
+                logger.warning(
+                    "Voice request succeeded after fallback: attempt=%s",
+                    attempt_name,
+                )
+            break
+
+        last_detail = _extract_provider_error_detail(response)
         logger.error(
-            "Voice generation failed: status=%s detail=%s",
+            "Voice generation failed: attempt=%s status=%s detail=%s",
+            attempt_name,
             response.status_code,
-            detail,
+            last_detail,
         )
-        raise VoiceServiceError(f"Voice generation failed ({response.status_code})")
+
+        # Retry only for payload-related client errors.
+        if response.status_code != 400:
+            break
+
+    if response is None or response.status_code >= 400:
+        status = response.status_code if response is not None else "unknown"
+        raise VoiceServiceError(f"Voice generation failed ({status}): {last_detail}")
 
     audio = response.content
     duration_ms = int((time.perf_counter() - started) * 1000)

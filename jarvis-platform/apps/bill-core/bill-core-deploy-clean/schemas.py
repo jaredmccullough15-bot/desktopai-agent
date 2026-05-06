@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -165,6 +165,30 @@ class BrainCommandRequest(BaseModel):
     run_with_proposal_id: str | None = None
 
 
+class TeachingStartupState(BaseModel):
+    """Returned inside BrainCommandResponse when a teach_session task is queued.
+
+    The frontend uses this to:
+    - Show a teaching startup overlay immediately (before the browser opens)
+    - Poll GET /api/teaching/session/{session_id}/status every 2 s until active/failed
+    """
+    session_id: str
+    task_id: str | None = None
+    workflow_name: str
+    target_machine_uuid: str | None = None
+    status: str = "browser_opening"  # browser_opening | active | failed
+    message: str = ""
+    overlay_enabled: bool = True
+    voice_prompt_text: str = "Teaching mode is starting. Open the browser on your computer and walk me through the process."
+
+
+class TeachingStartupStatusRequest(BaseModel):
+    """Worker calls POST /api/teaching/session/{session_id}/status with this body."""
+    status: str  # active | failed
+    task_id: str | None = None
+    message: str = ""
+
+
 class BrainCommandResponse(BaseModel):
     recognized_intent: str
     command: str
@@ -185,6 +209,7 @@ class BrainCommandResponse(BaseModel):
     suggested_emotion: str | None = None
     suggested_style_profile: str | None = None
     voice_event_type: str | None = None
+    teaching_mode: TeachingStartupState | None = None
 
 
 class InteractivePromptRecord(BaseModel):
@@ -355,6 +380,7 @@ class WorkflowLearningCreateRequest(BaseModel):
 
 class WorkflowLearningDraftRecord(BaseModel):
     draft_id: str
+    tenant_id: str | None = None
     created_at: str
     updated_at: str
     learning_path: str
@@ -373,6 +399,13 @@ class WorkflowLearningDraftRecord(BaseModel):
     review_status: str = "draft"
     reviewer_notes: str | None = None
     published_workflow_name: str | None = None
+    observation_question_frequency: Literal["low", "medium", "high"] = "medium"
+    observation_questions_paused: bool = False
+    observation_skip_all_questions: bool = False
+    rule_suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    workflow_annotations: list[dict[str, Any]] = Field(default_factory=list)
+    training_memory: list[dict[str, Any]] = Field(default_factory=list)
+    navigation_rules: list[dict[str, Any]] = Field(default_factory=list)
     # Teaching loop state
     teaching_complete: bool = False
     teaching_pending_step: int | None = None
@@ -447,6 +480,110 @@ class AppendStepRequest(BaseModel):
     element_tag: str = ""
     element_type: str = ""
     captured_at: str = ""
+    event_type: str = ""
+    system_context: dict[str, Any] = Field(default_factory=dict)
+    observation_triggers: list[str] = Field(default_factory=list)
+
+
+class ObservationQuestionPrompt(BaseModel):
+    prompt_id: str
+    draft_id: str
+    step_order: int
+    trigger_type: Literal[
+        "system_switch",
+        "decision_point",
+        "classification_step",
+        "unknown_pattern",
+        "system_selection",
+        "domain_navigation",
+        "navigation_decision",
+    ]
+    question_type: Literal[
+        "check",
+        "decision",
+        "classification",
+        "why_action",
+        "navigation_why",
+        "navigation_which",
+        "navigation_source",
+        "navigation_rule",
+    ]
+    question: str
+    system_context: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["pending", "answered", "skipped", "later", "known"] = "pending"
+    can_skip: bool = True
+    can_answer_later: bool = True
+    voice_supported: bool = True
+
+
+class ObservationQuestionAnswerRequest(BaseModel):
+    prompt_id: str
+    step_order: int
+    action: Literal["answer", "skip", "later", "known", "pause", "resume", "skip_all", "set_frequency"] = "answer"
+    answer: str = ""
+    response_mode: Literal["text", "voice", "control"] = "text"
+    question_type: str | None = None
+    trigger_type: str | None = None
+    question_frequency: Literal["low", "medium", "high"] | None = None
+    system_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ObservationQuestionAnswerResponse(BaseModel):
+    draft_id: str
+    step_order: int
+    prompt_id: str
+    status: str
+    saved_answer: bool = False
+    observation_question_frequency: Literal["low", "medium", "high"] = "medium"
+    observation_questions_paused: bool = False
+    observation_skip_all_questions: bool = False
+    generated_rule_candidate: dict[str, Any] | None = None
+
+
+class NavigationMapping(BaseModel):
+    """Single field → system mapping rule."""
+    mapping_id: str
+    source_field: str
+    source_value: str
+    target_system: str
+    target_url_pattern: str = ""
+    confidence: float = 1.0
+    learned_from_answers: int = 1
+    is_rule_always: bool = True
+    captured_at: str
+    updated_at: str
+
+
+class NavigationRule(BaseModel):
+    """A learned navigation path: how to choose a system and reach it."""
+    rule_id: str
+    draft_id: str
+    step_order: int
+    trigger_type: Literal["system_selection", "domain_navigation", "navigation_decision"]
+    question_type: Literal["navigation_why", "navigation_which", "navigation_source", "navigation_rule"]
+    condition: str
+    current_system: str = ""
+    target_system: str
+    target_url_pattern: str = ""
+    system_context: dict[str, Any] = Field(default_factory=dict)
+    mappings: list[NavigationMapping] = Field(default_factory=list)
+    answer: str
+    response_mode: str = "text"
+    status: str = "candidate"
+    source: str = "interactive_observation"
+    captured_at: str
+    updated_at: str
+
+
+class NavigationRuleMapping(BaseModel):
+    """Multi-tenant navigation mapping store."""
+    tenant_id: str
+    workflow_id: str | None = None
+    navigation_rules: list[NavigationRule] = Field(default_factory=list)
+    missing_mappings_warnings: list[str] = Field(default_factory=list)
+    applied_rules_count: int = 0
+    created_at: str
+    updated_at: str
 
 
 class TeachSessionStartRequest(BaseModel):

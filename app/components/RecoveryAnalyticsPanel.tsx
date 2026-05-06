@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -93,7 +93,7 @@ function sec(v: number): string {
 }
 
 function ago(iso?: string): string {
-  if (!iso) return "—";
+  if (!iso) return "ΓÇö";
   const ms = Date.now() - new Date(iso).getTime();
   if (ms < 60_000) return "just now";
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
@@ -231,8 +231,8 @@ export default function RecoveryAnalyticsPanel({ apiBase }: RecoveryAnalyticsPan
             <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-3"><p className="text-[11px] text-slate-500">Paused Now</p><p className="text-lg font-semibold text-violet-300">{summary.currently_paused_recovery_tasks}</p></article>
             <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-3"><p className="text-[11px] text-slate-500">Auto Success</p><p className="text-lg font-semibold text-cyan-300">{pct(summary.auto_playbook_success_rate)}</p></article>
             <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-3"><p className="text-[11px] text-slate-500">Human Success</p><p className="text-lg font-semibold text-emerald-300">{pct(summary.human_recovery_success_rate)}</p></article>
-            <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-3"><p className="text-[11px] text-slate-500">Avg Pause → First Action</p><p className="text-lg font-semibold text-slate-100">{sec(summary.avg_pause_to_first_action_seconds)}</p></article>
-            <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-3"><p className="text-[11px] text-slate-500">Avg Pause → Resume</p><p className="text-lg font-semibold text-slate-100">{sec(summary.avg_pause_to_resumed_seconds)}</p></article>
+            <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-3"><p className="text-[11px] text-slate-500">Avg Pause ΓåÆ First Action</p><p className="text-lg font-semibold text-slate-100">{sec(summary.avg_pause_to_first_action_seconds)}</p></article>
+            <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-3"><p className="text-[11px] text-slate-500">Avg Pause ΓåÆ Resume</p><p className="text-lg font-semibold text-slate-100">{sec(summary.avg_pause_to_resumed_seconds)}</p></article>
           </div>
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -276,7 +276,7 @@ export default function RecoveryAnalyticsPanel({ apiBase }: RecoveryAnalyticsPan
                 {(actions?.manual_action_usage ?? summary.most_used_manual_actions ?? []).slice(0, 10).map((item) => (
                   <div key={`action-${item.action}`} className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-xs">
                     <p className="text-slate-300">{actionLabel(item.action)}</p>
-                    <p className="text-slate-500">used {item.used} · success {pct(item.success_rate)}</p>
+                    <p className="text-slate-500">used {item.used} ┬╖ success {pct(item.success_rate)}</p>
                   </div>
                 ))}
               </div>
@@ -287,8 +287,8 @@ export default function RecoveryAnalyticsPanel({ apiBase }: RecoveryAnalyticsPan
               <div className="max-h-52 space-y-1 overflow-auto pr-1">
                 {(playbooks?.top_performing_trusted_playbooks ?? []).slice(0, 10).map((pb) => (
                   <div key={`pb-${pb.playbook_id}`} className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-xs">
-                    <p className="truncate text-slate-300">{pb.workflow_name} · ...{pb.playbook_id.slice(-8)}</p>
-                    <p className="text-slate-500">{pb.status} · success {pct(pb.success_rate)} · used {pb.attempted_count}</p>
+                    <p className="truncate text-slate-300">{pb.workflow_name} ┬╖ ...{pb.playbook_id.slice(-8)}</p>
+                    <p className="text-slate-500">{pb.status} ┬╖ success {pct(pb.success_rate)} ┬╖ used {pb.attempted_count}</p>
                   </div>
                 ))}
               </div>
@@ -301,8 +301,8 @@ export default function RecoveryAnalyticsPanel({ apiBase }: RecoveryAnalyticsPan
               <div className="max-h-56 space-y-1 overflow-auto pr-1">
                 {(incidents?.rows ?? []).slice(0, 20).map((row) => (
                   <div key={`row-${row.task_id}`} className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-xs">
-                    <p className="text-slate-300">{row.workflow_name} · ...{String(row.task_id ?? "").slice(-8)}</p>
-                    <p className="text-slate-500">{row.problem_signature} · {row.status} · {ago(row.updated_at)}</p>
+                    <p className="text-slate-300">{row.workflow_name} ┬╖ ...{String(row.task_id ?? "").slice(-8)}</p>
+                    <p className="text-slate-500">{row.problem_signature} ┬╖ {row.status} ┬╖ {ago(row.updated_at)}</p>
                   </div>
                 ))}
               </div>
@@ -313,8 +313,8 @@ export default function RecoveryAnalyticsPanel({ apiBase }: RecoveryAnalyticsPan
               <div className="max-h-56 space-y-1 overflow-auto pr-1">
                 {(timeline?.recent_failed_self_healing_attempts ?? []).slice(0, 20).map((event, idx) => (
                   <div key={`fail-${idx}`} className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-xs">
-                    <p className="text-slate-300">{event.event_type?.replace(/_/g, " ")} · ...{String(event.task_id ?? "").slice(-8)}</p>
-                    <p className="text-slate-500">{event.workflow_name} · {ago(event.timestamp)}</p>
+                    <p className="text-slate-300">{event.event_type?.replace(/_/g, " ")} ┬╖ ...{String(event.task_id ?? "").slice(-8)}</p>
+                    <p className="text-slate-500">{event.workflow_name} ┬╖ {ago(event.timestamp)}</p>
                   </div>
                 ))}
               </div>

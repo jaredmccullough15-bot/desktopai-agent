@@ -140,11 +140,114 @@ type TeachingStartupState = {
   voice_prompt_text?: string;
 };
 
+type BrowserAction = {
+  id: string;
+  type: "click" | "type" | "navigate" | "select" | "submit";
+  selector?: string;
+  label?: string;
+  valueRedacted?: string;
+  url?: string;
+  timestamp: string;
+};
+
+type WorkflowStep = {
+  id: string;
+  order: number;
+  title: string;
+  observedActions: BrowserAction[];
+  employeeExplanation?: string;
+  billSummary: string;
+  decisionRules: string[];
+  exceptions: string[];
+  requiredInputs: string[];
+  confirmed: boolean;
+};
+
+type TeachingSession = {
+  sessionId: string;
+  workflowName: string;
+  workflowSummary?: string;
+  status: "intro" | "teaching" | "review" | "approved";
+  steps: WorkflowStep[];
+};
+
+type TeachingSessionApiResponse = {
+  reply: string;
+  teaching_session: {
+    session_id: string;
+    workflow_name: string;
+    workflow_summary?: string | null;
+    status: "intro" | "teaching" | "review" | "approved";
+    steps?: Array<{
+      id: string;
+      order: number;
+      title: string;
+      observed_actions?: Array<{
+        id: string;
+        type: "click" | "type" | "navigate" | "select" | "submit";
+        selector?: string | null;
+        label?: string | null;
+        value_redacted?: string | null;
+        url?: string | null;
+        timestamp: string;
+      }>;
+      employee_explanation?: string | null;
+      bill_summary?: string;
+      decision_rules?: string[];
+      exceptions?: string[];
+      required_inputs?: string[];
+      confirmed?: boolean;
+    }>;
+  };
+  review_summary?: {
+    workflow_summary?: string;
+    total_steps?: number;
+    confirmed_steps?: number;
+    unconfirmed_steps?: number;
+    steps?: Array<{
+      step_id: string;
+      order: number;
+      title: string;
+      confirmed: boolean;
+      bill_summary?: string;
+      employee_explanation?: string | null;
+      observed_actions?: Array<{
+        id: string;
+        type: "click" | "type" | "navigate" | "select" | "submit";
+        selector?: string | null;
+        label?: string | null;
+        value_redacted?: string | null;
+        url?: string | null;
+        timestamp: string;
+      }>;
+      decision_rules?: string[];
+      exceptions?: string[];
+      required_inputs?: string[];
+    }>;
+  };
+  warnings?: string[];
+  draft_result?: {
+    status?: string;
+    action?: string;
+    draft_id?: string;
+    review_status?: string;
+    workflow_name?: string;
+  } | null;
+};
+
+type TeachingReviewSummary = {
+  workflowSummary?: string;
+  totalSteps: number;
+  confirmedSteps: number;
+  unconfirmedSteps: number;
+};
+
 type BrainCommandResponse = {
   recognized_intent?: string;
   command?: string;
   before_execution?: string;
   after_execution?: string;
+  reply?: string | null;
   selected_workflow?: string | null;
   selected_worker_uuid?: string | null;
   selected_worker_name?: string | null;
@@ -341,6 +444,8 @@ type TeachOverlayQuestionResponse = {
 const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
 const COMMAND_CENTER_VOICE_PREF_KEY = "bill.command-center.voice.enabled";
 const COMMAND_CENTER_AUTO_SUBMIT_PREF_KEY = "bill.command-center.voice.autoSubmit.enabled";
+const TEACHING_STARTUP_POLL_TIMEOUT_MS = 60000;
+const TEACHING_STARTUP_MAX_POLL_ERRORS = 5;
 
 const getConfiguredApiBase = (): string => {
   const configured = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim();
@@ -496,9 +601,19 @@ export default function Home() {
   const [teachingOverlayLastTypingAt, setTeachingOverlayLastTypingAt] = useState<number>(0);
   const [teachingOverlayDictating, setTeachingOverlayDictating] = useState(false);
   const [teachingOverlaySpeechSupported, setTeachingOverlaySpeechSupported] = useState(false);
+  const [guidedTeachingSession, setGuidedTeachingSession] = useState<TeachingSession | null>(null);
+  const [guidedTeachingMessages, setGuidedTeachingMessages] = useState<ChatEntry[]>([]);
+  const [guidedTeachingInput, setGuidedTeachingInput] = useState("");
+  const [guidedTeachingBusy, setGuidedTeachingBusy] = useState(false);
+  const [guidedTeachingTargetStepId, setGuidedTeachingTargetStepId] = useState<string | null>(null);
+  const [guidedTeachingReviewSummary, setGuidedTeachingReviewSummary] = useState<TeachingReviewSummary | null>(null);
+  const [guidedTeachingWarnings, setGuidedTeachingWarnings] = useState<string[]>([]);
+  const [guidedTeachingApprovalMessage, setGuidedTeachingApprovalMessage] = useState<string | null>(null);
   // Teaching startup state — tracks browser_opening → active/failed
   const [teachingStartupState, setTeachingStartupState] = useState<TeachingStartupState | null>(null);
   const teachingStartupPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const teachingStartupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const teachingStartupPollErrorCountRef = useRef<number>(0);
   const lastSpokenTeachingSessionIdRef = useRef<string>("");
   const [teachingStartUrl, setTeachingStartUrl] = useState<string>("");
   const [teachingTargetWorkerUuid, setTeachingTargetWorkerUuid] = useState<string>("");
@@ -556,6 +671,11 @@ export default function Home() {
       clearInterval(teachingStartupPollRef.current);
       teachingStartupPollRef.current = null;
     }
+    if (teachingStartupTimeoutRef.current !== null) {
+      clearTimeout(teachingStartupTimeoutRef.current);
+      teachingStartupTimeoutRef.current = null;
+    }
+    teachingStartupPollErrorCountRef.current = 0;
   }, []);
 
   const startTeachingStartupPoll = useCallback(
@@ -563,21 +683,70 @@ export default function Home() {
       stopTeachingStartupPoll();
       const apiBase = getApiBase();
       if (!apiBase || !sessionId) return;
+      teachingStartupPollErrorCountRef.current = 0;
+
+      const markStartupFailure = (message: string) => {
+        setTeachingStartupState((current) => ({
+          session_id: sessionId,
+          task_id: current?.task_id ?? null,
+          workflow_name: current?.workflow_name ?? "Workflow",
+          target_machine_uuid: current?.target_machine_uuid ?? null,
+          status: "failed",
+          message,
+          overlay_enabled: true,
+          voice_prompt_text: current?.voice_prompt_text,
+        }));
+        setTeachingOverlayOpen(true);
+        stopTeachingStartupPoll();
+      };
+
+      teachingStartupTimeoutRef.current = setTimeout(() => {
+        logTeachOverlay("startup timeout", {
+          session_id: sessionId,
+          timeout_ms: TEACHING_STARTUP_POLL_TIMEOUT_MS,
+        });
+        markStartupFailure(
+          "Teaching mode timed out before becoming active. The browser may have opened, but startup confirmation was never received.",
+        );
+      }, TEACHING_STARTUP_POLL_TIMEOUT_MS);
+
       teachingStartupPollRef.current = setInterval(async () => {
         try {
           const res = await fetch(`${apiBase}/api/teaching/session/${sessionId}/status`);
-          if (!res.ok) return;
+          if (!res.ok) {
+            teachingStartupPollErrorCountRef.current += 1;
+            logTeachOverlay("startup status poll failed", { session_id: sessionId, http_status: res.status });
+            if (teachingStartupPollErrorCountRef.current >= TEACHING_STARTUP_MAX_POLL_ERRORS) {
+              markStartupFailure(
+                "Teaching mode could not confirm startup because status checks are failing. Please retry.",
+              );
+            }
+            return;
+          }
+          teachingStartupPollErrorCountRef.current = 0;
           const data = (await res.json()) as TeachingStartupState;
+          logTeachOverlay("startup status poll", {
+            session_id: sessionId,
+            status: data.status,
+            task_id: data.task_id ?? null,
+            message: data.message ?? "",
+          });
           setTeachingStartupState(data);
           if (data.status === "active" || data.status === "failed") {
             stopTeachingStartupPoll();
           }
         } catch {
-          // network hiccup — keep polling
+          teachingStartupPollErrorCountRef.current += 1;
+          logTeachOverlay("startup status poll error", { session_id: sessionId });
+          if (teachingStartupPollErrorCountRef.current >= TEACHING_STARTUP_MAX_POLL_ERRORS) {
+            markStartupFailure(
+              "Teaching mode could not reach the server to confirm startup. Please retry.",
+            );
+          }
         }
       }, 2000);
     },
-    [stopTeachingStartupPoll],
+    [logTeachOverlay, stopTeachingStartupPoll],
   );
 
   // Stop polling when component unmounts
@@ -595,6 +764,9 @@ export default function Home() {
       }
 
       setChatInput(transcript);
+      if (guidedTeachingSession) {
+        setGuidedTeachingInput(transcript);
+      }
 
       if (!autoSubmitVoiceCommands) {
         return;
@@ -614,6 +786,282 @@ export default function Home() {
       void submitBrainCommand(transcript);
     },
   });
+
+  const mapApiTeachingSession = useCallback(
+    (input: TeachingSessionApiResponse["teaching_session"]): TeachingSession => ({
+      sessionId: input.session_id,
+      workflowName: input.workflow_name,
+      workflowSummary: input.workflow_summary ?? undefined,
+      status: input.status,
+      steps: (input.steps ?? []).map((step) => ({
+        id: step.id,
+        order: step.order,
+        title: step.title,
+        observedActions: (step.observed_actions ?? []).map((action) => ({
+          id: action.id,
+          type: action.type,
+          selector: action.selector ?? undefined,
+          label: action.label ?? undefined,
+          valueRedacted: action.value_redacted ?? undefined,
+          url: action.url ?? undefined,
+          timestamp: action.timestamp,
+        })),
+        employeeExplanation: step.employee_explanation ?? undefined,
+        billSummary: step.bill_summary ?? "",
+        decisionRules: step.decision_rules ?? [],
+        exceptions: step.exceptions ?? [],
+        requiredInputs: step.required_inputs ?? [],
+        confirmed: Boolean(step.confirmed),
+      })),
+    }),
+    [],
+  );
+
+  const applyGuidedTeachingApiResponse = useCallback(
+    (body: TeachingSessionApiResponse) => {
+      setGuidedTeachingSession(mapApiTeachingSession(body.teaching_session));
+      setGuidedTeachingWarnings(body.warnings ?? []);
+      if (body.review_summary) {
+        setGuidedTeachingReviewSummary({
+          workflowSummary: body.review_summary.workflow_summary,
+          totalSteps: Number(body.review_summary.total_steps ?? 0),
+          confirmedSteps: Number(body.review_summary.confirmed_steps ?? 0),
+          unconfirmedSteps: Number(body.review_summary.unconfirmed_steps ?? 0),
+        });
+      } else {
+        setGuidedTeachingReviewSummary(null);
+      }
+    },
+    [mapApiTeachingSession],
+  );
+
+  const beginGuidedTeachingSession = useCallback(
+    (teachingMode: TeachingStartupState, introReply?: string | null) => {
+      setGuidedTeachingSession({
+        sessionId: teachingMode.session_id,
+        workflowName: teachingMode.workflow_name,
+        workflowSummary: undefined,
+        status: "intro",
+        steps: [],
+      });
+      setGuidedTeachingInput("");
+      setGuidedTeachingReviewSummary(null);
+      setGuidedTeachingWarnings([]);
+      setGuidedTeachingApprovalMessage(null);
+      setGuidedTeachingMessages([
+        {
+          role: "assistant",
+          message:
+            introReply?.trim() ||
+            `Sounds good. I started a teaching session for ${teachingMode.workflow_name}. Can you give me a quick explanation of what this workflow does?`,
+        },
+      ]);
+    },
+    [],
+  );
+
+  const formatObservedAction = useCallback((action: BrowserAction): string => {
+    if (action.type === "navigate") {
+      try {
+        const parsed = action.url ? new URL(action.url) : null;
+        const path = parsed ? `${parsed.hostname}${parsed.pathname || "/"}` : action.url || "page";
+        return `Navigated to ${path}`;
+      } catch {
+        return `Navigated to ${action.url || "page"}`;
+      }
+    }
+    if (action.type === "type") {
+      return `Typed into ${action.label || "field"}`;
+    }
+    if (action.type === "select") {
+      return `Selected option in ${action.label || "field"}`;
+    }
+    if (action.type === "submit") {
+      return `Submitted ${action.label || "form"}`;
+    }
+    return `Clicked ${action.label || "element"}`;
+  }, []);
+
+  const submitGuidedTeachingMessage = useCallback(async () => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    const message = guidedTeachingInput.trim();
+    if (!message) return;
+
+    const targetStepId = guidedTeachingTargetStepId;
+    setGuidedTeachingBusy(true);
+    setGuidedTeachingMessages((current) => [...current, { role: "user", message }]);
+    setGuidedTeachingInput("");
+
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const response = await fetch(
+        `${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/conversation`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, step_id: targetStepId }),
+        },
+      );
+      const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Teaching conversation failed (${response.status})`);
+      }
+
+      const mapped = mapApiTeachingSession(body.teaching_session);
+      setGuidedTeachingSession(mapped);
+      setGuidedTeachingReviewSummary(null);
+      setGuidedTeachingWarnings([]);
+      setGuidedTeachingApprovalMessage(null);
+      setGuidedTeachingTargetStepId(null);
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't save that teaching note: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [guidedTeachingBusy, guidedTeachingInput, guidedTeachingSession, guidedTeachingTargetStepId, mapApiTeachingSession]);
+
+  const confirmGuidedTeachingStep = useCallback(
+    async (stepId: string) => {
+      if (!guidedTeachingSession || guidedTeachingBusy) return;
+      setGuidedTeachingBusy(true);
+      try {
+        const apiBase = getApiBase();
+        if (!apiBase) {
+          throw new Error("NEXT_PUBLIC_API_BASE is not set");
+        }
+        const response = await fetch(
+          `${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/steps/${stepId}/confirm`,
+          { method: "POST" },
+        );
+        const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
+        if (!response.ok) {
+          throw new Error(body.detail ?? `Step confirmation failed (${response.status})`);
+        }
+        setGuidedTeachingSession(mapApiTeachingSession(body.teaching_session));
+        setGuidedTeachingReviewSummary(null);
+        setGuidedTeachingWarnings([]);
+        setGuidedTeachingApprovalMessage(null);
+        setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
+      } catch (error) {
+        setGuidedTeachingMessages((current) => [
+          ...current,
+          {
+            role: "assistant",
+            message: `I couldn't confirm that step: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ]);
+      } finally {
+        setGuidedTeachingBusy(false);
+      }
+    },
+    [guidedTeachingBusy, guidedTeachingSession, mapApiTeachingSession],
+  );
+
+  const reviewGuidedTeachingSession = useCallback(async () => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    setGuidedTeachingBusy(true);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const response = await fetch(`${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/review`, {
+        method: "POST",
+      });
+      const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Workflow review failed (${response.status})`);
+      }
+      applyGuidedTeachingApiResponse(body);
+      setGuidedTeachingApprovalMessage(null);
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't move to workflow review: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [applyGuidedTeachingApiResponse, guidedTeachingBusy, guidedTeachingSession]);
+
+  const continueGuidedTeachingSession = useCallback(async () => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    setGuidedTeachingBusy(true);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const response = await fetch(`${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/continue`, {
+        method: "POST",
+      });
+      const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Continue teaching failed (${response.status})`);
+      }
+      setGuidedTeachingSession(mapApiTeachingSession(body.teaching_session));
+      setGuidedTeachingReviewSummary(null);
+      setGuidedTeachingWarnings([]);
+      setGuidedTeachingApprovalMessage(null);
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't continue teaching mode: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [guidedTeachingBusy, guidedTeachingSession, mapApiTeachingSession]);
+
+  const approveGuidedTeachingSession = useCallback(async () => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    setGuidedTeachingBusy(true);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const response = await fetch(`${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/approve`, {
+        method: "POST",
+      });
+      const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Approve workflow failed (${response.status})`);
+      }
+      applyGuidedTeachingApiResponse(body);
+      setGuidedTeachingApprovalMessage("Workflow approved. Bill created a playbook draft for review.");
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't approve this workflow yet: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [applyGuidedTeachingApiResponse, guidedTeachingBusy, guidedTeachingSession]);
   const billVoice = useBillVoice(getApiBase());
   const commandMic = useBillMic();
   const [commandVoiceEnabled, setCommandVoiceEnabled] = useState<boolean>(true);
@@ -655,244 +1103,12 @@ export default function Home() {
     if (lastSpokenTeachingSessionIdRef.current === session_id) return;
     lastSpokenTeachingSessionIdRef.current = session_id;
     const promptText = voice_prompt_text || "Teaching mode is now active. Walk me through the workflow.";
-    if (commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured) {
-      void billVoice.speakText({ text: promptText, emotion: "excited" });
-    } else {
-      speak(promptText);
-    }
-  }, [teachingStartupState, commandVoiceEnabled, billVoice, speak]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const speechWindow = window as Window & {
-      SpeechRecognition?: SpeechRecognitionCtor;
-      webkitSpeechRecognition?: SpeechRecognitionCtor;
-    };
-    setTeachingOverlaySpeechSupported(
-      Boolean(speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition),
-    );
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(COMMAND_CENTER_VOICE_PREF_KEY);
-    if (raw === "0") {
-      setCommandVoiceEnabled(false);
-      setTtsEnabled(false);
-    } else if (raw === "1") {
-      setCommandVoiceEnabled(true);
-      setTtsEnabled(true);
-    }
-  }, [setTtsEnabled]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(COMMAND_CENTER_VOICE_PREF_KEY, commandVoiceEnabled ? "1" : "0");
-    setTtsEnabled(commandVoiceEnabled);
-  }, [commandVoiceEnabled, setTtsEnabled]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(COMMAND_CENTER_AUTO_SUBMIT_PREF_KEY);
-    if (raw === "1") {
-      setAutoSubmitVoiceCommands(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(
-      COMMAND_CENTER_AUTO_SUBMIT_PREF_KEY,
-      autoSubmitVoiceCommands ? "1" : "0",
-    );
-  }, [autoSubmitVoiceCommands]);
-
-  const queueBillEventSpeech = useCallback(
-    (eventType: string, options?: { taskId?: string; workflowName?: string; context?: Record<string, unknown>; overrideText?: string }) => {
-      if (!commandVoiceEnabled) return;
-      if (!billVoice.config?.voice_enabled || !billVoice.config?.configured) return;
-      void billVoice.speakEvent({
-        event_type: eventType,
-        task_id: options?.taskId,
-        workflow_name: options?.workflowName,
-        context: options?.context,
-        override_text: options?.overrideText,
-      });
-      lastVoiceEventRef.current = { eventType, at: Date.now() };
-    },
-    [billVoice, commandVoiceEnabled],
-  );
-
-  // Init notification permission state on mount
-  useEffect(() => {
-    if (typeof window !== "undefined" && "Notification" in window) {
-      setNotificationPermission(Notification.permission);
-    }
-  }, []);
-
-  const activeTaskStatuses = new Set(["queued", "assigned", "running"]);
-  const activeTasks = tasks.filter((task) => activeTaskStatuses.has((task.status ?? "").toLowerCase()));
-  const failedTasks = tasks.filter((task) => (task.status ?? "").toLowerCase() === "failed");
-  const successfulTasks = tasks.filter((task) => (task.status ?? "").toLowerCase() === "completed");
-  const onlineWorkers = machines.filter((machine) => machine.online);
-
-  const setFeedback = (
-    setter: (feedback: ActionFeedback | null) => void,
-    kind: "success" | "error",
-    message: string,
-  ) => {
-    setter({
-      kind,
-      message,
-      timestamp: new Date().toLocaleTimeString(),
+    logTeachOverlay("voice prompt trigger", {
+      session_id,
+      status,
+      voice_provider: commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured ? "bill_voice" : "browser_tts",
+      prompt_preview: promptText.slice(0, 120),
     });
-  };
-
-  const toDraftVariableInput = (item: Partial<DraftVariableInput> | undefined, fallbackField: string): DraftVariableInput => ({
-    field_key: String(item?.field_key ?? fallbackField).trim() || fallbackField,
-    sample_value: String(item?.sample_value ?? "").trim(),
-    is_variable: Boolean(item?.is_variable ?? true),
-    required_input: Boolean(item?.required_input ?? true),
-    input_source: String(item?.input_source ?? "ask_user").trim() || "ask_user",
-    source_detail: String(item?.source_detail ?? "").trim(),
-    prompt_question: String(item?.prompt_question ?? `How should ${fallbackField} be populated?`).trim(),
-  });
-
-  const toDraftFieldMapping = (item: Partial<DraftFieldMapping> | undefined, fallbackField: string): DraftFieldMapping => ({
-    field: String(item?.field ?? fallbackField).trim() || fallbackField,
-    source: String(item?.source ?? "ask_user").trim() || "ask_user",
-    source_detail: String(item?.source_detail ?? "").trim(),
-  });
-
-  const toDraftStep = (step: Partial<DraftStep>, index: number): DraftStep => {
-    const selector = String(step.selector ?? "").trim();
-    const fallbackField = selector || `step_${index + 1}_value`;
-    const variableInputsRaw = Array.isArray(step.variable_inputs) ? step.variable_inputs : [];
-    const fieldMappingsRaw = Array.isArray(step.field_mappings) ? step.field_mappings : [];
-    return {
-      step_order: Number(step.step_order ?? index + 1),
-      name: String(step.name ?? `step_${index + 1}`).trim() || `step_${index + 1}`,
-      step_name: String(step.step_name ?? step.name ?? `Step ${index + 1}`).trim() || `Step ${index + 1}`,
-      purpose: String(step.purpose ?? "").trim(),
-      instruction: String(step.instruction ?? "").trim(),
-      action: String(step.action ?? "manual_step").trim() || "manual_step",
-      selector,
-      url: String(step.url ?? "").trim(),
-      value: String(step.value ?? "").trim(),
-      option: String(step.option ?? "").trim(),
-      manual_review_required: Boolean(step.manual_review_required),
-      variable_inputs: variableInputsRaw.map((item) => toDraftVariableInput(item, fallbackField)),
-      field_mappings: fieldMappingsRaw.map((item) => toDraftFieldMapping(item, fallbackField)),
-      validation_rules: Array.isArray(step.validation_rules) ? step.validation_rules.map((rule) => String(rule)) : [],
-      success_condition: String(step.success_condition ?? "").trim(),
-      failure_behavior: String(step.failure_behavior ?? "").trim(),
-      intent: String(step.intent ?? "").trim(),
-      description: String(step.description ?? "").trim(),
-      failure_condition: String(step.failure_condition ?? "").trim(),
-      recovery_strategy: String(step.recovery_strategy ?? "").trim(),
-    };
-  };
-
-  const cloneDraftSteps = (steps: DraftStep[] | Array<Record<string, unknown>>): DraftStep[] =>
-    (steps ?? []).map((step, index) => toDraftStep(step as DraftStep, index));
-
-  const ensureDraftEditingState = (draft: WorkflowLearningDraft) => {
-    setDraftStepEdits((current) => {
-      if (current[draft.draft_id]) {
-        return current;
-      }
-      return { ...current, [draft.draft_id]: cloneDraftSteps(draft.steps) };
-    });
-  };
-
-  const getDraftStepsForDisplay = (draft: WorkflowLearningDraft): DraftStep[] =>
-    draftStepEdits[draft.draft_id] ?? cloneDraftSteps(draft.steps);
-
-  const updateDraftStep = (draftId: string, stepIndex: number, patch: Partial<DraftStep>) => {
-    setDraftStepEdits((current) => {
-      const existing = current[draftId] ? [...current[draftId]] : [];
-      if (!existing[stepIndex]) {
-        return current;
-      }
-      existing[stepIndex] = { ...existing[stepIndex], ...patch };
-      return { ...current, [draftId]: existing };
-    });
-  };
-
-  const updateDraftStepVariable = (
-    draftId: string,
-    stepIndex: number,
-    variableIndex: number,
-    patch: Partial<DraftVariableInput>,
-  ) => {
-    setDraftStepEdits((current) => {
-      const existing = current[draftId] ? [...current[draftId]] : [];
-      if (!existing[stepIndex]) {
-        return current;
-      }
-      const variables = [...(existing[stepIndex].variable_inputs ?? [])];
-      if (!variables[variableIndex]) {
-        return current;
-      }
-      variables[variableIndex] = { ...variables[variableIndex], ...patch };
-      existing[stepIndex] = { ...existing[stepIndex], variable_inputs: variables };
-      return { ...current, [draftId]: existing };
-    });
-  };
-
-  const draftStepSummary = (step: Record<string, unknown>, index: number): string => {
-    const action = String(step.action ?? step.type ?? "manual_step").trim().toLowerCase();
-    const instruction = String(step.instruction ?? "").trim();
-    const selector = String(step.selector ?? "").trim();
-    const url = String(step.url ?? "").trim();
-    const value = String(step.value ?? "").trim();
-    const name = String(step.name ?? `step_${index + 1}`).trim();
-
-    if (instruction && action === "manual_step") {
-      return `Manual step: ${instruction}`;
-    }
-
-    if (action === "open_url") {
-      return url ? `Open ${url}` : "Open the target page";
-    }
-
-    if (action === "wait_for_element") {
-      return selector ? `Wait until ${selector} appears` : "Wait for the page to be ready";
-    }
-
-    if (action === "click_selector") {
-      return selector ? `Click ${selector}` : "Click the required on-screen element";
-    }
-
-    if (action === "type_text") {
-      if (selector && value) return `Type \"${value}\" into ${selector}`;
-      if (selector) return `Enter required text into ${selector}`;
-      return "Enter the required text in the form";
-    }
-
-    if (action === "take_screenshot") {
-      return "Capture a screenshot";
-    }
-
-    if (instruction) {
-      return instruction;
-    }
-
-    return `Perform ${name.replaceAll("_", " ")}`;
-  };
-
-  const draftStepExtraDetail = (step: Record<string, unknown>): string => {
-    const action = String(step.action ?? step.type ?? "manual_step").trim().toLowerCase();
-    const instruction = String(step.instruction ?? "").trim();
-    const selector = String(step.selector ?? "").trim();
-    const url = String(step.url ?? "").trim();
-    const value = String(step.value ?? "").trim();
-    const manualRequired = Boolean(step.manual_review_required);
-
-    const details: string[] = [];
-    if (instruction && action !== "manual_step") details.push(`Instruction: ${instruction}`);
-    if (selector) details.push(`Selector: ${selector}`);
-    if (url) details.push(`URL: ${url}`);
     if (value) details.push(`Value: ${value}`);
     if (manualRequired) details.push("Needs manual review before unattended run");
 
@@ -1633,11 +1849,28 @@ export default function Home() {
 
       // ── Teaching startup ──────────────────────────────────────────────────
       if (body.teaching_mode?.session_id) {
+        logTeachOverlay("teaching_mode response received", {
+          session_id: body.teaching_mode.session_id,
+          status: body.teaching_mode.status,
+          task_id: body.teaching_mode.task_id ?? null,
+          workflow_name: body.teaching_mode.workflow_name,
+        });
         setTeachingStartupState(body.teaching_mode);
         if (body.teaching_mode.overlay_enabled !== false) {
+          logTeachOverlay("overlay activation requested", {
+            session_id: body.teaching_mode.session_id,
+            source: "brain_command_response",
+          });
           setTeachingOverlayOpen(true);
         }
+        beginGuidedTeachingSession(body.teaching_mode, body.reply);
         startTeachingStartupPoll(body.teaching_mode.session_id);
+      } else if (body.task?.id && body.recognized_intent === "start_new_workflow") {
+        logTeachOverlay("teaching_mode missing in response", {
+          task_id: body.task.id,
+          recognized_intent: body.recognized_intent,
+          selected_workflow: body.selected_workflow ?? null,
+        });
       }
 
       await loadDashboardData();
@@ -2939,20 +3172,19 @@ export default function Home() {
         />
       </div>
 
-      {teachingSessionDraftId ? (
-        <div className="fixed bottom-4 right-4 z-[70] flex max-w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-3">
+      {guidedTeachingSession ? (
+        <div className="fixed bottom-4 right-4 z-[70] flex max-w-[min(32rem,calc(100vw-2rem))] flex-col items-end gap-3">
           <button
             type="button"
             onClick={() => {
               setTeachingOverlayOpen(true);
-              logTeachOverlay("manual overlay open requested", { session_id: teachingSessionDraftId });
+              logTeachOverlay("manual overlay open requested", { session_id: guidedTeachingSession.sessionId });
             }}
             className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-100 shadow-lg shadow-cyan-950/40 hover:bg-cyan-500/25"
           >
-            Open Teaching Overlay
+            Open Teaching Mode
           </button>
 
-          {/* ── Teaching startup status panel ─────────────────────────── */}
           {teachingStartupState && teachingStartupState.status !== "active" && (
             <section
               className={`w-full rounded-2xl border p-4 text-slate-100 shadow-2xl backdrop-blur ${
@@ -2962,34 +3194,16 @@ export default function Home() {
               }`}
             >
               <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  {teachingStartupState.status === "browser_opening" && (
-                    <svg
-                      className="h-5 w-5 animate-spin text-cyan-400"
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
-                    </svg>
-                  )}
-                  {teachingStartupState.status === "failed" && (
-                    <span className="text-rose-400 text-lg">✕</span>
-                  )}
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">
-                      Teaching Mode
-                    </p>
-                    <h3 className="text-sm font-semibold text-white">
-                      {teachingStartupState.status === "browser_opening"
-                        ? `Starting teaching session for "${teachingStartupState.workflow_name}"…`
-                        : `Teaching session failed for "${teachingStartupState.workflow_name}"`}
-                    </h3>
-                    {teachingStartupState.message && (
-                      <p className="mt-0.5 text-xs text-slate-400">{teachingStartupState.message}</p>
-                    )}
-                  </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Mode</p>
+                  <h3 className="text-sm font-semibold text-white">
+                    {teachingStartupState.status === "browser_opening"
+                      ? `Starting teaching session for "${teachingStartupState.workflow_name}"...`
+                      : `Teaching session failed for "${teachingStartupState.workflow_name}"`}
+                  </h3>
+                  {teachingStartupState.message ? (
+                    <p className="mt-0.5 text-xs text-slate-400">{teachingStartupState.message}</p>
+                  ) : null}
                 </div>
                 <button
                   type="button"
@@ -3009,9 +3223,9 @@ export default function Home() {
             <section className="w-full rounded-2xl border border-cyan-400/30 bg-slate-950/95 p-4 text-slate-100 shadow-2xl shadow-slate-950/60 backdrop-blur">
               <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teach Overlay Mounted</p>
-                  <h2 className="mt-1 text-lg font-semibold text-white">Interactive Teach Mode</h2>
-                  <p className="mt-1 text-xs text-slate-400">The overlay stays available even if voice is unavailable.</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Mode Active</p>
+                  <h2 className="mt-1 text-lg font-semibold text-white">{guidedTeachingSession.workflowName}</h2>
+                  <p className="mt-1 text-xs text-slate-400">Train Bill like a new hire while you work.</p>
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -3023,203 +3237,178 @@ export default function Home() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => void finishTeachingSession()}
-                    className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200 hover:bg-rose-500/20"
+                    onClick={() => void reviewGuidedTeachingSession()}
+                    disabled={guidedTeachingBusy || guidedTeachingSession.status === "review" || guidedTeachingSession.status === "approved"}
+                    className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-100 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    End Session
+                    End Teaching / Review Workflow
                   </button>
                 </div>
               </div>
 
-              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-3">
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">session_id</span><div className="mt-1 break-all text-cyan-100">{teachingSessionDraftId}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">task_id</span><div className="mt-1 break-all text-cyan-100">{teachingOverlayTaskId ?? "pending"}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">steps recorded</span><div className={`mt-1 font-bold ${(teachingOverlayQuestion?.steps_recorded ?? 0) > 0 ? "text-emerald-400" : "text-amber-400"}`}>{teachingOverlayQuestion?.steps_recorded ?? 0}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">question loaded</span><div className="mt-1 text-cyan-100">{String(Boolean(teachingOverlayQuestion?.question))}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">launch status</span><div className={`mt-1 font-bold ${teachingLaunchStatus === "running" ? "text-emerald-400" : teachingLaunchStatus === "error" ? "text-rose-400" : "text-amber-400"}`}>{teachingLaunchStatus ?? "idle"}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current step</span><div className="mt-1 text-cyan-100">{String(teachingOverlayQuestion?.step_order ?? 0)}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current_stage</span><div className="mt-1 text-cyan-100">{teachingOverlayQuestion?.current_stage ?? "unknown"}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current_domain</span><div className="mt-1 text-cyan-100">{teachingOverlayQuestion?.current_domain ?? ""}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">last_trigger_event</span><div className="mt-1 text-cyan-100">{teachingOverlayQuestion?.last_trigger_event ?? "unknown"}</div></div>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-2"><span className="text-slate-500">current_url</span><div className="mt-1 break-all text-cyan-100">{teachingOverlayQuestion?.current_url ?? ""}</div></div>
-              </div>
-
-              {teachingLaunchStatus === "error" ? (
-                <div className="mt-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                  <p className="font-semibold">Browser launch failed.</p>
-                  <p className="mt-1 text-xs">Make sure the Jarvis Worker is running on your computer and a valid Worker UUID and Start URL are set in the Teach Bill form.</p>
-                </div>
-              ) : teachingLaunchStatus === "running" && (teachingOverlayQuestion?.steps_recorded ?? 0) === 0 ? (
-                <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                  <p className="font-semibold">⚠ No steps recorded yet.</p>
-                  <p className="mt-1 text-xs">The task has been queued. The worker will open a <strong>separate Chromium browser window</strong> on the worker computer. Perform your workflow in <em>that</em> browser — actions done here in the dashboard are not captured.</p>
-                </div>
-              ) : null}
-
-              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Observation Question</p>
-                    <p className="mt-1 text-sm text-slate-300">
-                      {teachingOverlayQuestion?.question?.category
-                        ? `${teachingOverlayQuestion.question.category} · ${teachingOverlayQuestion.question.trigger_type ?? "prompt"}`
-                        : "Waiting for the observed browser to generate a question."}
+              {(guidedTeachingSession.status === "review" || guidedTeachingSession.status === "approved" || guidedTeachingReviewSummary) && (
+                <section className="mt-4 rounded-xl border border-amber-500/30 bg-amber-950/25 p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-amber-200">Review Workflow</p>
+                  <p className="mt-1 text-sm text-amber-50">
+                    {guidedTeachingReviewSummary?.workflowSummary || guidedTeachingSession.workflowSummary || "Review captured steps before final approval."}
+                  </p>
+                  <p className="mt-2 text-xs text-amber-100/90">
+                    Steps: {guidedTeachingReviewSummary?.totalSteps ?? guidedTeachingSession.steps.length} | Confirmed: {guidedTeachingReviewSummary?.confirmedSteps ?? guidedTeachingSession.steps.filter((step) => step.confirmed).length} | Unconfirmed: {guidedTeachingReviewSummary?.unconfirmedSteps ?? guidedTeachingSession.steps.filter((step) => !step.confirmed).length}
+                  </p>
+                  {(guidedTeachingWarnings.includes("Some steps are not confirmed yet. You can approve anyway, but Bill may need more training.") || (guidedTeachingReviewSummary?.unconfirmedSteps ?? 0) > 0) && (
+                    <p className="mt-2 rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-1.5 text-xs text-amber-100">
+                      Some steps are not confirmed yet. You can approve anyway, but Bill may need more training.
                     </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => teachingSessionDraftId && void loadTeachOverlayQuestion(teachingSessionDraftId, { force: true })}
-                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-cyan-400/40 hover:text-cyan-100"
-                  >
-                    Refresh
-                  </button>
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void speakTeachOverlayQuestion()}
-                    disabled={!teachingOverlayQuestion?.question}
-                    className="rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Speak Question
-                  </button>
-                  <button
-                    type="button"
-                    onClick={toggleTeachOverlayDictation}
-                    disabled={!teachingOverlaySpeechSupported}
-                    className="rounded-lg border border-indigo-400/40 bg-indigo-500/10 px-3 py-2 text-sm text-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {teachingOverlayDictating ? "Stop Dictation" : "Start Dictation"}
-                  </button>
-                </div>
-
-                <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-slate-300 sm:grid-cols-2">
-                  <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
-                    <input
-                      type="checkbox"
-                      checked={teachingOverlayAutoSpeakQuestions}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        setTeachingOverlayAutoSpeakQuestions(enabled);
-                        if (teachingSessionDraftId) {
-                          void updateTeachOverlaySettings(teachingSessionDraftId, { auto_speak_questions: enabled });
-                        }
-                      }}
-                    />
-                    Auto-speak questions
-                  </label>
-                  <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
-                    <span>Frequency</span>
-                    <select
-                      value={teachingOverlayFrequencyMode}
-                      onChange={(event) => {
-                        const next = event.target.value as "training" | "assisted" | "production";
-                        setTeachingOverlayFrequencyMode(next);
-                        if (teachingSessionDraftId) {
-                          void updateTeachOverlaySettings(teachingSessionDraftId, { question_frequency_mode: next });
-                        }
-                      }}
-                      className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                  )}
+                  {guidedTeachingApprovalMessage && (
+                    <p className="mt-2 rounded-md border border-emerald-400/40 bg-emerald-400/10 px-2 py-1.5 text-xs text-emerald-100">
+                      Workflow approved. Bill created a playbook draft for review.
+                    </p>
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void reviewGuidedTeachingSession()}
+                      disabled={guidedTeachingBusy || guidedTeachingSession.status === "review" || guidedTeachingSession.status === "approved"}
+                      className="rounded border border-amber-400/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      <option value="training">Training</option>
-                      <option value="assisted">Assisted</option>
-                      <option value="production">Production</option>
-                    </select>
-                  </label>
-                </div>
+                      Review Workflow
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void continueGuidedTeachingSession()}
+                      disabled={guidedTeachingBusy}
+                      className="rounded border border-slate-600 px-2.5 py-1.5 text-xs text-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Continue Teaching
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void approveGuidedTeachingSession()}
+                      disabled={guidedTeachingBusy}
+                      className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Approve Workflow
+                    </button>
+                  </div>
+                </section>
+              )}
 
-                <p className="mt-3 min-h-12 text-sm font-medium leading-6 text-white">
-                  {teachingOverlayQuestion?.question?.question ?? "No question yet. Perform your workflow in the launched Chromium browser on the worker machine — questions will appear here automatically."}
-                </p>
+              <div className="mt-4 grid grid-cols-1 gap-3">
+                <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Floating Chat Panel</p>
+                  <div className="mt-2 max-h-40 space-y-2 overflow-auto pr-1 text-sm">
+                    {guidedTeachingMessages.map((entry, index) => (
+                      <div
+                        key={`${entry.role}-${index}`}
+                        className={`rounded-lg px-3 py-2 ${entry.role === "assistant" ? "bg-cyan-500/10 text-cyan-100" : "bg-slate-800 text-slate-100"}`}
+                      >
+                        {entry.message}
+                      </div>
+                    ))}
+                  </div>
+                  <textarea
+                    value={guidedTeachingInput}
+                    onChange={(event) => setGuidedTeachingInput(event.target.value)}
+                    placeholder={guidedTeachingTargetStepId ? "Add detail for selected step..." : "Explain what you're doing as you work..."}
+                    className="mt-3 min-h-20 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+                  />
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void submitGuidedTeachingMessage()}
+                      disabled={guidedTeachingBusy || !guidedTeachingInput.trim()}
+                      className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Send to Bill
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isListening) {
+                          stopListening();
+                        } else {
+                          startListening();
+                        }
+                      }}
+                      className="rounded-lg border border-indigo-400/40 bg-indigo-500/10 px-3 py-2 text-sm text-indigo-100"
+                    >
+                      {isListening ? "Stop Voice" : "Speak Reply"}
+                    </button>
+                  </div>
+                </section>
 
-                {teachingOverlayQuestion?.question?.purpose ? (
-                  <p className="mt-2 text-xs text-slate-400">Purpose: {teachingOverlayQuestion.question.purpose}</p>
-                ) : null}
-                {teachingOverlayQuestion?.question?.expected_answer_shape ? (
-                  <p className="mt-1 text-xs text-slate-400">Expected: {teachingOverlayQuestion.question.expected_answer_shape}</p>
-                ) : null}
-                {teachingOverlayQuestion?.next_question_reason ? (
-                  <p className="mt-1 text-xs text-slate-500">Reason: {teachingOverlayQuestion.next_question_reason}</p>
-                ) : null}
-
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                  <span className="rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-cyan-100">
-                    State: {teachingOverlayConversationState}
-                  </span>
-                  {teachingOverlayClarityScore !== null ? (
-                    <span className="rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-slate-200">
-                      Clarity: {teachingOverlayClarityScore}
-                    </span>
-                  ) : null}
-                  {teachingOverlayAccepted === true ? (
-                    <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-emerald-200">Answer accepted</span>
-                  ) : null}
-                  {teachingOverlayAccepted === false ? (
-                    <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-200">Bill needs clarification</span>
-                  ) : null}
-                </div>
-
-                {teachingOverlayConversationState === "answer_accepted_waiting_for_progress" ? (
-                  <p className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
-                    Got it. I'll wait while you continue.
-                  </p>
-                ) : null}
-
-                {teachingOverlayMissingInfo.length > 0 ? (
-                  <p className="mt-2 text-xs text-amber-200">Missing: {teachingOverlayMissingInfo.join("; ")}</p>
-                ) : null}
-                {teachingOverlayFollowUpText ? (
-                  <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                    Follow-up: {teachingOverlayFollowUpText}
-                  </p>
-                ) : null}
-                {teachingOverlayLearnedRulePreview ? (
-                  <p className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
-                    Learned rule preview: {JSON.stringify(teachingOverlayLearnedRulePreview)}
-                  </p>
-                ) : null}
-
-                {teachingOverlayError ? (
-                  <p className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{teachingOverlayError}</p>
-                ) : null}
-
-                <textarea
-                  value={teachingOverlayAnswer}
-                  onChange={(event) => {
-                    setTeachingOverlayAnswer(event.target.value);
-                    setTeachingOverlayLastTypingAt(Date.now());
-                  }}
-                  placeholder="Type the employee answer here. Voice is optional and not required for the overlay to work."
-                  className="mt-3 min-h-28 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
-                />
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void submitTeachOverlayAnswer("answer")}
-                    disabled={!teachingOverlayQuestion?.question || teachingOverlayBusyKey !== null}
-                    className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-emerald-950 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Submit Answer
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void submitTeachOverlayAnswer("skip")}
-                    disabled={!teachingOverlayQuestion?.question || teachingOverlayBusyKey !== null}
-                    className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Skip Question
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void toggleTeachOverlayPause()}
-                    disabled={teachingOverlayBusyKey !== null}
-                    className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {teachingOverlayQuestion?.observation_questions_paused ? "Resume Questions" : "Pause Questions"}
-                  </button>
-                </div>
+                <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Live Workflow Step Cards</p>
+                  <div className="mt-2 space-y-2">
+                    {guidedTeachingSession.steps.length === 0 ? (
+                      <div className="rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-3 text-sm text-slate-300">
+                        Step cards are ready. As you teach, Bill will add summarized steps here.
+                      </div>
+                    ) : (
+                      guidedTeachingSession.steps.map((step) => (
+                        <article key={step.id} className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 text-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Step {step.order}</p>
+                              <h3 className="mt-1 font-semibold text-white">{step.title}</h3>
+                            </div>
+                            <span className={`rounded-full border px-2 py-1 text-[10px] ${step.confirmed ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : "border-amber-400/40 bg-amber-500/10 text-amber-100"}`}>
+                              {step.confirmed ? "Confirmed" : "Needs Confirmation"}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
+                          <div className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-2">
+                            <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
+                            {step.observedActions.length === 0 ? (
+                              <p className="mt-1 text-xs text-slate-400">No browser actions captured yet.</p>
+                            ) : (
+                              <ul className="mt-1 space-y-1 text-xs text-slate-300">
+                                {step.observedActions.map((action) => (
+                                  <li key={action.id}>{formatObservedAction(action)}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                          <p className="mt-2 text-xs text-slate-400">Employee explanation: {step.employeeExplanation || "Pending"}</p>
+                          <p className="mt-1 text-xs text-slate-400">Required data: {step.requiredInputs.join(", ") || "Pending"}</p>
+                          <p className="mt-1 text-xs text-slate-400">Decision rules: {step.decisionRules.join("; ") || "None yet"}</p>
+                          <p className="mt-1 text-xs text-slate-400">Exceptions: {step.exceptions.join("; ") || "None yet"}</p>
+                          <div className="mt-2 flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void confirmGuidedTeachingStep(step.id)}
+                              disabled={guidedTeachingBusy || step.confirmed}
+                              className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Yes
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setGuidedTeachingTargetStepId(step.id);
+                                setGuidedTeachingInput(`Edit Step ${step.order}: `);
+                              }}
+                              className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setGuidedTeachingTargetStepId(step.id);
+                                setGuidedTeachingInput(`Additional detail for Step ${step.order}: `);
+                              }}
+                              className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-100"
+                            >
+                              Add detail
+                            </button>
+                          </div>
+                        </article>
+                      ))
+                    )}
+                  </div>
+                </section>
               </div>
             </section>
           ) : null}

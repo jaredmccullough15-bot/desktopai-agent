@@ -189,11 +189,87 @@ class TeachingStartupStatusRequest(BaseModel):
     message: str = ""
 
 
+class BrowserAction(BaseModel):
+    id: str
+    type: Literal["click", "type", "navigate", "select", "submit"]
+    selector: str | None = None
+    label: str | None = None
+    value_redacted: str | None = None
+    url: str | None = None
+    timestamp: str
+
+
+class TeachingSessionActionRequest(BaseModel):
+    action: BrowserAction
+    step_id: str | None = None
+
+
+class WorkflowStep(BaseModel):
+    id: str
+    order: int
+    title: str
+    observed_actions: list[BrowserAction] = Field(default_factory=list)
+    employee_explanation: str | None = None
+    bill_summary: str = ""
+    decision_rules: list[str] = Field(default_factory=list)
+    exceptions: list[str] = Field(default_factory=list)
+    required_inputs: list[str] = Field(default_factory=list)
+    confirmed: bool = False
+
+
+class TeachingSession(BaseModel):
+    session_id: str
+    workflow_name: str
+    workflow_summary: str | None = None
+    status: Literal["intro", "teaching", "review", "approved"] = "intro"
+    steps: list[WorkflowStep] = Field(default_factory=list)
+
+
+class TeachingSessionMessageRequest(BaseModel):
+    message: str
+    step_id: str | None = None
+
+
+class TeachingSessionMessageResponse(BaseModel):
+    reply: str
+    teaching_session: TeachingSession
+
+
+class TeachingSessionReviewStepSummary(BaseModel):
+    step_id: str
+    order: int
+    title: str
+    confirmed: bool
+    bill_summary: str = ""
+    employee_explanation: str | None = None
+    observed_actions: list[BrowserAction] = Field(default_factory=list)
+    decision_rules: list[str] = Field(default_factory=list)
+    exceptions: list[str] = Field(default_factory=list)
+    required_inputs: list[str] = Field(default_factory=list)
+
+
+class TeachingSessionReviewSummary(BaseModel):
+    workflow_summary: str = ""
+    total_steps: int = 0
+    confirmed_steps: int = 0
+    unconfirmed_steps: int = 0
+    steps: list[TeachingSessionReviewStepSummary] = Field(default_factory=list)
+
+
+class TeachingSessionReviewResponse(BaseModel):
+    reply: str
+    teaching_session: TeachingSession
+    review_summary: TeachingSessionReviewSummary
+    warnings: list[str] = Field(default_factory=list)
+    draft_result: dict[str, Any] | None = None
+
+
 class BrainCommandResponse(BaseModel):
     recognized_intent: str
     command: str
     before_execution: str
     after_execution: str
+    reply: str | None = None
     selected_workflow: str | None = None
     selected_worker_uuid: str | None = None
     selected_worker_name: str | None = None
