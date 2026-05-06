@@ -1570,6 +1570,195 @@ def _parse_command_parameters(command_text: str) -> dict[str, Any]:
     return params
 
 
+def start_teaching_mode_from_command(
+    *,
+    endpoint: str,
+    tenant_id: str,
+    user_id: str,
+    message: str,
+    workflow_name: str | None,
+    target_machine_uuid: str | None,
+    session_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    logger.info(
+        "TEACHING_STARTUP_CANONICAL_PATH endpoint=%s tenant_id=%s user_id=%s target_machine_uuid=%s",
+        endpoint,
+        tenant_id,
+        user_id,
+        target_machine_uuid,
+    )
+
+    resolved_workflow_name = (workflow_name or "").strip() or _extract_workflow_name_from_conversation(message)
+    if not resolved_workflow_name:
+        return {
+            "status": "needs_workflow_name",
+            "next_required_input": "workflow_name",
+            "before_execution": "I recognized a request to start teaching a new workflow.",
+            "after_execution": "What should we call this workflow?",
+            "suggested_next_action": "Try: 'Let's create a new workflow called Member Renewal Followup'.",
+            "reply": "What should we call this workflow?",
+            "task": None,
+            "teaching_mode": None,
+            "selected_worker": None,
+            "task_id": None,
+            "draft_id": None,
+            "session_id": None,
+            "workflow_id": None,
+        }
+
+    machines = list_machines()
+    selected_worker: MachineRecord | None = None
+    if target_machine_uuid:
+        selected_worker = _find_worker_by_hint(machines, target_machine_uuid)
+        if not selected_worker or not selected_worker.online:
+            return {
+                "status": "needs_worker",
+                "next_required_input": "target_machine_uuid",
+                "before_execution": "I recognized a request to start a new teaching workflow.",
+                "after_execution": "The requested worker is not online right now.",
+                "suggested_next_action": "Choose an online worker or ask 'which worker is free'.",
+                "reply": "The requested worker is not online. Which worker should I use?",
+                "task": None,
+                "teaching_mode": None,
+                "selected_worker": None,
+                "task_id": None,
+                "draft_id": None,
+                "session_id": None,
+                "workflow_id": resolved_workflow_name,
+            }
+    else:
+        selected_worker = _select_best_worker(machines, None)
+
+    if not selected_worker:
+        return {
+            "status": "needs_worker",
+            "next_required_input": "target_machine_uuid",
+            "before_execution": "I recognized a request to start a new teaching workflow.",
+            "after_execution": "No online worker is available to open the teaching browser.",
+            "suggested_next_action": "Bring a worker online, then retry the command.",
+            "reply": "No online worker is available right now. Which worker should I use once one is online?",
+            "task": None,
+            "teaching_mode": None,
+            "selected_worker": None,
+            "task_id": None,
+            "draft_id": None,
+            "session_id": None,
+            "workflow_id": resolved_workflow_name,
+        }
+
+    draft_request = WorkflowLearningCreateRequest(
+        learning_path="demonstration",
+        workflow_name=resolved_workflow_name,
+        goal=f"Teach workflow '{resolved_workflow_name}' from conversational command.",
+        source_text="",
+    )
+    draft = _build_workflow_draft(draft_request)
+    draft_id = str(draft.get("draft_id") or "").strip()
+    session_id = str(uuid4()).strip()
+    worker_uuid = str(selected_worker.machine_uuid or "").strip()
+    if not draft_id or not session_id or not worker_uuid:
+        logger.error(
+            "TEACHING_TASK_PAYLOAD_VALIDATION_FAILED draft_id=%s session_id=%s target_machine_uuid=%s",
+            draft_id,
+            session_id,
+            worker_uuid,
+        )
+        return {
+            "status": "validation_failed",
+            "next_required_input": None,
+            "before_execution": "I recognized a request to start a new teaching workflow.",
+            "after_execution": "I could not safely create a complete teaching startup payload.",
+            "suggested_next_action": "Retry the command after verifying worker availability.",
+            "reply": "I could not start Teaching Mode because startup payload validation failed.",
+            "task": None,
+            "teaching_mode": None,
+            "selected_worker": selected_worker,
+            "task_id": None,
+            "draft_id": draft_id or None,
+            "session_id": session_id or None,
+            "workflow_id": resolved_workflow_name,
+        }
+
+    logger.info(
+        "TEACHING_TASK_PAYLOAD_VALIDATED draft_id=%s session_id=%s target_machine_uuid=%s",
+        draft_id,
+        session_id,
+        worker_uuid,
+    )
+
+    workflow_learning_drafts.append(draft)
+    _save_workflow_learning_drafts()
+
+    task_payload = {
+        "task_type": "teach_session",
+        "draft_id": draft_id,
+        "workflow_name": resolved_workflow_name,
+        "api_base": _resolve_teach_session_worker_api_base(""),
+        "start_url": "",
+        "target_machine_uuid": worker_uuid,
+        "session_id": session_id,
+    }
+    task = _create_task_record(task_payload)
+    logger.info(
+        "TEACHING_TASK_QUEUED source=%s task_id=%s draft_id=%s session_id=%s target_machine_uuid=%s workflow_name=%s",
+        endpoint,
+        task.id,
+        task_payload.get("draft_id"),
+        task_payload.get("session_id"),
+        task_payload.get("target_machine_uuid"),
+        task_payload.get("workflow_name"),
+    )
+
+    now_iso = datetime.utcnow().isoformat()
+    _teaching_startup_sessions[session_id] = {
+        "session_id": session_id,
+        "task_id": task.id,
+        "workflow_name": resolved_workflow_name,
+        "target_machine_uuid": worker_uuid,
+        "status": "browser_opening",
+        "message": "Waiting for the teaching browser to open on the worker.",
+        "overlay_enabled": True,
+        "voice_prompt_text": (
+            f"Teaching mode is starting for {resolved_workflow_name}. "
+            "Open the browser on your computer and walk me through the process step by step."
+        ),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    logger.info(
+        "TEACHING_SESSION_CREATED session_id=%s task_id=%s workflow=%s worker=%s",
+        session_id,
+        task.id,
+        resolved_workflow_name,
+        worker_uuid,
+    )
+
+    teaching_mode = TeachingStartupState(**_teaching_startup_sessions[session_id])
+    return {
+        "status": "queued",
+        "next_required_input": None,
+        "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+        "after_execution": (
+            f"Started teaching workflow '{resolved_workflow_name}' as task {task.id} on "
+            f"{selected_worker.machine_name} ({selected_worker.machine_uuid})."
+        ),
+        "suggested_next_action": (
+            "Use the teaching overlay while performing the process; Bill will capture steps and ask guiding questions."
+        ),
+        "reply": (
+            f"Started teaching workflow '{resolved_workflow_name}' on "
+            f"{selected_worker.machine_name}. Teaching overlay is ready."
+        ),
+        "task": task,
+        "teaching_mode": teaching_mode,
+        "selected_worker": selected_worker,
+        "task_id": task.id,
+        "draft_id": draft_id,
+        "session_id": session_id,
+        "workflow_id": resolved_workflow_name,
+    }
+
+
 def _create_workflow_task(
     workflow_name: str,
     target_machine_uuid: str | None = None,
@@ -5716,84 +5905,25 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
 
     if _is_new_workflow_command(command_lower):
         recognized_intent = "start_new_workflow"
-        workflow_name = _extract_workflow_name_from_conversation(command_text)
-
-        if not workflow_name:
-            before_execution = "I recognized a request to start teaching a new workflow."
-            after_execution = "What should we call this workflow?"
-            suggested_next_action = "Try: 'Let's create a new workflow called Member Renewal Followup'."
-        else:
-            selected_workflow = workflow_name
-
-            # If a specific worker was requested, require it to be online.
-            if payload.target_machine_uuid and (not selected_worker or not selected_worker.online):
-                before_execution = "I recognized a request to start a new teaching workflow."
-                after_execution = "The requested worker is not online right now."
-                suggested_next_action = "Choose an online worker or ask 'which worker is free'."
-            else:
-                if not selected_worker:
-                    selected_worker = _select_best_worker(machines, payload.target_machine_uuid)
-
-                if not selected_worker:
-                    before_execution = "I recognized a request to start a new teaching workflow."
-                    after_execution = "No online worker is available to open the teaching browser."
-                    suggested_next_action = "Bring a worker online, then retry the command."
-                else:
-                    draft_request = WorkflowLearningCreateRequest(
-                        learning_path="demonstration",
-                        workflow_name=workflow_name,
-                        goal=f"Teach workflow '{workflow_name}' from conversational command.",
-                        source_text="",
-                    )
-                    draft = _build_workflow_draft(draft_request)
-                    workflow_learning_drafts.append(draft)
-                    _save_workflow_learning_drafts()
-
-                    teach_session_id = str(uuid.uuid4())
-                    task_payload = {
-                        "task_type": "teach_session",
-                        "draft_id": draft.get("draft_id"),
-                        "workflow_name": workflow_name,
-                        "api_base": _resolve_teach_session_worker_api_base(""),
-                        "start_url": "",
-                        "target_machine_uuid": selected_worker.machine_uuid,
-                        "session_id": teach_session_id,
-                    }
-                    task = _create_task_record(task_payload)
-
-                    # ── Register teaching startup state so the frontend can poll ──
-                    _now_iso = datetime.utcnow().isoformat()
-                    _teaching_startup_sessions[teach_session_id] = {
-                        "session_id": teach_session_id,
-                        "task_id": task.id,
-                        "workflow_name": workflow_name,
-                        "target_machine_uuid": selected_worker.machine_uuid,
-                        "status": "browser_opening",
-                        "message": "Waiting for the teaching browser to open on the worker.",
-                        "overlay_enabled": True,
-                        "voice_prompt_text": (
-                            f"Teaching mode is starting for {workflow_name}. "
-                            "Open the browser on your computer and walk me through the process step by step."
-                        ),
-                        "created_at": _now_iso,
-                        "updated_at": _now_iso,
-                    }
-                    logger.info(
-                        "TEACHING_SESSION_CREATED session_id=%s task_id=%s workflow=%s worker=%s",
-                        teach_session_id,
-                        task.id,
-                        workflow_name,
-                        selected_worker.machine_uuid,
-                    )
-
-                    before_execution = "I created a teach-mode draft and prepared a worker-targeted teaching session."
-                    after_execution = (
-                        f"Started teaching workflow '{workflow_name}' as task {task.id} on "
-                        f"{selected_worker.machine_name} ({selected_worker.machine_uuid})."
-                    )
-                    suggested_next_action = (
-                        "Use the teaching overlay while performing the process; Bill will capture steps and ask guiding questions."
-                    )
+        startup = start_teaching_mode_from_command(
+            endpoint="brain_command",
+            tenant_id="internal",
+            user_id="",
+            message=command_text,
+            workflow_name=_extract_workflow_name_from_conversation(command_text),
+            target_machine_uuid=payload.target_machine_uuid,
+            session_context={
+                "interaction_id": payload.interaction_id,
+                "guided_answers": dict(payload.guided_answers or {}),
+            },
+        )
+        selected_workflow = startup.get("workflow_id")
+        selected_worker = startup.get("selected_worker") or selected_worker
+        task = startup.get("task") or task
+        teach_session_id = startup.get("session_id") or teach_session_id
+        before_execution = str(startup.get("before_execution") or before_execution)
+        after_execution = str(startup.get("after_execution") or after_execution)
+        suggested_next_action = startup.get("suggested_next_action") or suggested_next_action
 
     elif "show online workers" in command_lower or "list online workers" in command_lower:
         recognized_intent = "worker_query"
@@ -6374,6 +6504,14 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         selected_workflow=selected_workflow,
     )
 
+    teaching_mode_state = (
+        TeachingStartupState(**_teaching_startup_sessions[teach_session_id])
+        if teach_session_id and teach_session_id in _teaching_startup_sessions
+        else None
+    )
+    if teaching_mode_state is not None:
+        logger.info("TEACHING_MODE_RESPONSE_INCLUDED session_id=%s", teaching_mode_state.session_id)
+
     return BrainCommandResponse(
         recognized_intent=recognized_intent,
         command=command_text,
@@ -6394,11 +6532,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         suggested_emotion=suggested_emotion,
         suggested_style_profile=suggested_style_profile,
         voice_event_type=voice_event_type,
-        teaching_mode=(
-            TeachingStartupState(**_teaching_startup_sessions[teach_session_id])
-            if teach_session_id and teach_session_id in _teaching_startup_sessions
-            else None
-        ),
+        teaching_mode=teaching_mode_state,
     )
 
 
@@ -8465,6 +8599,17 @@ def get_next_task(machine_uuid: str):
                 _append_task_log(task, f"Task assigned to machine_uuid={machine_uuid}")
             save_task_db(task)
             logger.info("Task assigned: id=%s machine_uuid=%s", task["id"], machine_uuid)
+            payload = task.get("payload") or {}
+            if str(payload.get("task_type") or "") == "teach_session":
+                logger.info(
+                    "TEACHING_TASK_ASSIGNED task_id=%s machine_uuid=%s draft_id=%s session_id=%s target_machine_uuid=%s workflow_name=%s",
+                    task.get("id"),
+                    machine_uuid,
+                    payload.get("draft_id"),
+                    payload.get("session_id"),
+                    payload.get("target_machine_uuid"),
+                    payload.get("workflow_name"),
+                )
             return TaskRecord(**task)
 
     return None
@@ -8845,6 +8990,11 @@ def bill_chat(payload: dict = Body(default={})) -> dict:
             message=str(payload.get("message") or ""),
             target_machine_uuid=payload.get("target_machine_uuid") or None,
         )
+        logger.info(
+            "BILL_CHAT_REQUEST message=%r target_machine_uuid=%s",
+            request.message,
+            request.target_machine_uuid,
+        )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -8852,9 +9002,22 @@ def bill_chat(payload: dict = Body(default={})) -> dict:
         create_task_fn=_create_task_record,
         get_workers_fn=_bill_chat_get_workers,
         rename_worker_fn=_bill_chat_rename_worker,
+        start_teaching_mode_fn=start_teaching_mode_from_command,
     )
 
     response = service.handle_message(request)
+    if getattr(response, "teaching_mode", None):
+        logger.info(
+            "TEACHING_MODE_RESPONSE_INCLUDED session_id=%s",
+            (response.teaching_mode or {}).get("session_id"),
+        )
+    logger.info(
+        "BILL_CHAT_RESPONSE intent=%s action=%s task_id=%s workflow_id=%s",
+        response.intent,
+        response.action,
+        response.task_id,
+        response.workflow_id,
+    )
     return response.model_dump()
 
 

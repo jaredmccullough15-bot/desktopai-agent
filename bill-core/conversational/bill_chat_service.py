@@ -15,10 +15,14 @@ Supported intents (rule-based, no LLM):
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field
+
+
+logger = logging.getLogger("bill_chat_service")
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +43,10 @@ class BillChatResponse(BaseModel):
     action: Optional[str] = None
     task_id: Optional[str] = None
     workflow_id: Optional[str] = None
+    draft_id: Optional[str] = None
+    session_id: Optional[str] = None
     next_required_input: Optional[str] = None
+    teaching_mode: Optional[dict[str, Any]] = None
     metadata: dict = Field(default_factory=dict)
 
 
@@ -178,10 +185,12 @@ class BillChatService:
         create_task_fn: Callable[[dict[str, Any]], Any],
         get_workers_fn: Callable[[], dict[str, dict]],
         rename_worker_fn: Callable[[str, str], dict[str, Any]],
+        start_teaching_mode_fn: Callable[..., dict[str, Any]],
     ) -> None:
         self._create_task = create_task_fn
         self._get_workers = get_workers_fn
         self._rename_worker = rename_worker_fn
+        self._start_teaching_mode = start_teaching_mode_fn
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -212,66 +221,63 @@ class BillChatService:
 
     def _handle_start_new_workflow(self, request: BillChatRequest) -> BillChatResponse:
         workflow_name = _extract_workflow_name(request.message)
-        if not workflow_name:
-            return BillChatResponse(
-                reply="What should we call this workflow?",
-                intent="start_new_workflow",
-                next_required_input="workflow_name",
-            )
+        startup = self._start_teaching_mode(
+            endpoint="bill_chat",
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            message=request.message,
+            workflow_name=workflow_name,
+            target_machine_uuid=request.target_machine_uuid,
+            session_context={"session_id": request.session_id},
+        )
+        teaching_mode = startup.get("teaching_mode")
+        if hasattr(teaching_mode, "model_dump"):
+            teaching_mode = teaching_mode.model_dump()
 
-        task_payload: dict[str, Any] = {
-            "task_type": "teach_session",
-            "workflow_name": workflow_name,
-            "tenant_id": request.tenant_id,
-            "requested_by_user_id": request.user_id,
-        }
-        if request.target_machine_uuid:
-            task_payload["target_machine_uuid"] = request.target_machine_uuid
-
-        try:
-            task_record = self._create_task(task_payload)
-            task_id = _extract_task_id(task_record)
-            return BillChatResponse(
-                reply=f"Starting a teaching session for {workflow_name}. Opening browser on selected worker.",
-                intent="start_new_workflow",
-                action="task_queued",
-                task_id=task_id,
-                workflow_id=workflow_name,
-                metadata={"workflow_name": workflow_name},
-            )
-        except Exception as exc:
-            return BillChatResponse(
-                reply=f"Could not start teaching session: {exc}",
-                intent="start_new_workflow",
-                metadata={"error": str(exc)},
-            )
+        return BillChatResponse(
+            reply=str(startup.get("reply") or startup.get("after_execution") or ""),
+            intent="start_new_workflow",
+            action="task_queued" if startup.get("task_id") else None,
+            task_id=startup.get("task_id"),
+            workflow_id=startup.get("workflow_id"),
+            draft_id=startup.get("draft_id"),
+            session_id=startup.get("session_id"),
+            next_required_input=startup.get("next_required_input"),
+            teaching_mode=teaching_mode,
+            metadata={
+                "workflow_name": startup.get("workflow_id"),
+                "status": startup.get("status"),
+            },
+        )
 
     def _handle_start_teach_session(self, request: BillChatRequest) -> BillChatResponse:
-        task_payload: dict[str, Any] = {
-            "task_type": "teach_session",
-            "workflow_name": "teach_session",
-            "tenant_id": request.tenant_id,
-            "requested_by_user_id": request.user_id,
-        }
-        if request.target_machine_uuid:
-            task_payload["target_machine_uuid"] = request.target_machine_uuid
+        startup = self._start_teaching_mode(
+            endpoint="bill_chat",
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            message=request.message,
+            workflow_name=_extract_workflow_name(request.message),
+            target_machine_uuid=request.target_machine_uuid,
+            session_context={"session_id": request.session_id},
+        )
+        teaching_mode = startup.get("teaching_mode")
+        if hasattr(teaching_mode, "model_dump"):
+            teaching_mode = teaching_mode.model_dump()
 
-        try:
-            task_record = self._create_task(task_payload)
-            task_id = _extract_task_id(task_record)
-            return BillChatResponse(
-                reply="Opening teaching browser. Show me what you want me to learn.",
-                intent="start_teach_session",
-                action="task_queued",
-                task_id=task_id,
-                workflow_id="teach_session",
-            )
-        except Exception as exc:
-            return BillChatResponse(
-                reply=f"Could not start teaching session: {exc}",
-                intent="start_teach_session",
-                metadata={"error": str(exc)},
-            )
+        return BillChatResponse(
+            reply=str(startup.get("reply") or startup.get("after_execution") or ""),
+            intent="start_teach_session",
+            action="task_queued" if startup.get("task_id") else None,
+            task_id=startup.get("task_id"),
+            workflow_id=startup.get("workflow_id"),
+            draft_id=startup.get("draft_id"),
+            session_id=startup.get("session_id"),
+            next_required_input=startup.get("next_required_input"),
+            teaching_mode=teaching_mode,
+            metadata={
+                "status": startup.get("status"),
+            },
+        )
 
     def _handle_worker_status(self) -> BillChatResponse:
         workers = self._get_workers()

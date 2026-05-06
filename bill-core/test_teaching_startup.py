@@ -13,6 +13,7 @@ Covers:
 """
 
 import uuid
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -268,6 +269,197 @@ class TestTeachingStatusEndpoints:
         }
         res = client.get(f"/api/teaching/session/{sid}/status")
         assert res.json()["status"] == "browser_opening"
+
+
+class TestCanonicalTeachingStartupEndpoints:
+    def test_brain_command_returns_teaching_mode_and_queues_valid_payload(self, client):
+        import main as m
+        from schemas import MachineRecord
+
+        captured: dict[str, dict] = {}
+
+        def _fake_create_task(payload: dict):
+            captured["payload"] = dict(payload)
+            return m.TaskCreateResponse(id="task-brain-1", status="queued")
+
+        worker = MachineRecord(
+            machine_uuid="worker-uuid-1",
+            machine_name="Worker-A",
+            status="idle",
+            worker_version="1.0.0",
+            last_seen=datetime.utcnow().isoformat(),
+            online=True,
+            execution_mode="production",
+            current_task_id=None,
+            current_step=None,
+        )
+
+        with patch.object(m, "_create_task_record", side_effect=_fake_create_task), patch.object(
+            m, "list_machines", return_value=[worker]
+        ):
+            res = client.post(
+                "/api/brain/command",
+                json={
+                    "command": "start a new workflow called Claims Intake",
+                    "target_machine_uuid": "worker-uuid-1",
+                },
+            )
+
+        assert res.status_code == 200
+        data = res.json()
+        assert data["teaching_mode"] is not None
+        assert data["teaching_mode"]["session_id"]
+        assert captured["payload"]["task_type"] == "teach_session"
+        assert captured["payload"]["draft_id"]
+        assert captured["payload"]["session_id"]
+        assert captured["payload"]["target_machine_uuid"] == "worker-uuid-1"
+
+    def test_bill_chat_returns_teaching_mode_and_queues_valid_payload(self, client):
+        import main as m
+        from schemas import MachineRecord
+
+        captured: dict[str, dict] = {}
+
+        def _fake_create_task(payload: dict):
+            captured["payload"] = dict(payload)
+            return m.TaskCreateResponse(id="task-chat-1", status="queued")
+
+        worker = MachineRecord(
+            machine_uuid="worker-uuid-2",
+            machine_name="Worker-B",
+            status="idle",
+            worker_version="1.0.0",
+            last_seen=datetime.utcnow().isoformat(),
+            online=True,
+            execution_mode="production",
+            current_task_id=None,
+            current_step=None,
+        )
+
+        with patch.object(m, "_create_task_record", side_effect=_fake_create_task), patch.object(
+            m, "list_machines", return_value=[worker]
+        ):
+            res = client.post(
+                "/api/bill/chat",
+                json={
+                    "tenant_id": "internal",
+                    "user_id": "u-1",
+                    "session_id": "s-1",
+                    "message": "start a new workflow called Enrollment Followup",
+                    "target_machine_uuid": "worker-uuid-2",
+                },
+            )
+
+        assert res.status_code == 200
+        data = res.json()
+        assert data["teaching_mode"] is not None
+        assert data["session_id"]
+        assert data["draft_id"]
+        assert captured["payload"]["task_type"] == "teach_session"
+        assert captured["payload"]["draft_id"]
+        assert captured["payload"]["session_id"]
+        assert captured["payload"]["target_machine_uuid"] == "worker-uuid-2"
+
+    def test_missing_worker_does_not_queue_task(self, client):
+        import main as m
+
+        with patch.object(m, "_create_task_record", wraps=m._create_task_record) as create_task_mock, patch.object(
+            m, "list_machines", return_value=[]
+        ):
+            res = client.post(
+                "/api/bill/chat",
+                json={
+                    "tenant_id": "internal",
+                    "user_id": "u-1",
+                    "session_id": "s-1",
+                    "message": "start a new workflow called Enrollment Followup",
+                },
+            )
+
+        assert res.status_code == 200
+        data = res.json()
+        assert data["task_id"] is None
+        assert data["next_required_input"] == "target_machine_uuid"
+        create_task_mock.assert_not_called()
+
+    def test_missing_workflow_name_asks_for_name(self, client):
+        import main as m
+        from schemas import MachineRecord
+
+        worker = MachineRecord(
+            machine_uuid="worker-uuid-3",
+            machine_name="Worker-C",
+            status="idle",
+            worker_version="1.0.0",
+            last_seen=datetime.utcnow().isoformat(),
+            online=True,
+            execution_mode="production",
+            current_task_id=None,
+            current_step=None,
+        )
+
+        with patch.object(m, "_create_task_record", wraps=m._create_task_record) as create_task_mock, patch.object(
+            m, "list_machines", return_value=[worker]
+        ):
+            res = client.post(
+                "/api/bill/chat",
+                json={
+                    "tenant_id": "internal",
+                    "user_id": "u-1",
+                    "session_id": "s-1",
+                    "message": "start a new workflow",
+                },
+            )
+
+        assert res.status_code == 200
+        data = res.json()
+        assert data["task_id"] is None
+        assert data["next_required_input"] == "workflow_name"
+        create_task_mock.assert_not_called()
+
+    def test_bill_chat_response_shape_is_compatible(self, client):
+        import main as m
+        from schemas import MachineRecord
+
+        def _fake_create_task(payload: dict):
+            return m.TaskCreateResponse(id="task-chat-shape-1", status="queued")
+
+        worker = MachineRecord(
+            machine_uuid="worker-uuid-4",
+            machine_name="Worker-D",
+            status="idle",
+            worker_version="1.0.0",
+            last_seen=datetime.utcnow().isoformat(),
+            online=True,
+            execution_mode="production",
+            current_task_id=None,
+            current_step=None,
+        )
+
+        with patch.object(m, "_create_task_record", side_effect=_fake_create_task), patch.object(
+            m, "list_machines", return_value=[worker]
+        ):
+            res = client.post(
+                "/api/bill/chat",
+                json={
+                    "tenant_id": "internal",
+                    "user_id": "u-1",
+                    "session_id": "s-1",
+                    "message": "start a new workflow called Renewal Outreach",
+                    "target_machine_uuid": "worker-uuid-4",
+                },
+            )
+
+        assert res.status_code == 200
+        data = res.json()
+        assert "reply" in data
+        assert "intent" in data
+        assert "action" in data
+        assert "task_id" in data
+        assert "workflow_id" in data
+        assert "next_required_input" in data
+        assert "metadata" in data
+        assert "teaching_mode" in data
 
 
 if __name__ == "__main__":
