@@ -1501,6 +1501,32 @@ def send_heartbeat(machine_name: str, machine_uuid: str, runtime_state: RuntimeS
         _log_http_failure("heartbeat", heartbeat_url, error)
 
 
+def _post_teaching_session_status(
+    api_base: str,
+    session_id: str,
+    task_id: str,
+    status: str,
+    message: str = "",
+) -> None:
+    """Tell Core that a teaching browser has opened (status=active) or failed."""
+    if not session_id:
+        return
+    url = f"{api_base.rstrip('/')}/api/teaching/session/{session_id}/status"
+    body = {"status": status, "task_id": task_id or None, "message": message}
+    try:
+        resp = requests.post(url, json=body, timeout=10)
+        if resp.ok:
+            log_info(
+                f"[worker] TEACHING_SESSION_{status.upper()} session_id={session_id} task_id={task_id}"
+            )
+        else:
+            log_warn(
+                f"[worker] teaching session status update failed: {resp.status_code} {resp.text[:200]}"
+            )
+    except Exception as exc:
+        log_warn(f"[worker] teaching session status callback error: {exc}")
+
+
 def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, Any]:
     """Run the teach session browser on this worker machine so Playwright opens
     locally (on the employee's computer, not the bill-core server).
@@ -1513,6 +1539,7 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
     import sys as _sys
 
     draft_id = str(payload.get("draft_id") or "")
+    teach_session_id = str(payload.get("session_id") or "")
     requested_api_base = str(payload.get("api_base") or "").strip()
     api_base = requested_api_base.rstrip("/")
     if not api_base.startswith(("http://", "https://")):
@@ -1577,6 +1604,21 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
         )
         browser_launch_succeeded = bool((session_result or {}).get("browser_launch_succeeded"))
         log_info(f"[worker] teach_session browser launch succeeded={browser_launch_succeeded}")
+
+        # ── Notify Core that the browser is open and teaching is active ───────
+        if teach_session_id:
+            _post_teaching_session_status(
+                api_base=api_base,
+                session_id=teach_session_id,
+                task_id=str(payload.get("task_id") or ""),
+                status="active" if browser_launch_succeeded else "failed",
+                message=(
+                    "Teaching browser opened successfully. Walk me through the workflow."
+                    if browser_launch_succeeded
+                    else "Teaching browser launch was not confirmed."
+                ),
+            )
+
         if not browser_launch_succeeded:
             raise WorkflowExecutionError(
                 "Teach session browser launch was not confirmed",
@@ -1605,8 +1647,24 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
             **(session_result or {}),
         }
     except WorkflowExecutionError:
+        if teach_session_id:
+            _post_teaching_session_status(
+                api_base=api_base,
+                session_id=teach_session_id,
+                task_id=str(payload.get("task_id") or ""),
+                status="failed",
+                message="Teaching session failed before browser could open.",
+            )
         raise
     except Exception as exc:
+        if teach_session_id:
+            _post_teaching_session_status(
+                api_base=api_base,
+                session_id=teach_session_id,
+                task_id=str(payload.get("task_id") or ""),
+                status="failed",
+                message=f"Teaching session error: {exc}",
+            )
         raise WorkflowExecutionError(
             f"teach_session failed: {exc}",
             {

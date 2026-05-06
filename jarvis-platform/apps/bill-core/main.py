@@ -91,6 +91,8 @@ from schemas import (
     NavigationMapping,
     NavigationRule,
     NavigationRuleMapping,
+    TeachingStartupState,
+    TeachingStartupStatusRequest,
 )
 
 # ---------------------------------------------------------------------------
@@ -772,6 +774,11 @@ workflow_sop_summaries: list[dict[str, Any]] = _load_json_list(SOP_SUMMARIES_PAT
 interactive_prompts: list[dict[str, Any]] = _load_json_list(INTERACTIONS_PATH, "interactive prompts")
 conversation_preferences: list[dict[str, Any]] = _load_json_list(CONVERSATION_PREFS_PATH, "conversation preferences")
 workflow_learning_drafts: list[dict[str, Any]] = _load_json_list(WORKFLOW_DRAFTS_PATH, "workflow learning drafts")
+
+# ── Teaching startup session state (in-memory only, no persistence needed) ──
+# Keyed by session_id (uuid).  Holds startup state while the worker is opening
+# the teaching browser.  Frontend polls GET /api/teaching/session/{id}/status.
+_teaching_startup_sessions: dict[str, dict[str, Any]] = {}
 
 
 def _load_navigation_rules_by_tenant() -> dict[str, list[dict[str, Any]]]:
@@ -5569,6 +5576,46 @@ def _voice_metadata_for_command_response(
     return speak_response, candidate_text, emotion, style_profile, event_type
 
 
+# ── Teaching startup status endpoints ──────────────────────────────────────────
+# The worker calls POST after the browser opens/fails.
+# The frontend polls GET every 2 s until status is active or failed.
+
+@app.get("/api/teaching/session/{session_id}/status")
+def get_teaching_session_status(session_id: str) -> dict[str, Any]:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+    return rec
+
+
+@app.post("/api/teaching/session/{session_id}/status")
+def update_teaching_session_status(
+    session_id: str,
+    payload: TeachingStartupStatusRequest,
+) -> dict[str, Any]:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+
+    allowed = {"active", "failed"}
+    if payload.status not in allowed:
+        raise HTTPException(status_code=422, detail=f"status must be one of {allowed}")
+
+    rec["status"] = payload.status
+    rec["message"] = payload.message or rec.get("message", "")
+    if payload.task_id:
+        rec["task_id"] = payload.task_id
+    rec["updated_at"] = datetime.utcnow().isoformat()
+
+    logger.info(
+        "TEACHING_SESSION_STATUS_UPDATE session_id=%s status=%s task_id=%s",
+        session_id,
+        payload.status,
+        rec.get("task_id"),
+    )
+    return rec
+
+
 @app.post("/api/brain/command", response_model=BrainCommandResponse)
 def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     command_text = (payload.command or "").strip()
@@ -5591,6 +5638,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     requires_confirmation = False
     pending_interaction_id: str | None = None
     pending_questions: list[str] = []
+    teach_session_id: str | None = None  # set when a teach_session task is created
 
     worker_hint_match = re.search(r"on worker\s+(.+)$", command_text, flags=re.IGNORECASE)
     worker_hint = worker_hint_match.group(1).strip() if worker_hint_match else None
@@ -5701,6 +5749,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
                     workflow_learning_drafts.append(draft)
                     _save_workflow_learning_drafts()
 
+                    teach_session_id = str(uuid.uuid4())
                     task_payload = {
                         "task_type": "teach_session",
                         "draft_id": draft.get("draft_id"),
@@ -5708,8 +5757,34 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
                         "api_base": _resolve_teach_session_worker_api_base(""),
                         "start_url": "",
                         "target_machine_uuid": selected_worker.machine_uuid,
+                        "session_id": teach_session_id,
                     }
                     task = _create_task_record(task_payload)
+
+                    # ── Register teaching startup state so the frontend can poll ──
+                    _now_iso = datetime.utcnow().isoformat()
+                    _teaching_startup_sessions[teach_session_id] = {
+                        "session_id": teach_session_id,
+                        "task_id": task.id,
+                        "workflow_name": workflow_name,
+                        "target_machine_uuid": selected_worker.machine_uuid,
+                        "status": "browser_opening",
+                        "message": "Waiting for the teaching browser to open on the worker.",
+                        "overlay_enabled": True,
+                        "voice_prompt_text": (
+                            f"Teaching mode is starting for {workflow_name}. "
+                            "Open the browser on your computer and walk me through the process step by step."
+                        ),
+                        "created_at": _now_iso,
+                        "updated_at": _now_iso,
+                    }
+                    logger.info(
+                        "TEACHING_SESSION_CREATED session_id=%s task_id=%s workflow=%s worker=%s",
+                        teach_session_id,
+                        task.id,
+                        workflow_name,
+                        selected_worker.machine_uuid,
+                    )
 
                     before_execution = "I created a teach-mode draft and prepared a worker-targeted teaching session."
                     after_execution = (
@@ -6319,6 +6394,11 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         suggested_emotion=suggested_emotion,
         suggested_style_profile=suggested_style_profile,
         voice_event_type=voice_event_type,
+        teaching_mode=(
+            TeachingStartupState(**_teaching_startup_sessions[teach_session_id])
+            if teach_session_id and teach_session_id in _teaching_startup_sessions
+            else None
+        ),
     )
 
 
