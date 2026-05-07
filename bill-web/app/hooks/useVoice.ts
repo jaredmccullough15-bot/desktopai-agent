@@ -49,7 +49,7 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
     if (!SR) return;
 
     const rec = new SR();
-    rec.continuous = false;
+    rec.continuous = true;
     rec.interimResults = false;
     rec.lang = "en-US";
     rec.maxAlternatives = 1;
@@ -93,18 +93,21 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
       if (!SR) return;
 
       const rec = new SR();
-      rec.continuous = false;
+      rec.continuous = true;
       rec.interimResults = false;
       rec.lang = "en-US";
       rec.maxAlternatives = 1;
 
       rec.onresult = (event: AnySpeechRecognition) => {
-        const transcript = (event.results[0]?.[0]?.transcript ?? "") as string;
-        if (transcript.trim()) {
-          setLastError(null);
-          onTranscriptRef.current(transcript.trim());
+        const resultIndex = event.resultIndex ?? 0;
+        const result = event.results[resultIndex];
+        if (result && result.isFinal) {
+          const transcript = (result[0]?.transcript ?? "") as string;
+          if (transcript.trim()) {
+            setLastError(null);
+            onTranscriptRef.current(transcript.trim());
+          }
         }
-        setIsListening(false);
       };
 
       rec.onerror = (event: { error?: string }) => {
