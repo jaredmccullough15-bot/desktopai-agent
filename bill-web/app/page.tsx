@@ -662,6 +662,28 @@ export default function Home() {
 
   const selectedMachine = machines.find((machine) => machine.machine_uuid === targetMachineUuid) ?? null;
 
+  // ── Derived lists ────────────────────────────────────────────────────────────
+  const onlineWorkers = machines.filter((m) => m.status === "online" || m.status === "active");
+  const activeTasks = tasks.filter((t) => t.status === "running" || t.status === "pending");
+  const failedTasks = tasks.filter((t) => t.status === "failed");
+  const successfulTasks = tasks.filter((t) => t.status === "completed" || t.status === "success");
+
+  // ── Helpers ───────────────────────────────────────────────────────────────────
+  const cloneDraftSteps = (steps: DraftStep[]): DraftStep[] =>
+    steps.map((s) => ({ ...s, variable_inputs: [...(s.variable_inputs ?? [])], field_mappings: [...(s.field_mappings ?? [])] }));
+
+  const setFeedback = (
+    setter: React.Dispatch<React.SetStateAction<ActionFeedback | null>>,
+    kind: "success" | "error",
+    message: string,
+  ) => {
+    setter({ kind, message, timestamp: new Date().toLocaleTimeString() });
+  };
+
+  const queueBillEventSpeech = (_eventType: string, _context: Record<string, unknown>) => {
+    // Voice events handled by useBillVoice hook; this stub satisfies call sites
+  };
+
   const logTeachOverlay = useCallback((message: string, details?: Record<string, unknown>) => {
     console.info("[teach-overlay]", message, details ?? {});
   }, []);
