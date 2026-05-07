@@ -61,6 +61,10 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
     };
 
     rec.onerror = (event: { error?: string }) => {
+      if (event?.error === "aborted") {
+        setIsListening(false);
+        return;
+      }
       const errorLabel = event?.error ? ` (${event.error})` : "";
       setLastError(`Speech recognition failed${errorLabel}`);
       setIsListening(false);
@@ -101,6 +105,10 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
       };
 
       rec.onerror = (event: { error?: string }) => {
+        if (event?.error === "aborted") {
+          setIsListening(false);
+          return;
+        }
         const errorLabel = event?.error ? ` (${event.error})` : "";
         setLastError(`Speech recognition failed${errorLabel}`);
         setIsListening(false);
