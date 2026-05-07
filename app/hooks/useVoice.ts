@@ -36,6 +36,9 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const recognitionRef = useRef<AnySpeechRecognition | null>(null);
+  // Keep a stable ref so recognition callbacks always call the latest onTranscript
+  const onTranscriptRef = useRef(onTranscript);
+  useEffect(() => { onTranscriptRef.current = onTranscript; }, [onTranscript]);
   const isSupported =
     typeof window !== "undefined" &&
     ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
@@ -55,7 +58,7 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
       const transcript = (event.results[0]?.[0]?.transcript ?? "") as string;
       if (transcript.trim()) {
         setLastError(null);
-        onTranscript(transcript.trim());
+        onTranscriptRef.current(transcript.trim());
       }
       setIsListening(false);
     };
@@ -99,7 +102,7 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
         const transcript = (event.results[0]?.[0]?.transcript ?? "") as string;
         if (transcript.trim()) {
           setLastError(null);
-          onTranscript(transcript.trim());
+          onTranscriptRef.current(transcript.trim());
         }
         setIsListening(false);
       };
@@ -123,7 +126,7 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
       setLastError("Speech recognition could not start.");
       setIsListening(false);
     }
-  }, [isListening, onTranscript]);
+  }, [isListening]);
 
   const stopListening = useCallback(() => {
     recognitionRef.current?.stop();
