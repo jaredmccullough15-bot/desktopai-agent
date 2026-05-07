@@ -731,6 +731,7 @@ def run_session(
     chrome_user_data_dir: str | None = None,
     profile_directory: str = "Default",
     remote_debugging_port: int = 9222,
+    on_browser_ready: "Callable[[], None] | None" = None,
 ) -> dict[str, Any]:
     sep = "=" * 62
     print(f"\n{sep}")
@@ -957,6 +958,11 @@ def run_session(
         page = context.pages[0] if context.pages else context.new_page()
         browser_launch_succeeded = True
         print("  [teach] browser launch succeeded: True")
+        if on_browser_ready is not None:
+            try:
+                on_browser_ready()
+            except Exception as _cb_exc:
+                print(f"  [teach] on_browser_ready callback error (non-fatal): {_cb_exc}", file=sys.stderr)
         attach_page(page)
         _apply_observation_settings_to_pages(observation_settings)
 

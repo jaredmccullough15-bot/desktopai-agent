@@ -309,7 +309,6 @@ _LISTENER_JS = r"""
             els.answer.value = '';
             state.responseMode = 'text';
             updateStatus(state.paused ? 'Questions are paused for this session.' : 'You can answer, skip, or come back later.');
-            setTimeout(function () { void speakCurrentQuestion(); }, 0);
         }
 
         function showNextPrompt() {
@@ -329,50 +328,7 @@ _LISTENER_JS = r"""
         }
 
         async function speakCurrentQuestion() {
-            if (state.speakingQuestion) { return; }
-            var questionText = state.activePrompt && state.activePrompt.question
-                ? String(state.activePrompt.question)
-                : String(els.question.textContent || '');
-            if (!questionText.trim()) { return; }
-            state.speakingQuestion = true;
-            try {
-                var apiBase = String(window.__billTeachApiBase || '').replace(/\/$/, '');
-                if (apiBase) {
-                    var res = await fetch(apiBase + '/api/voice/speak', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            text: questionText,
-                            emotion: 'helpful',
-                            style_profile: 'default',
-                            context: { event: 'observation_question' }
-                        })
-                    });
-                    if (res.ok) {
-                        var blob = await res.blob();
-                        var audioUrl = URL.createObjectURL(blob);
-                        var audio = new Audio(audioUrl);
-                        audio.onended = function () { URL.revokeObjectURL(audioUrl); };
-                        audio.onerror = function () { URL.revokeObjectURL(audioUrl); };
-                        await audio.play();
-                        updateStatus('Question spoken by Bill voice.');
-                        state.speakingQuestion = false;
-                        return;
-                    }
-                }
-                if (window.speechSynthesis) {
-                    var utterance = new SpeechSynthesisUtterance(questionText);
-                    utterance.rate = 1;
-                    utterance.pitch = 1;
-                    window.speechSynthesis.cancel();
-                    window.speechSynthesis.speak(utterance);
-                    updateStatus('Question spoken locally.');
-                }
-            } catch (err) {
-                updateStatus('Question voice unavailable. Workflow capture continues.');
-            } finally {
-                state.speakingQuestion = false;
-            }
+            updateStatus('Question voice is handled by the dashboard ElevenLabs provider.');
         }
 
         function emitAnswer(action) {

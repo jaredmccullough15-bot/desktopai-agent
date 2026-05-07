@@ -1692,6 +1692,20 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
         spec.loader.exec_module(_ts)  # type: ignore[union-attr]
 
     try:
+        # Post the active callback immediately when Chrome opens (not after the
+        # entire session ends), so the frontend poll doesn't time out.
+        active_callback_sent: list[bool] = [False]
+
+        def _on_browser_ready() -> None:
+            active_callback_sent[0] = True
+            _post_teaching_session_status(
+                api_base=api_base,
+                session_id=teach_session_id,
+                task_id=str(payload.get("task_id") or ""),
+                status="active",
+                message="Teaching browser opened successfully. Walk me through the workflow.",
+            )
+
         session_result = _ts.run_session(
             draft_id,
             api_base,
@@ -1700,17 +1714,18 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
             chrome_user_data_dir=str(chrome_user_data_dir),
             profile_directory=chrome_profile_directory,
             remote_debugging_port=remote_debugging_port,
+            on_browser_ready=_on_browser_ready,
         )
         browser_launch_succeeded = bool((session_result or {}).get("browser_launch_succeeded"))
         log_info(f"[worker] teach_session browser launch succeeded={browser_launch_succeeded}")
 
-        # ── Notify Core that the browser is open and teaching is active ───────
-        if teach_session_id:
+        # ── If browser never became ready, post failure now ───────────────────
+        if teach_session_id and not active_callback_sent[0]:
             _post_teaching_session_status(
                 api_base=api_base,
                 session_id=teach_session_id,
                 task_id=str(payload.get("task_id") or ""),
-                status="active" if browser_launch_succeeded else "failed",
+                status="failed" if not browser_launch_succeeded else "active",
                 message=(
                     "Teaching browser opened successfully. Walk me through the workflow."
                     if browser_launch_succeeded

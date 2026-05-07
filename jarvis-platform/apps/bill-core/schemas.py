@@ -176,10 +176,11 @@ class TeachingStartupState(BaseModel):
     task_id: str | None = None
     workflow_name: str
     target_machine_uuid: str | None = None
+    target_machine_name: str | None = None
     status: str = "browser_opening"  # browser_opening | active | failed
     message: str = ""
     overlay_enabled: bool = True
-    voice_prompt_text: str = "Teaching mode is starting. Open the browser on your computer and walk me through the process."
+    voice_prompt_text: str = "Teaching mode is starting. Once the browser opens, tell me what this workflow does."
 
 
 class TeachingStartupStatusRequest(BaseModel):
@@ -286,6 +287,7 @@ class BrainCommandResponse(BaseModel):
     suggested_style_profile: str | None = None
     voice_event_type: str | None = None
     teaching_mode: TeachingStartupState | None = None
+    teaching_session: TeachingSession | None = None  # Apprentice-mode session included at creation
 
 
 class InteractivePromptRecord(BaseModel):

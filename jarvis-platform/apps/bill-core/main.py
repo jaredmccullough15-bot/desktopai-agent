@@ -1517,7 +1517,7 @@ def _extract_workflow_name_from_conversation(command_text: str) -> str | None:
     value = _extract_name_with_patterns(command_text, patterns)
     if not value:
         return None
-    return re.sub(r"\s+", "_", value.strip()).strip("_-")[:80] or None
+    return re.sub(r"\s+", " ", value.strip()).strip("_-")[:80] or None
 
 
 def _parse_command_parameters(command_text: str) -> dict[str, Any]:
@@ -1707,6 +1707,10 @@ def start_teaching_mode_from_command(
         "session_id": session_id,
     }
     task = _create_task_record(task_payload)
+    startup_voice_prompt = (
+        f"Teaching mode is starting for {resolved_workflow_name}. "
+        "Once the browser opens, tell me what this workflow does."
+    )
     logger.info(
         "TEACHING_TASK_QUEUED source=%s task_id=%s draft_id=%s session_id=%s target_machine_uuid=%s workflow_name=%s",
         endpoint,
@@ -1716,6 +1720,14 @@ def start_teaching_mode_from_command(
         task_payload.get("target_machine_uuid"),
         task_payload.get("workflow_name"),
     )
+    logger.info(
+        "TEACHING_BROWSER_START_REQUESTED session_id=%s task_id=%s worker_uuid=%s worker_name=%s",
+        session_id,
+        task.id,
+        worker_uuid,
+        selected_worker.machine_name,
+    )
+    logger.info("TEACHING_VOICE_TEXT_SET workflow_name=%s", resolved_workflow_name)
 
     now_iso = datetime.utcnow().isoformat()
     teaching_session = TeachingSession(
@@ -1731,13 +1743,11 @@ def start_teaching_mode_from_command(
         "draft_id": draft_id,
         "workflow_name": resolved_workflow_name,
         "target_machine_uuid": worker_uuid,
+        "target_machine_name": selected_worker.machine_name,
         "status": "browser_opening",
-        "message": "Waiting for the teaching browser to open on the worker.",
+        "message": "Waiting for worker confirmation...",
         "overlay_enabled": True,
-        "voice_prompt_text": (
-            f"Teaching mode is starting for {resolved_workflow_name}. "
-            "Open the browser on your computer and walk me through the process step by step."
-        ),
+        "voice_prompt_text": startup_voice_prompt,
         "created_at": now_iso,
         "updated_at": now_iso,
         "teaching_session": teaching_session.model_dump(),
@@ -1748,6 +1758,11 @@ def start_teaching_mode_from_command(
         task.id,
         resolved_workflow_name,
         worker_uuid,
+    )
+    logger.info(
+        "TEACHING_APPRENTICE_SESSION_CREATED session_id=%s workflow_name=%s status=intro",
+        session_id,
+        resolved_workflow_name,
     )
 
     teaching_mode = TeachingStartupState(**_teaching_startup_sessions[session_id])
@@ -1768,6 +1783,7 @@ def start_teaching_mode_from_command(
         ),
         "task": task,
         "teaching_mode": teaching_mode,
+        "teaching_session": teaching_session,
         "selected_worker": selected_worker,
         "task_id": task.id,
         "draft_id": draft_id,
@@ -5742,7 +5758,24 @@ def _voice_metadata_for_command_response(
     suggested_next_action: str | None,
     task: TaskCreateResponse | None,
     selected_workflow: str | None,
+    assistant_reply: str | None = None,
+    teaching_mode: TeachingStartupState | None = None,
 ) -> tuple[bool, str, str, str, str]:
+    if recognized_intent == "start_new_workflow":
+        candidate_text = ""
+        if teaching_mode and teaching_mode.voice_prompt_text:
+            candidate_text = teaching_mode.voice_prompt_text.strip()
+        elif assistant_reply:
+            candidate_text = assistant_reply.strip()
+
+        return (
+            bool(candidate_text),
+            candidate_text,
+            "helpful",
+            "calm",
+            "teaching_mode_starting",
+        )
+
     candidate_text = " ".join(
         part.strip() for part in [after_execution, suggested_next_action or ""] if part and part.strip()
     ).strip()
@@ -5811,6 +5844,9 @@ def update_teaching_session_status(
     rec["message"] = payload.message or rec.get("message", "")
     if payload.task_id:
         rec["task_id"] = payload.task_id
+    if payload.status == "active":
+        rec["voice_prompt_text"] = "Teaching mode is active. Walk me through what this workflow is for."
+        logger.info("TEACHING_BROWSER_ACTIVE session_id=%s", session_id)
     rec["updated_at"] = datetime.utcnow().isoformat()
 
     logger.info(
@@ -7043,6 +7079,25 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         tags=["brain", recognized_intent],
     )
 
+    teaching_mode_state = (
+        TeachingStartupState(**_teaching_startup_sessions[teach_session_id])
+        if teach_session_id and teach_session_id in _teaching_startup_sessions
+        else None
+    )
+    teaching_session_obj: TeachingSession | None = None
+    if teach_session_id and teach_session_id in _teaching_startup_sessions:
+        _raw_session = _teaching_startup_sessions[teach_session_id].get("teaching_session")
+        if _raw_session:
+            teaching_session_obj = TeachingSession(**_raw_session)
+    if teaching_mode_state is not None:
+        logger.info("TEACHING_MODE_RESPONSE_INCLUDED session_id=%s", teaching_mode_state.session_id)
+    if teaching_session_obj is not None:
+        logger.info(
+            "TEACHING_APPRENTICE_RESPONSE_INCLUDED session_id=%s status=%s",
+            teaching_session_obj.session_id,
+            teaching_session_obj.status,
+        )
+
     speak_response, voice_text, suggested_emotion, suggested_style_profile, voice_event_type = _voice_metadata_for_command_response(
         recognized_intent=recognized_intent,
         before_execution=before_execution,
@@ -7050,15 +7105,9 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         suggested_next_action=suggested_next_action,
         task=task,
         selected_workflow=selected_workflow,
+        assistant_reply=assistant_reply,
+        teaching_mode=teaching_mode_state,
     )
-
-    teaching_mode_state = (
-        TeachingStartupState(**_teaching_startup_sessions[teach_session_id])
-        if teach_session_id and teach_session_id in _teaching_startup_sessions
-        else None
-    )
-    if teaching_mode_state is not None:
-        logger.info("TEACHING_MODE_RESPONSE_INCLUDED session_id=%s", teaching_mode_state.session_id)
 
     return BrainCommandResponse(
         recognized_intent=recognized_intent,
@@ -7082,6 +7131,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         suggested_style_profile=suggested_style_profile,
         voice_event_type=voice_event_type,
         teaching_mode=teaching_mode_state,
+        teaching_session=teaching_session_obj,
     )
 
 
