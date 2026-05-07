@@ -22,6 +22,7 @@ interface UseVoiceReturn {
   isListening: boolean;
   isSpeaking: boolean;
   ttsEnabled: boolean;
+  lastError: string | null;
   setTtsEnabled: (v: boolean) => void;
   startListening: () => void;
   stopListening: () => void;
@@ -33,6 +34,7 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [lastError, setLastError] = useState<string | null>(null);
   const recognitionRef = useRef<AnySpeechRecognition | null>(null);
   const isSupported =
     typeof window !== "undefined" &&
@@ -52,12 +54,15 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
     rec.onresult = (event: AnySpeechRecognition) => {
       const transcript = (event.results[0]?.[0]?.transcript ?? "") as string;
       if (transcript.trim()) {
+        setLastError(null);
         onTranscript(transcript.trim());
       }
       setIsListening(false);
     };
 
-    rec.onerror = () => {
+    rec.onerror = (event: { error?: string }) => {
+      const errorLabel = event?.error ? ` (${event.error})` : "";
+      setLastError(`Speech recognition failed${errorLabel}`);
       setIsListening(false);
     };
 
@@ -89,18 +94,25 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
       rec.onresult = (event: AnySpeechRecognition) => {
         const transcript = (event.results[0]?.[0]?.transcript ?? "") as string;
         if (transcript.trim()) {
+          setLastError(null);
           onTranscript(transcript.trim());
         }
         setIsListening(false);
       };
 
-      rec.onerror = () => setIsListening(false);
+      rec.onerror = (event: { error?: string }) => {
+        const errorLabel = event?.error ? ` (${event.error})` : "";
+        setLastError(`Speech recognition failed${errorLabel}`);
+        setIsListening(false);
+      };
       rec.onend = () => setIsListening(false);
 
       recognitionRef.current = rec;
+      setLastError(null);
       rec.start();
       setIsListening(true);
     } catch {
+      setLastError("Speech recognition could not start.");
       setIsListening(false);
     }
   }, [isListening, onTranscript]);
@@ -151,6 +163,7 @@ export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
     isListening,
     isSpeaking,
     ttsEnabled,
+    lastError,
     setTtsEnabled,
     startListening,
     stopListening,

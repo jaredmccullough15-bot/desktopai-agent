@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import MobileNav, { type MobileView } from "./components/MobileNav";
 import MobileDashboard from "./components/MobileDashboard";
 import AlertsPanel, { type AlertItem, type AlertKind, type HelpTask } from "./components/AlertsPanel";
@@ -134,6 +134,7 @@ type TeachingStartupState = {
   task_id?: string | null;
   workflow_name: string;
   target_machine_uuid?: string | null;
+  target_machine_name?: string | null;
   status: "browser_opening" | "active" | "failed";
   message?: string;
   overlay_enabled?: boolean;
@@ -545,6 +546,42 @@ const BUTTON_DANGER =
   "rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40";
 const BUTTON_ACCENT_GHOST =
   "rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-1.5 text-xs text-cyan-200 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40";
+const UUID_LIKE_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+const TECHNICAL_SPEECH_PATTERN = /\b(?:task[_\s-]?id|session[_\s-]?id|machine[_\s-]?uuid|uuid|payload|raw json|before:|after:|task queued|debug|trace|stack)\b/i;
+
+const sanitizeTeachingSpeech = (text: string): string | null => {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (UUID_LIKE_PATTERN.test(normalized) || TECHNICAL_SPEECH_PATTERN.test(normalized)) {
+    return null;
+  }
+
+  if (normalized.startsWith("{") && normalized.endsWith("}")) {
+    const colonCount = (normalized.match(/:/g) ?? []).length;
+    const keyCount = (normalized.match(/"[^"]+"\s*:/g) ?? []).length;
+    if (colonCount >= 3 || keyCount >= 2) {
+      return null;
+    }
+  }
+
+  return normalized;
+};
+
+const isEditableTarget = (target: EventTarget | null): boolean => {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tag = target.tagName.toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") {
+    return true;
+  }
+
+  return Boolean(target.isContentEditable || target.closest("[contenteditable='true']"));
+};
 
 export default function Home() {
   const [loading, setLoading] = useState(false);
@@ -610,12 +647,17 @@ export default function Home() {
   const [guidedTeachingReviewSummary, setGuidedTeachingReviewSummary] = useState<TeachingReviewSummary | null>(null);
   const [guidedTeachingWarnings, setGuidedTeachingWarnings] = useState<string[]>([]);
   const [guidedTeachingApprovalMessage, setGuidedTeachingApprovalMessage] = useState<string | null>(null);
+  const [teachingVoiceError, setTeachingVoiceError] = useState<string | null>(null);
   // Teaching startup state — tracks browser_opening → active/failed
   const [teachingStartupState, setTeachingStartupState] = useState<TeachingStartupState | null>(null);
   const teachingStartupPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const teachingStartupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const teachingStartupPollErrorCountRef = useRef<number>(0);
   const lastSpokenTeachingSessionIdRef = useRef<string>("");
+  const lastGuidedTranscriptHashRef = useRef<string>("");
+  const lastGuidedTranscriptAtRef = useRef<number>(0);
+  const spokenGuidedReplyHashesRef = useRef<Set<string>>(new Set());
+  const [pendingTeachingTranscript, setPendingTeachingTranscript] = useState<string | null>(null);
   const [teachingStartUrl, setTeachingStartUrl] = useState<string>("");
   const [teachingTargetWorkerUuid, setTeachingTargetWorkerUuid] = useState<string>("");
   const [teachingLaunchStatus, setTeachingLaunchStatus] = useState<null | "launching" | "running" | "error">(null);
@@ -673,12 +715,30 @@ export default function Home() {
     steps.map((s) => ({ ...s, variable_inputs: [...(s.variable_inputs ?? [])], field_mappings: [...(s.field_mappings ?? [])] }));
 
   const setFeedback = (
-    setter: React.Dispatch<React.SetStateAction<ActionFeedback | null>>,
+    setter: Dispatch<SetStateAction<ActionFeedback | null>>,
     kind: "success" | "error",
     message: string,
   ) => {
     setter({ kind, message, timestamp: new Date().toLocaleTimeString() });
   };
+
+  const isTechnicalSpeechText = useCallback((text: string | null | undefined): boolean => {
+    return sanitizeTeachingSpeech(String(text || "")) === null;
+  }, []);
+
+  const getTeachingStartupSpeech = useCallback((body: BrainCommandResponse): string => {
+    const candidates = [body.teaching_mode?.voice_prompt_text, body.reply, body.voice_text]
+      .map((value) => String(value || "").trim())
+      .filter((value) => value.length > 0);
+
+    for (const candidate of candidates) {
+      if (!isTechnicalSpeechText(candidate)) {
+        return candidate;
+      }
+    }
+
+    return "";
+  }, [isTechnicalSpeechText]);
 
   const queueBillEventSpeech = (_eventType: string, _context: Record<string, unknown>) => {
     // Voice events handled by useBillVoice hook; this stub satisfies call sites
@@ -754,6 +814,12 @@ export default function Home() {
             task_id: data.task_id ?? null,
             message: data.message ?? "",
           });
+          if (data.status === "active") {
+            console.log("[teaching-browser] active callback received", {
+              session_id: sessionId,
+              workflow_name: data.workflow_name,
+            });
+          }
           setTeachingStartupState(data);
           if (data.status === "active" || data.status === "failed") {
             stopTeachingStartupPoll();
@@ -779,16 +845,45 @@ export default function Home() {
   const [autoSubmitVoiceCommands, setAutoSubmitVoiceCommands] = useState<boolean>(false);
   const lastAutoSubmittedTranscriptRef = useRef<string>("");
   const lastAutoSubmittedAtRef = useRef<number>(0);
-  const { isSupported: voiceSupported, isListening, isSpeaking, ttsEnabled, setTtsEnabled, startListening, stopListening, speak } = useVoice({
+  const { isSupported: voiceSupported, isListening, isSpeaking, ttsEnabled, setTtsEnabled, startListening, stopListening, speak, lastError: voiceLastError } = useVoice({
     onTranscript: (text) => {
       const transcript = text.trim();
       if (!transcript) {
         return;
       }
 
+      setTeachingVoiceError(null);
       setChatInput(transcript);
       if (guidedTeachingSession) {
         setGuidedTeachingInput(transcript);
+      }
+
+      const canSendToTeachingChat =
+        Boolean(guidedTeachingSession) &&
+        Boolean(teachingOverlayOpen) &&
+        (guidedTeachingSession?.status === "intro" ||
+          guidedTeachingSession?.status === "teaching" ||
+          guidedTeachingSession?.status === "review" ||
+          teachingStartupState?.status === "browser_opening" ||
+          teachingStartupState?.status === "active");
+
+      if (canSendToTeachingChat) {
+        const normalized = transcript.replace(/\s+/g, " ").toLowerCase();
+        const hash = hashText(`${guidedTeachingSession?.sessionId ?? "session"}|${normalized}`);
+        const now = Date.now();
+        const isDuplicate =
+          hash === lastGuidedTranscriptHashRef.current &&
+          now - lastGuidedTranscriptAtRef.current < 8000;
+
+        if (!isDuplicate) {
+          lastGuidedTranscriptHashRef.current = hash;
+          lastGuidedTranscriptAtRef.current = now;
+          setPendingTeachingTranscript(transcript);
+          console.log("[teaching-voice] final transcript sent to teaching chat", {
+            session_id: guidedTeachingSession?.sessionId ?? null,
+          });
+        }
+        return;
       }
 
       if (!autoSubmitVoiceCommands) {
@@ -905,9 +1000,9 @@ export default function Home() {
     return `Clicked ${action.label || "element"}`;
   }, []);
 
-  const submitGuidedTeachingMessage = useCallback(async () => {
+  const submitGuidedTeachingMessage = useCallback(async (overrideMessage?: string) => {
     if (!guidedTeachingSession || guidedTeachingBusy) return;
-    const message = guidedTeachingInput.trim();
+    const message = (overrideMessage ?? guidedTeachingInput).trim();
     if (!message) return;
 
     const targetStepId = guidedTeachingTargetStepId;
@@ -953,6 +1048,15 @@ export default function Home() {
       setGuidedTeachingBusy(false);
     }
   }, [guidedTeachingBusy, guidedTeachingInput, guidedTeachingSession, guidedTeachingTargetStepId, mapApiTeachingSession]);
+
+  useEffect(() => {
+    if (!pendingTeachingTranscript || !guidedTeachingSession || guidedTeachingBusy) {
+      return;
+    }
+
+    void submitGuidedTeachingMessage(pendingTeachingTranscript);
+    setPendingTeachingTranscript((current) => (current === pendingTeachingTranscript ? null : current));
+  }, [pendingTeachingTranscript, guidedTeachingBusy, guidedTeachingSession, submitGuidedTeachingMessage]);
 
   const confirmGuidedTeachingStep = useCallback(
     async (stepId: string) => {
@@ -1021,6 +1125,76 @@ export default function Home() {
       setGuidedTeachingBusy(false);
     }
   }, [applyGuidedTeachingApiResponse, guidedTeachingBusy, guidedTeachingSession]);
+
+  const teachingHotkeyEnabled =
+    Boolean(guidedTeachingSession) &&
+    Boolean(teachingOverlayOpen) &&
+    (guidedTeachingSession?.status === "intro" ||
+      guidedTeachingSession?.status === "teaching" ||
+      guidedTeachingSession?.status === "review" ||
+      teachingStartupState?.status === "browser_opening" ||
+      teachingStartupState?.status === "active");
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isBacktick = event.key === "`" || event.code === "Backquote";
+      if (!isBacktick) {
+        return;
+      }
+
+      if (!teachingHotkeyEnabled) {
+        const reason = !guidedTeachingSession
+          ? "no_session"
+          : !teachingOverlayOpen
+            ? "overlay_closed"
+            : `status_${guidedTeachingSession.status}`;
+        console.log(`[teaching-voice] hotkey ignored reason=${reason}`);
+        return;
+      }
+
+      if (isEditableTarget(event.target)) {
+        console.log("[teaching-voice] hotkey ignored reason=input_focus");
+        return;
+      }
+
+      event.preventDefault();
+
+      if (!voiceSupported) {
+        setTeachingVoiceError("Mic unavailable. Check browser microphone permissions.");
+        console.log("[teaching-voice] hotkey ignored reason=mic_unavailable");
+        return;
+      }
+
+      setTeachingVoiceError(null);
+      if (isListening) {
+        stopListening();
+        return;
+      }
+
+      console.log("[teaching-voice] hotkey mic start");
+      startListening();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [guidedTeachingSession, isListening, startListening, stopListening, teachingHotkeyEnabled, teachingOverlayOpen, voiceSupported]);
+
+  useEffect(() => {
+    if (!voiceLastError || !teachingHotkeyEnabled) {
+      return;
+    }
+    setTeachingVoiceError(`Mic error: ${voiceLastError}`);
+  }, [teachingHotkeyEnabled, voiceLastError]);
+
+  useEffect(() => {
+    if (!guidedTeachingSession?.sessionId) {
+      spokenGuidedReplyHashesRef.current.clear();
+      return;
+    }
+    spokenGuidedReplyHashesRef.current.clear();
+  }, [guidedTeachingSession?.sessionId]);
 
   const continueGuidedTeachingSession = useCallback(async () => {
     if (!guidedTeachingSession || guidedTeachingBusy) return;
@@ -1125,14 +1299,114 @@ export default function Home() {
     if (status !== "active") return;
     if (lastSpokenTeachingSessionIdRef.current === session_id) return;
     lastSpokenTeachingSessionIdRef.current = session_id;
-    const promptText = voice_prompt_text || "Teaching mode is now active. Walk me through the workflow.";
+    const promptText = voice_prompt_text?.trim() || "Teaching mode is active. Walk me through what this workflow is for.";
+    if (isTechnicalSpeechText(promptText)) {
+      console.log("[teaching-voice] skipped technical speech", {
+        phase: "active",
+        session_id,
+      });
+      return;
+    }
     logTeachOverlay("voice prompt trigger", {
       session_id,
       status,
       voice_provider: commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured ? "bill_voice" : "browser_tts",
       prompt_preview: promptText.slice(0, 120),
     });
-  }, [teachingStartupState, commandVoiceEnabled, billVoice.config, logTeachOverlay]);
+    console.log("[teaching-voice] speaking active prompt", {
+      session_id,
+      workflow_name: teachingStartupState.workflow_name,
+    });
+
+    void (async () => {
+      const spoken = commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured
+        ? await billVoice.speakText({
+            text: promptText,
+            emotion: commandVoiceEmotion,
+            style_profile: commandVoiceStyleProfile,
+            task_id: teachingStartupState.task_id ?? undefined,
+            workflow_name: teachingStartupState.workflow_name,
+            context: {
+              event_type: "teaching_mode_active",
+              source: "teaching_startup_status",
+              session_id,
+            },
+          })
+        : false;
+
+      if (!spoken) {
+        speak(promptText);
+      }
+    })();
+  }, [
+    teachingStartupState,
+    commandVoiceEnabled,
+    billVoice,
+    commandVoiceEmotion,
+    commandVoiceStyleProfile,
+    isTechnicalSpeechText,
+    logTeachOverlay,
+    speak,
+  ]);
+
+  useEffect(() => {
+    if (!guidedTeachingSession || guidedTeachingMessages.length === 0) {
+      return;
+    }
+
+    const latestAssistant = [...guidedTeachingMessages].reverse().find((entry) => entry.role === "assistant");
+    if (!latestAssistant) {
+      return;
+    }
+
+    const dedupeHash = hashText(`${guidedTeachingSession.sessionId}|${latestAssistant.message}`);
+    if (spokenGuidedReplyHashesRef.current.has(dedupeHash)) {
+      console.log("[teaching-voice] skipped duplicate reply", {
+        session_id: guidedTeachingSession.sessionId,
+      });
+      return;
+    }
+
+    spokenGuidedReplyHashesRef.current.add(dedupeHash);
+    const sanitized = sanitizeTeachingSpeech(latestAssistant.message);
+    if (!sanitized) {
+      console.log("[teaching-voice] skipped technical reply", {
+        session_id: guidedTeachingSession.sessionId,
+      });
+      return;
+    }
+
+    console.log("[teaching-voice] speaking floating chat reply", {
+      session_id: guidedTeachingSession.sessionId,
+    });
+
+    void (async () => {
+      const spoken = commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured
+        ? await billVoice.speakText({
+            text: sanitized,
+            emotion: commandVoiceEmotion,
+            style_profile: commandVoiceStyleProfile,
+            workflow_name: guidedTeachingSession.workflowName,
+            context: {
+              event_type: "teaching_floating_chat_reply",
+              session_id: guidedTeachingSession.sessionId,
+            },
+          })
+        : false;
+
+      if (!spoken) {
+        speak(sanitized);
+      }
+    })();
+  }, [
+    billVoice,
+    commandVoiceEmotion,
+    commandVoiceEnabled,
+    commandVoiceStyleProfile,
+    guidedTeachingMessages,
+    guidedTeachingSession,
+    speak,
+  ]);
 
   const saveDraftStructure = async (draft: WorkflowLearningDraft) => {
     if (learningBusyKey) {
@@ -1516,6 +1790,13 @@ export default function Home() {
     }
   };
 
+  useEffect(() => {
+    if (guidedTeachingSession?.status !== "approved") {
+      return;
+    }
+    void loadBrainPanels();
+  }, [guidedTeachingSession?.status]);
+
   const createTestTask = async () => {
     await submitTask({ payload: { source: "bill-web", type: "test" } });
   };
@@ -1824,7 +2105,17 @@ export default function Home() {
       ]);
       setLastCommandResponseText(isTeachingStart && body.reply ? body.reply : lines.join(". "));
 
-      const responseVoiceText = (body.voice_text ?? "").trim() || lines.join(". ");
+      let responseVoiceText = (body.voice_text ?? "").trim() || lines.join(". ");
+      if (isTeachingStart) {
+        responseVoiceText = getTeachingStartupSpeech(body);
+        if (!responseVoiceText) {
+          console.log("[teaching-voice] skipped technical speech", {
+            phase: "startup",
+            recognized_intent: body.recognized_intent,
+          });
+        }
+      }
+
       if (commandVoiceEnabled && body.speak_response !== false && responseVoiceText) {
         const responseId = [
           body.task?.id ?? "",
@@ -1842,6 +2133,11 @@ export default function Home() {
           now - lastVoiceEventRef.current.at < 5000;
 
         if (!isDuplicateReplay && !isDuplicateQuickReplay && !eventJustSpokeSimilar) {
+          if (isTeachingStart) {
+            console.log("[teaching-voice] speaking startup prompt", {
+              workflow_name: body.selected_workflow ?? body.teaching_mode?.workflow_name ?? null,
+            });
+          }
           const spoken = await billVoice.speakText({
             text: responseVoiceText,
             emotion: body.suggested_emotion ?? commandVoiceEmotion,
@@ -1865,7 +2161,7 @@ export default function Home() {
         }
       }
 
-      if (body.task?.id && body.selected_workflow) {
+      if (!isTeachingStart && body.task?.id && body.selected_workflow) {
         queueBillEventSpeech("workflow_started", {
           taskId: body.task.id,
           workflowName: body.selected_workflow,
@@ -1880,6 +2176,10 @@ export default function Home() {
           workflow_name: body.teaching_mode.workflow_name,
           has_teaching_session: Boolean(body.teaching_session),
           recognized_intent: body.recognized_intent,
+        });
+        console.log("[teaching-browser] waiting for worker browser callback", {
+          session_id: body.teaching_mode.session_id,
+          worker_name: body.teaching_mode.target_machine_name ?? body.selected_worker_name ?? null,
         });
         logTeachOverlay("teaching_mode response received", {
           session_id: body.teaching_mode.session_id,
@@ -3256,12 +3556,14 @@ export default function Home() {
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Mode</p>
                   <h3 className="text-sm font-semibold text-white">
                     {teachingStartupState.status === "browser_opening"
-                      ? `Starting teaching session for "${teachingStartupState.workflow_name}"...`
-                      : `Teaching session failed for "${teachingStartupState.workflow_name}"`}
+                      ? `Opening teaching browser on ${teachingStartupState.target_machine_name || "selected worker"}`
+                      : `Teaching browser failed for ${teachingStartupState.workflow_name}`}
                   </h3>
-                  {teachingStartupState.message ? (
-                    <p className="mt-0.5 text-xs text-slate-400">{teachingStartupState.message}</p>
-                  ) : null}
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    {teachingStartupState.status === "browser_opening"
+                      ? "Waiting for worker confirmation..."
+                      : "Bill could not open the teaching browser. Restart the worker and try again."}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -3355,6 +3657,22 @@ export default function Home() {
               <div className="mt-4 grid grid-cols-1 gap-3">
                 <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Floating Chat Panel</p>
+                  <p className="mt-1 text-xs text-slate-400">Press ` to talk to Bill</p>
+                  <p className="mt-1 text-xs text-indigo-200">
+                    {!voiceSupported
+                      ? "Mic unavailable"
+                      : isListening
+                        ? "Listening..."
+                        : pendingTeachingTranscript || guidedTeachingBusy
+                          ? "Processing..."
+                          : "Ready"}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-500">Bill will speak his replies aloud.</p>
+                  {teachingVoiceError && (
+                    <p className="mt-2 rounded-md border border-rose-400/40 bg-rose-500/10 px-2 py-1.5 text-xs text-rose-100">
+                      {teachingVoiceError}
+                    </p>
+                  )}
                   <div className="mt-2 max-h-40 space-y-2 overflow-auto pr-1 text-sm">
                     {guidedTeachingMessages.map((entry, index) => (
                       <div
@@ -3398,7 +3716,7 @@ export default function Home() {
 
                 <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Live Workflow Step Cards</p>
-                  <div className="mt-2 space-y-2">
+                  <div className="mt-2 max-h-[46vh] space-y-2 overflow-y-auto pr-1">
                     {guidedTeachingSession.steps.length === 0 ? (
                       <div className="rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-3 text-sm text-slate-300">
                         Step cards are ready. As you teach, Bill will add summarized steps here.
