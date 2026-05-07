@@ -2983,8 +2983,40 @@ def _to_executable_browser_steps(draft_steps: list[dict[str, Any]]) -> list[dict
         elif action == "take_screenshot":
             executable.append({"action": "take_screenshot", "name": draft_step.get("name") or "draft-capture"})
 
-    if not executable:
-        raise HTTPException(status_code=400, detail="Draft has no executable steps. Resolve manual-review steps first.")
+        elif action == "select_option":
+            selector = str(draft_step.get("selector") or "").strip()
+            if selector:
+                executable.append(
+                    {
+                        "action": "select_option",
+                        "selector": selector,
+                        "value": str(draft_step.get("value") or ""),
+                        "timeout_ms": 20000,
+                    }
+                )
+        elif action in ("fill_field", "input_text"):
+            selector = str(draft_step.get("selector") or "").strip()
+            if selector:
+                executable.append(
+                    {
+                        "action": "type_text",
+                        "selector": selector,
+                        "value": str(draft_step.get("value") or ""),
+                        "timeout_ms": 20000,
+                    }
+                )
+        elif action in ("manual_step", "manual_approval", ""):
+            executable.append(
+                {
+                    "action": "manual_step",
+                    "instruction": str(
+                        draft_step.get("instruction")
+                        or draft_step.get("step_name")
+                        or draft_step.get("name")
+                        or f"Step {draft_step.get('step_order', '?')}"
+                    ),
+                }
+            )
 
     return executable
 
