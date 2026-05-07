@@ -264,6 +264,7 @@ type BrainCommandResponse = {
   suggested_style_profile?: string | null;
   voice_event_type?: string | null;
   teaching_mode?: TeachingStartupState | null;
+  teaching_session?: TeachingSessionApiResponse["teaching_session"] | null;
 };
 
 type DraftVariableInput = {
@@ -1788,15 +1789,22 @@ export default function Home() {
         lines.push(`Next: ${body.suggested_next_action}`);
       }
 
+      // For teaching-start commands, show the conversational reply in chat instead of
+      // technical Before/After/Task-ID details (which expose internals to the employee).
+      const isTeachingStart = body.recognized_intent === "start_new_workflow";
+      const chatMessage = isTeachingStart && body.reply
+        ? body.reply
+        : lines.join("\n");
+
       setChatHistory((current) => [
         ...current,
         {
           role: "assistant",
-          message: lines.join("\n"),
+          message: chatMessage,
           suggestedNextAction: body.suggested_next_action ?? undefined,
         },
       ]);
-      setLastCommandResponseText(lines.join(". "));
+      setLastCommandResponseText(isTeachingStart && body.reply ? body.reply : lines.join(". "));
 
       const responseVoiceText = (body.voice_text ?? "").trim() || lines.join(". ");
       if (commandVoiceEnabled && body.speak_response !== false && responseVoiceText) {
@@ -1849,6 +1857,12 @@ export default function Home() {
 
       // ── Teaching startup ──────────────────────────────────────────────────
       if (body.teaching_mode?.session_id) {
+        console.log("[teaching-apprentice] command response received", {
+          session_id: body.teaching_mode.session_id,
+          workflow_name: body.teaching_mode.workflow_name,
+          has_teaching_session: Boolean(body.teaching_session),
+          recognized_intent: body.recognized_intent,
+        });
         logTeachOverlay("teaching_mode response received", {
           session_id: body.teaching_mode.session_id,
           status: body.teaching_mode.status,
@@ -1863,11 +1877,37 @@ export default function Home() {
           });
           setTeachingOverlayOpen(true);
         }
-        beginGuidedTeachingSession(body.teaching_mode, body.reply);
+        if (body.teaching_session) {
+          setGuidedTeachingSession(mapApiTeachingSession(body.teaching_session));
+          setGuidedTeachingInput("");
+          setGuidedTeachingReviewSummary(null);
+          setGuidedTeachingWarnings([]);
+          setGuidedTeachingApprovalMessage(null);
+          setGuidedTeachingMessages([
+            {
+              role: "assistant",
+              message:
+                body.reply?.trim() ||
+                `Sounds good. I started a teaching session for ${body.teaching_session.workflow_name}. Can you give me a quick explanation of what this workflow does?`,
+            },
+          ]);
+        } else {
+          beginGuidedTeachingSession(body.teaching_mode, body.reply);
+        }
+        console.log("[teaching-apprentice] session initialized", {
+          session_id: body.teaching_mode.session_id,
+          workflow_name: body.teaching_session?.workflow_name ?? body.teaching_mode.workflow_name,
+          status: body.teaching_session?.status ?? "intro",
+        });
+        console.log("[teaching-apprentice] showing apprentice panel");
         startTeachingStartupPoll(body.teaching_mode.session_id);
-      } else if (body.task?.id && body.recognized_intent === "start_new_workflow") {
+      } else if (body.recognized_intent === "start_new_workflow") {
+        const reason = body.task?.id
+          ? "teaching_mode missing in response despite task created"
+          : "no worker available or session creation failed";
+        console.log("[teaching-apprentice] fell back to legacy teaching UI", { reason, task_id: body.task?.id ?? null });
         logTeachOverlay("teaching_mode missing in response", {
-          task_id: body.task.id,
+          task_id: body.task?.id ?? null,
           recognized_intent: body.recognized_intent,
           selected_workflow: body.selected_workflow ?? null,
         });

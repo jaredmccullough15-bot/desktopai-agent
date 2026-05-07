@@ -1517,7 +1517,7 @@ def _extract_workflow_name_from_conversation(command_text: str) -> str | None:
     value = _extract_name_with_patterns(command_text, patterns)
     if not value:
         return None
-    return re.sub(r"\s+", "_", value.strip()).strip("_-")[:80] or None
+    return re.sub(r"\s+", " ", value.strip()).strip("_-")[:80] or None
 
 
 def _parse_command_parameters(command_text: str) -> dict[str, Any]:
@@ -1749,6 +1749,11 @@ def start_teaching_mode_from_command(
         resolved_workflow_name,
         worker_uuid,
     )
+    logger.info(
+        "TEACHING_APPRENTICE_SESSION_CREATED session_id=%s workflow_name=%s status=intro",
+        session_id,
+        resolved_workflow_name,
+    )
 
     teaching_mode = TeachingStartupState(**_teaching_startup_sessions[session_id])
     return {
@@ -1768,6 +1773,7 @@ def start_teaching_mode_from_command(
         ),
         "task": task,
         "teaching_mode": teaching_mode,
+        "teaching_session": teaching_session,
         "selected_worker": selected_worker,
         "task_id": task.id,
         "draft_id": draft_id,
@@ -7057,8 +7063,19 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         if teach_session_id and teach_session_id in _teaching_startup_sessions
         else None
     )
+    teaching_session_obj: TeachingSession | None = None
+    if teach_session_id and teach_session_id in _teaching_startup_sessions:
+        _raw_session = _teaching_startup_sessions[teach_session_id].get("teaching_session")
+        if _raw_session:
+            teaching_session_obj = TeachingSession(**_raw_session)
     if teaching_mode_state is not None:
         logger.info("TEACHING_MODE_RESPONSE_INCLUDED session_id=%s", teaching_mode_state.session_id)
+    if teaching_session_obj is not None:
+        logger.info(
+            "TEACHING_APPRENTICE_RESPONSE_INCLUDED session_id=%s status=%s",
+            teaching_session_obj.session_id,
+            teaching_session_obj.status,
+        )
 
     return BrainCommandResponse(
         recognized_intent=recognized_intent,
@@ -7082,6 +7099,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         suggested_style_profile=suggested_style_profile,
         voice_event_type=voice_event_type,
         teaching_mode=teaching_mode_state,
+        teaching_session=teaching_session_obj,
     )
 
 

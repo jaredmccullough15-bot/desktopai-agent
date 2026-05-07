@@ -286,6 +286,7 @@ class BrainCommandResponse(BaseModel):
     suggested_style_profile: str | None = None
     voice_event_type: str | None = None
     teaching_mode: TeachingStartupState | None = None
+    teaching_session: TeachingSession | None = None  # Apprentice-mode session included at creation
 
 
 class InteractivePromptRecord(BaseModel):

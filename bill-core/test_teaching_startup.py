@@ -314,6 +314,48 @@ class TestCanonicalTeachingStartupEndpoints:
         assert captured["payload"]["session_id"]
         assert captured["payload"]["target_machine_uuid"] == "worker-uuid-1"
 
+    def test_brain_command_includes_apprentice_teaching_session_intro(self, client):
+        import main as m
+        from schemas import MachineRecord
+
+        def _fake_create_task(payload: dict):
+            return m.TaskCreateResponse(id="task-brain-intro", status="queued")
+
+        worker = MachineRecord(
+            machine_uuid="worker-uuid-intro",
+            machine_name="Worker-Intro",
+            status="idle",
+            worker_version="1.0.0",
+            last_seen=datetime.utcnow().isoformat(),
+            online=True,
+            execution_mode="production",
+            current_task_id=None,
+            current_step=None,
+        )
+
+        with patch.object(m, "_create_task_record", side_effect=_fake_create_task), patch.object(
+            m, "list_machines", return_value=[worker]
+        ):
+            res = client.post(
+                "/api/brain/command",
+                json={
+                    "command": "Let's create a new workflow called Test Workflow",
+                    "target_machine_uuid": "worker-uuid-intro",
+                },
+            )
+
+        assert res.status_code == 200
+        data = res.json()
+        assert data["recognized_intent"] == "start_new_workflow"
+        assert data["teaching_session"] is not None
+        assert data["teaching_session"]["status"] == "intro"
+        assert data["teaching_session"]["workflow_name"] == "Test Workflow"
+        assert data["teaching_session"]["workflow_summary"] is None
+        assert data["teaching_session"]["steps"] == []
+        assert data["reply"] is not None
+        assert "started a teaching session" in data["reply"].lower()
+        assert "quick explanation" in data["reply"].lower()
+
     def test_bill_chat_returns_teaching_mode_and_queues_valid_payload(self, client):
         import main as m
         from schemas import MachineRecord
