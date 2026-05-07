@@ -33,15 +33,21 @@ interface UseVoiceReturn {
 export function useVoice({ onTranscript }: UseVoiceOptions): UseVoiceReturn {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
   const [lastError, setLastError] = useState<string | null>(null);
   const recognitionRef = useRef<AnySpeechRecognition | null>(null);
   // Keep a stable ref so recognition callbacks always call the latest onTranscript
   const onTranscriptRef = useRef(onTranscript);
   useEffect(() => { onTranscriptRef.current = onTranscript; }, [onTranscript]);
-  const isSupported =
-    typeof window !== "undefined" &&
-    ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
+  const [isSupported, setIsSupported] = useState(false);
+
+  // Keep support detection stable across SSR/client hydration.
+  useEffect(() => {
+    const supported =
+      typeof window !== "undefined" &&
+      ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
+    setIsSupported(supported);
+  }, []);
 
   // initialise recognition once on mount
   useEffect(() => {
