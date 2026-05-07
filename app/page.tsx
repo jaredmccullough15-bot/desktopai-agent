@@ -1110,7 +1110,7 @@ export default function Home() {
       voice_provider: commandVoiceEnabled && billVoice.config?.voice_enabled && billVoice.config?.configured ? "bill_voice" : "browser_tts",
       prompt_preview: promptText.slice(0, 120),
     });
-  };
+  }, [teachingStartupState, commandVoiceEnabled, billVoice.config, logTeachOverlay]);
 
   const saveDraftStructure = async (draft: WorkflowLearningDraft) => {
     if (learningBusyKey) {
