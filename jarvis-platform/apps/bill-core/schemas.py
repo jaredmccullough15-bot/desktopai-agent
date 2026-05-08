@@ -488,6 +488,8 @@ class WorkflowLearningDraftRecord(BaseModel):
     goal: str
     description: str
     required_inputs: list[str] = Field(default_factory=list)
+    identity_required: bool = False
+    identity_fields: list[str] = Field(default_factory=list)
     required_session_state: list[str] = Field(default_factory=list)
     safe_for_unattended: bool = False
     steps: list[dict[str, Any]] = Field(default_factory=list)
@@ -530,6 +532,8 @@ class WorkflowDraftPublishRequest(BaseModel):
 class WorkflowDraftStructureUpdateRequest(BaseModel):
     steps: list[dict[str, Any]] | None = None
     required_inputs: list[str] | None = None
+    identity_required: bool | None = None
+    identity_fields: list[str] | None = None
     validation_rules: list[str] | None = None
     fallback_strategies: list[str] | None = None
     common_failures: list[str] | None = None
