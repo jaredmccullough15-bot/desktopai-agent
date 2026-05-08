@@ -39,6 +39,7 @@ REQUIRED_ROOT_FILES = [
     "elevenlabs_voice_service.py",  # Phase Voice: ElevenLabs TTS service
     "bill_voice_events.py",  # Phase Voice: event-to-speech mapping
     "task_service.py",  # Task service used by main.py and conversational module
+    "teaching_reasoning_service.py",  # Teaching Mode deterministic reasoning layer
 ]
 
 REQUIRED_DIRS = [

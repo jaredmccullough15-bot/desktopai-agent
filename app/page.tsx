@@ -158,6 +158,11 @@ type WorkflowStep = {
   observedActions: BrowserAction[];
   employeeExplanation?: string;
   billSummary: string;
+  billConfidence: number;
+  pendingQuestion?: string;
+  reasoningReason?: string;
+  needsReasoning: boolean;
+  unansweredQuestion: boolean;
   decisionRules: string[];
   exceptions: string[];
   requiredInputs: string[];
@@ -194,6 +199,11 @@ type TeachingSessionApiResponse = {
       }>;
       employee_explanation?: string | null;
       bill_summary?: string;
+      bill_confidence?: number;
+      pending_question?: string | null;
+      reasoning_reason?: string | null;
+      needs_reasoning?: boolean;
+      unanswered_question?: boolean;
       decision_rules?: string[];
       exceptions?: string[];
       required_inputs?: string[];
@@ -926,6 +936,11 @@ export default function Home() {
         })),
         employeeExplanation: step.employee_explanation ?? undefined,
         billSummary: step.bill_summary ?? "",
+        billConfidence: Number(step.bill_confidence ?? 0),
+        pendingQuestion: step.pending_question ?? undefined,
+        reasoningReason: step.reasoning_reason ?? undefined,
+        needsReasoning: Boolean(step.needs_reasoning),
+        unansweredQuestion: Boolean(step.unanswered_question),
         decisionRules: step.decision_rules ?? [],
         exceptions: step.exceptions ?? [],
         requiredInputs: step.required_inputs ?? [],
@@ -3734,6 +3749,14 @@ export default function Home() {
                             </span>
                           </div>
                           <p className="mt-2 text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
+                          <div className="mt-2 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
+                            <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">What Bill thinks he learned</p>
+                            <p className="mt-1 text-xs text-cyan-100">{step.billSummary || "Bill is still interpreting this step."}</p>
+                            <p className="mt-1 text-[11px] text-cyan-200/90">Confidence: {(Math.max(0, Math.min(1, step.billConfidence || 0)) * 100).toFixed(0)}%</p>
+                            {step.pendingQuestion && (
+                              <p className="mt-1 text-xs text-cyan-50">{step.pendingQuestion}</p>
+                            )}
+                          </div>
                           <div className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-2">
                             <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
                             {step.observedActions.length === 0 ? (
@@ -3763,11 +3786,11 @@ export default function Home() {
                               type="button"
                               onClick={() => {
                                 setGuidedTeachingTargetStepId(step.id);
-                                setGuidedTeachingInput(`Edit Step ${step.order}: `);
+                                setGuidedTeachingInput(`Not quite for Step ${step.order}: `);
                               }}
                               className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
                             >
-                              Edit
+                              Not quite
                             </button>
                             <button
                               type="button"

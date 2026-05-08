@@ -212,6 +212,12 @@ class WorkflowStep(BaseModel):
     observed_actions: list[BrowserAction] = Field(default_factory=list)
     employee_explanation: str | None = None
     bill_summary: str = ""
+    bill_confidence: float = 0.0
+    pending_question: str | None = None
+    reasoning_reason: str | None = None
+    needs_reasoning: bool = False
+    unanswered_question: bool = False
+    last_reasoned_at: str | None = None
     decision_rules: list[str] = Field(default_factory=list)
     exceptions: list[str] = Field(default_factory=list)
     required_inputs: list[str] = Field(default_factory=list)
@@ -234,6 +240,22 @@ class TeachingSessionMessageRequest(BaseModel):
 class TeachingSessionMessageResponse(BaseModel):
     reply: str
     teaching_session: TeachingSession
+
+
+class TeachingReasoningRequest(BaseModel):
+    step_id: str | None = None
+    latest_employee_message: str | None = None
+
+
+class TeachingReasoningResponse(BaseModel):
+    bill_summary: str
+    suggested_step_title: str
+    question: str
+    confidence: float
+    should_interrupt: bool
+    reason: str
+    step_id: str | None = None
+    step_order: int | None = None
 
 
 class TeachingSessionReviewStepSummary(BaseModel):

@@ -41,6 +41,7 @@ from timeout_recovery import (
     get_or_create_recovery_state,
     clear_recovery_state,
 )
+from teaching_reasoning_service import analyze_teaching_reasoning
 from schemas import (
     BrainCommandRequest,
     BrainCommandResponse,
@@ -100,6 +101,8 @@ from schemas import (
     TeachingSessionActionRequest,
     TeachingSessionMessageRequest,
     TeachingSessionMessageResponse,
+    TeachingReasoningRequest,
+    TeachingReasoningResponse,
     WorkflowStep,
 )
 
@@ -5888,6 +5891,50 @@ def update_teaching_session_status(
     return rec
 
 
+def _compose_teaching_reasoning_message(step_order: int, reasoning: dict[str, Any]) -> str:
+    summary = str(reasoning.get("bill_summary") or "").strip()
+    question = str(reasoning.get("question") or "").strip()
+    if summary and question:
+        return f"{summary} I'll treat that as Step {step_order}. {question}"
+    if summary:
+        return summary
+    if question:
+        return question
+    return ""
+
+
+def _apply_teaching_reasoning(
+    teaching_session: TeachingSession,
+    step: WorkflowStep,
+    latest_employee_message: str,
+) -> dict[str, Any]:
+    recent_actions = [item.model_dump() for item in list(step.observed_actions or [])[-6:]]
+    reasoning = analyze_teaching_reasoning(
+        teaching_session=teaching_session.model_dump(),
+        recent_browser_actions=recent_actions,
+        latest_employee_message=latest_employee_message,
+        current_step=step.model_dump(),
+    )
+
+    summary = str(reasoning.get("bill_summary") or "").strip()
+    if summary:
+        step.bill_summary = summary
+
+    suggested_step_title = str(reasoning.get("suggested_step_title") or "").strip()
+    if suggested_step_title and step.title == "Observed browser activity":
+        step.title = suggested_step_title
+
+    step.bill_confidence = float(reasoning.get("confidence") or 0.0)
+    step.reasoning_reason = str(reasoning.get("reason") or "") or None
+    step.pending_question = str(reasoning.get("question") or "").strip() or None
+    step.unanswered_question = bool(step.pending_question)
+    step.needs_reasoning = not bool(reasoning.get("should_interrupt"))
+    if reasoning.get("should_interrupt"):
+        step.last_reasoned_at = datetime.utcnow().isoformat()
+
+    return reasoning
+
+
 @app.post("/api/teaching/session/{session_id}/conversation", response_model=TeachingSessionMessageResponse)
 def teaching_session_conversation(
     session_id: str,
@@ -6008,6 +6055,7 @@ def teaching_session_conversation(
     else:
         category = _classify_teaching_message(message)
         target_step_id = (payload.step_id or "").strip() or None
+        reasoning_target_step: WorkflowStep | None = None
 
         if category == "step_instruction":
             step = WorkflowStep(
@@ -6022,13 +6070,15 @@ def teaching_session_conversation(
                 confirmed=False,
             )
             teaching_session.steps.append(step)
-            reply = f"I'll treat that as Step {step.order}: {step.title}. Is that correct?"
+            reasoning_target_step = step
+            reply = f"Thanks. I captured Step {step.order}: {step.title}."
         elif category == "decision_rule":
             step = _find_step_for_annotation(target_step_id)
             if step is None:
                 reply = "I heard a decision rule. Which step should I attach it to?"
             else:
                 step.decision_rules.append(message)
+                reasoning_target_step = step
                 reply = f"Got it. I added that decision rule to Step {step.order}: {step.title}."
         elif category == "exception":
             step = _find_step_for_annotation(target_step_id)
@@ -6036,9 +6086,21 @@ def teaching_session_conversation(
                 reply = "I heard an exception. Which step should I attach it to?"
             else:
                 step.exceptions.append(message)
+                reasoning_target_step = step
                 reply = f"Got it. I added that exception to Step {step.order}: {step.title}."
         else:
             reply = "I need a little more detail. What action should Bill perform or watch for?"
+
+        if reasoning_target_step is not None:
+            reasoning = _apply_teaching_reasoning(
+                teaching_session=teaching_session,
+                step=reasoning_target_step,
+                latest_employee_message=message,
+            )
+            if reasoning.get("should_interrupt"):
+                reasoning_message = _compose_teaching_reasoning_message(reasoning_target_step.order, reasoning)
+                if reasoning_message:
+                    reply = reasoning_message
 
     rec["teaching_session"] = teaching_session.model_dump()
     rec["updated_at"] = datetime.utcnow().isoformat()
@@ -6065,6 +6127,8 @@ def confirm_teaching_session_step(session_id: str, step_id: str) -> TeachingSess
     for step in teaching_session.steps:
         if step.id == step_id:
             step.confirmed = True
+            step.unanswered_question = False
+            step.pending_question = None
             matched = True
             break
 
@@ -6142,12 +6206,81 @@ def teaching_session_capture_action(
         action.selector = None
 
     target_step.observed_actions.append(action)
+    target_step.needs_reasoning = True
+
+    reasoning = _apply_teaching_reasoning(
+        teaching_session=teaching_session,
+        step=target_step,
+        latest_employee_message=str(target_step.employee_explanation or ""),
+    )
+
+    reply = f"Captured observed browser action for Step {target_step.order}."
+    if reasoning.get("should_interrupt"):
+        reasoning_message = _compose_teaching_reasoning_message(target_step.order, reasoning)
+        if reasoning_message:
+            reply = reasoning_message
+
     rec["teaching_session"] = teaching_session.model_dump()
     rec["updated_at"] = datetime.utcnow().isoformat()
 
     return TeachingSessionMessageResponse(
-        reply=f"Captured observed browser action for Step {target_step.order}.",
+        reply=reply,
         teaching_session=teaching_session,
+    )
+
+
+@app.post("/api/teaching/session/{session_id}/reason", response_model=TeachingReasoningResponse)
+def teaching_session_reason(
+    session_id: str,
+    payload: TeachingReasoningRequest,
+) -> TeachingReasoningResponse:
+    rec = _teaching_startup_sessions.get(session_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Teaching session '{session_id}' not found")
+
+    session_data = rec.get("teaching_session") or {
+        "session_id": session_id,
+        "workflow_name": rec.get("workflow_name") or "Workflow",
+        "workflow_summary": None,
+        "status": "intro",
+        "steps": [],
+    }
+    teaching_session = TeachingSession(**session_data)
+    if not teaching_session.steps:
+        raise HTTPException(status_code=400, detail="No teaching step available for reasoning yet")
+
+    target_step: WorkflowStep | None = None
+    requested_step_id = str(payload.step_id or "").strip()
+    if requested_step_id:
+        for item in teaching_session.steps:
+            if item.id == requested_step_id:
+                target_step = item
+                break
+        if target_step is None:
+            raise HTTPException(status_code=404, detail=f"Step '{requested_step_id}' not found")
+
+    if target_step is None:
+        unconfirmed = next((item for item in teaching_session.steps if not item.confirmed), None)
+        target_step = unconfirmed or teaching_session.steps[-1]
+
+    reasoning = _apply_teaching_reasoning(
+        teaching_session=teaching_session,
+        step=target_step,
+        latest_employee_message=str(payload.latest_employee_message or target_step.employee_explanation or ""),
+    )
+
+    rec["teaching_session"] = teaching_session.model_dump()
+    rec["updated_at"] = datetime.utcnow().isoformat()
+
+    return TeachingReasoningResponse(
+        bill_summary=str(reasoning.get("bill_summary") or ""),
+        suggested_step_title=str(reasoning.get("suggested_step_title") or ""),
+        question=str(reasoning.get("question") or ""),
+        confidence=float(reasoning.get("confidence") or 0.0),
+        should_interrupt=bool(reasoning.get("should_interrupt")),
+        reason=str(reasoning.get("reason") or ""),
+        step_id=target_step.id,
+        step_order=int(target_step.order),
     )
 
 
