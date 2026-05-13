@@ -53,6 +53,14 @@ interface WorkflowLearningDraft {
   updated_at: string;
   steps: unknown[];
   teaching_complete?: boolean;
+  execution_readiness?: {
+    runnable?: boolean;
+    has_start_url?: boolean;
+    manual_action_count?: number;
+    redacted_input_count?: number;
+    blocking_reasons?: string[];
+    warnings?: string[];
+  };
 }
 
 interface WorkerRelease {
@@ -214,6 +222,8 @@ interface AdvancedToolsTabsProps {
   onCreateVisibleWorkflowTask: () => void;
   onRunSmartSherpa: () => void;
   onRunWorkflow: (name: string) => void;
+  selectedWorkflowRunnable: boolean;
+  selectedWorkflowBlockingReason: string | null;
   targetMachineUuid: string;
   setTargetMachineUuid: (v: string) => void;
 
@@ -410,6 +420,18 @@ function TeachBillTab(props: AdvancedToolsTabsProps) {
               </p>
               <p className="mt-1 text-xs text-slate-300">{draft.goal}</p>
               <p className="mt-1 text-xs text-slate-500">Steps: {(draft.steps as unknown[]).length}</p>
+              <p className="mt-1 text-xs text-slate-400">
+                Readiness: {draft.execution_readiness?.runnable
+                  ? "Runnable"
+                  : (draft.execution_readiness?.manual_action_count || 0) > 0 && !(draft.execution_readiness?.has_start_url)
+                    ? "Needs more teaching (manual-only / missing start URL)"
+                    : "Needs more teaching"}
+              </p>
+              {draft.execution_readiness?.blocking_reasons?.length ? (
+                <p className="mt-1 text-xs text-amber-300">
+                  {draft.execution_readiness.blocking_reasons[0]}
+                </p>
+              ) : null}
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" onClick={() => onDeleteDraft(draft.draft_id, draft.workflow_name)} disabled={learningBusyKey !== null} className={BTN_DANGER}>Delete</button>
                 <button type="button" onClick={() => onUpdateDraftStatus(draft.draft_id, "in_review")} disabled={learningBusyKey !== null} className={BTN_SECONDARY}>In Review</button>
@@ -445,7 +467,8 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
     workflowsError, machines, loading, tasks, taskActionBusyKey, taskActionFeedback,
     onCancelTask, onRetryTask, selectedTask, setSelectedTask, actionError, response,
     onCreateTestTask, onCreateScreenshotTask, onCreateVisibleWorkflowTask,
-    onRunSmartSherpa, onRunWorkflow, targetMachineUuid, setTargetMachineUuid,
+    onRunSmartSherpa, onRunWorkflow, selectedWorkflowRunnable, selectedWorkflowBlockingReason,
+    targetMachineUuid, setTargetMachineUuid,
   } = props;
 
   const activeTaskStatuses = new Set(["queued", "assigned", "running"]);
@@ -503,11 +526,20 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
               className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-cyan-400/70">
               {workflows.map((wf) => <option key={wf.workflow_name} value={wf.workflow_name}>{wf.workflow_name}</option>)}
             </select>
-            <button type="button" onClick={() => onRunWorkflow(helperWorkflow)} disabled={loading || !helperWorkflow} className={BTN_PRIMARY}>
+            <button
+              type="button"
+              onClick={() => onRunWorkflow(helperWorkflow)}
+              disabled={loading || !helperWorkflow || !selectedWorkflowRunnable}
+              title={!selectedWorkflowRunnable ? (selectedWorkflowBlockingReason ?? "This workflow needs more teaching before it can run.") : undefined}
+              className={BTN_PRIMARY}
+            >
               {loading ? "Starting..." : "Run Workflow"}
             </button>
           </div>
         )}
+        {!selectedWorkflowRunnable && selectedWorkflowBlockingReason ? (
+          <p className="mb-2 text-xs text-amber-300">Run blocked: {selectedWorkflowBlockingReason}</p>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <button type="button" onClick={onCreateTestTask} disabled={loading} className={BTN_SECONDARY}>{loading ? "Creating..." : "Create Test Task"}</button>
           <button type="button" onClick={onCreateScreenshotTask} disabled={loading} className={BTN_SECONDARY}>Screenshot Task</button>
