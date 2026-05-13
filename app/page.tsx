@@ -338,6 +338,17 @@ type WorkflowLearningDraft = {
   variables?: Array<Record<string, unknown>>;
   teaching_complete?: boolean;
   teaching_pending_step?: number | null;
+  execution_readiness?: {
+    executable?: boolean;
+    runnable?: boolean;
+    has_start_url?: boolean;
+    start_url?: string | null;
+    executable_action_count?: number;
+    manual_action_count?: number;
+    redacted_input_count?: number;
+    blocking_reasons?: string[];
+    warnings?: string[];
+  };
 };
 
 type ChatEntry = {
@@ -354,7 +365,14 @@ type WorkflowRecord = {
   safe_for_unattended: boolean;
   compatible_worker_types: string[];
   procedure_name?: string | null;
+  published_static_procedure?: boolean;
 };
+
+const STATIC_PROCEDURE_WORKFLOWS = new Set<string>(["smart_sherpa_sync", "marketplace_workflow"]);
+
+function workflowSlug(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, "_");
+}
 
 type BrainAuditEntry = {
   timestamp?: string;
@@ -1965,8 +1983,7 @@ export default function Home() {
     try {
       const apiBase = getApiBase();
       if (!apiBase) throw new Error("NEXT_PUBLIC_API_BASE is not set");
-      const slug = workflowName.toLowerCase().replace(/\s+/g, "_");
-      const url = `${apiBase}/api/procedures/${slug}/run`;
+      const slug = workflowSlug(workflowName);
       const requestBody: Record<string, unknown> = { mode: "interactive_visible", payload: {} };
       if (slug === "smart_sherpa_sync") {
         requestBody.payload = {
@@ -1976,15 +1993,43 @@ export default function Home() {
         };
       }
       if (targetMachineUuid) requestBody.target_machine_uuid = targetMachineUuid;
-      const res = await fetch(url, {
+      const matchingDraft = workflowDrafts.find((d) => {
+        const draftNames = [d.workflow_name, d.published_workflow_name ?? ""];
+        return draftNames.some((name) => workflowSlug(String(name || "")) === slug);
+      });
+      const workflowRecord = workflows.find((w) => workflowSlug(w.workflow_name) === slug);
+      const isStaticProcedure = STATIC_PROCEDURE_WORKFLOWS.has(slug) || Boolean(workflowRecord?.published_static_procedure);
+      const shouldUseRunTaught = !isStaticProcedure && Boolean(matchingDraft);
+
+      if (shouldUseRunTaught) {
+        const readiness = matchingDraft?.execution_readiness;
+        const runnable = Boolean(readiness?.runnable);
+        if (!runnable) {
+          const reasons = (readiness?.blocking_reasons ?? []).filter(Boolean);
+          const firstReason = reasons[0] ?? "This learned workflow needs more teaching before it can run.";
+          setActionError(`Workflow saved, but it is not runnable yet. Reason: ${firstReason}`);
+          return;
+        }
+      }
+
+      const runUrl = shouldUseRunTaught
+        ? `${apiBase}/api/workflows/${slug}/run-taught`
+        : `${apiBase}/api/procedures/${slug}/run`;
+
+      const finalRes = await fetch(runUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
       });
-      const data = (await res.json()) as TaskCreateResponse;
+
+      const rawData = await finalRes.json();
+      const data = rawData as TaskCreateResponse;
       setResponse(data);
-      if (!res.ok) {
-        setActionError(`Run '${workflowName}' failed: ${res.status} ${JSON.stringify(data)}`);
+      if (!finalRes.ok) {
+        const detail = typeof rawData?.detail === "string"
+          ? rawData.detail
+          : String(rawData?.detail?.message ?? JSON.stringify(rawData));
+        setActionError(`Run '${workflowName}' failed: ${finalRes.status} ${detail}`);
       } else {
         setTaskActionFeedback({ kind: "success", message: `Started '${workflowName}'`, timestamp: new Date().toLocaleTimeString() });
         await loadDashboardData();
@@ -1995,6 +2040,19 @@ export default function Home() {
       setLoading(false);
     }
   };
+
+  const selectedWorkflowDraft = workflowDrafts.find((d) => {
+    const names = [d.workflow_name, d.published_workflow_name ?? ""];
+    return names.some((name) => workflowSlug(String(name || "")) === workflowSlug(helperWorkflow));
+  });
+  const selectedWorkflowRecord = workflows.find((w) => workflowSlug(w.workflow_name) === workflowSlug(helperWorkflow));
+  const selectedIsStaticProcedure = STATIC_PROCEDURE_WORKFLOWS.has(workflowSlug(helperWorkflow)) || Boolean(selectedWorkflowRecord?.published_static_procedure);
+  const selectedWorkflowRunnable = selectedIsStaticProcedure
+    ? true
+    : (selectedWorkflowDraft ? Boolean(selectedWorkflowDraft.execution_readiness?.runnable) : true);
+  const selectedWorkflowBlockingReason = !selectedWorkflowRunnable
+    ? (selectedWorkflowDraft?.execution_readiness?.blocking_reasons?.[0] ?? "This workflow needs more teaching before it can run.")
+    : null;
 
   const runSmartSherpaSync = async () => {
     setLoading(true);
@@ -2658,6 +2716,48 @@ export default function Home() {
     if (!draftId || learningBusyKey) {
       return;
     }
+
+    const formatApiErrorDetail = (detail: unknown): string => {
+      if (typeof detail === "string") {
+        return detail;
+      }
+      if (Array.isArray(detail)) {
+        return detail.map((item) => formatApiErrorDetail(item)).filter(Boolean).join("; ");
+      }
+      if (detail && typeof detail === "object") {
+        const record = detail as Record<string, unknown>;
+        const generalMessage = typeof record.message === "string" ? record.message : "";
+        const message = typeof record.msg === "string" ? record.msg : "";
+        const location = Array.isArray(record.loc)
+          ? record.loc.map((part) => String(part)).join(".")
+          : typeof record.loc === "string"
+            ? record.loc
+            : "";
+        const blockingReasons = Array.isArray(record.blocking_reasons)
+          ? record.blocking_reasons.map((item) => String(item)).filter(Boolean)
+          : [];
+        const warnings = Array.isArray(record.warnings)
+          ? record.warnings.map((item) => String(item)).filter(Boolean)
+          : [];
+        if (generalMessage || blockingReasons.length || warnings.length) {
+          const parts: string[] = [];
+          if (generalMessage) parts.push(generalMessage);
+          if (blockingReasons.length) parts.push(`Blocking: ${blockingReasons.join("; ")}`);
+          if (warnings.length) parts.push(`Warnings: ${warnings.join("; ")}`);
+          return parts.join(" | ");
+        }
+        if (message) {
+          return location ? `${location}: ${message}` : message;
+        }
+        try {
+          return JSON.stringify(detail);
+        } catch {
+          return String(detail);
+        }
+      }
+      return detail == null ? "" : String(detail);
+    };
+
     setLearningBusyKey(`publish-${draftId}`);
     try {
       const apiBase = getApiBase();
@@ -2671,9 +2771,10 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approved_by: "bill-web-operator" }),
       });
-      const body = (await response.json()) as WorkflowLearningDraft | { detail?: string };
+      const body = (await response.json()) as WorkflowLearningDraft | { detail?: unknown };
       if (!response.ok) {
-        throw new Error((body as { detail?: string }).detail ?? `Publish failed (${response.status})`);
+        const detail = formatApiErrorDetail((body as { detail?: unknown }).detail);
+        throw new Error(detail || `Publish failed (${response.status})`);
       }
 
       setFeedback(setLearningFeedback, "success", `Draft ${draftId} published.`);
@@ -3168,75 +3269,25 @@ export default function Home() {
       );
       const data = (await res.json()) as { pid?: number; status?: string; detail?: string; task_id?: string };
       if (!res.ok) throw new Error(data.detail ?? `Launch failed (${res.status})`);
-      setTeachingLaunchPid(data.pid ?? null);
-      setTeachingOverlayTaskId(data.task_id ?? null);
       setTeachingLaunchStatus("running");
-      logTeachOverlay("overlay should open", {
-        session_id: draftId,
-        task_id: data.task_id ?? null,
-        launch_status: data.status ?? "running",
-      });
+      setFeedback(setLearningFeedback, "success", `Teach browser launch requested. Task ${data.task_id ?? "queued"}.`);
+      await loadBrainPanels();
     } catch (err) {
       setTeachingLaunchStatus("error");
-      setFeedback(
-        setLearningFeedback,
-        "error",
-        `Browser launch failed: ${err instanceof Error ? err.message : "Unknown error"}`,
-      );
-      logTeachOverlay("teach mode launch failed", {
-        session_id: draftId,
-        error: err instanceof Error ? err.message : "Unknown error",
-      });
+      setFeedback(setLearningFeedback, "error", err instanceof Error ? err.message : "Launch failed");
     }
   };
 
-  // Faster poll (2 s) while a teach session is active
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (!teachingSessionDraftId) return;
-    const id = setInterval(() => { void loadBrainPanels(); }, 2000);
-    return () => clearInterval(id);
-  }, [teachingSessionDraftId]);
-
-  useEffect(() => {
-    if (!teachingSessionDraftId || !teachingOverlayOpen) {
-      return;
-    }
-    logTeachOverlay("overlay component mounted", {
-      session_id: teachingSessionDraftId,
-      task_id: teachingOverlayTaskId,
-    });
-  }, [logTeachOverlay, teachingOverlayOpen, teachingOverlayTaskId, teachingSessionDraftId]);
-
-  useEffect(() => {
-    if (!teachingSessionDraftId) {
-      return;
-    }
-    const id = setInterval(() => {
-      void loadTeachOverlayQuestion(teachingSessionDraftId, { silent: true });
-    }, 3000);
-    return () => clearInterval(id);
-  }, [loadTeachOverlayQuestion, teachingSessionDraftId]);
-
-  useEffect(() => {
-    const promptId = String(teachingOverlayQuestion?.question?.prompt_id || "");
+    const promptId = teachingOverlayQuestion?.question?.prompt_id;
     if (!teachingOverlayOpen || !promptId || !teachingOverlayAutoSpeakQuestions) {
       return;
     }
-    if (lastTeachOverlaySpokenPromptRef.current === promptId) {
-      logTeachOverlay("auto_speak_requested", {
-        provider: String(teachingOverlayQuestion?.settings?.voice_provider || "elevenlabs"),
-        question_id: promptId,
-        auto: true,
-        skipped_duplicate: true,
-        browser_tts_disabled: true,
-      });
+    if (teachingOverlayQuestion?.settings?.voice_provider === "none") {
       return;
     }
-    if (lastTeachOverlaySpeakInFlightRef.current === promptId) {
-      return;
-    }
-    const minSeconds = Number(teachingOverlayQuestion?.settings?.min_seconds_between_questions ?? 20);
+    const minSeconds = Number(teachingOverlayQuestion?.settings?.min_seconds_between_questions ?? 6);
+
     const now = Date.now();
     if (now - lastSpokenAtRef.current < minSeconds * 1000) {
       return;
@@ -3448,6 +3499,8 @@ export default function Home() {
                 onCreateVisibleWorkflowTask={() => void createVisibleWorkflowTask()}
                 onRunSmartSherpa={() => void runSmartSherpaSync()}
                 onRunWorkflow={(name) => void runSelectedWorkflow(name)}
+                selectedWorkflowRunnable={selectedWorkflowRunnable}
+                selectedWorkflowBlockingReason={selectedWorkflowBlockingReason}
                 targetMachineUuid={targetMachineUuid}
                 setTargetMachineUuid={setTargetMachineUuid}
                 workerReleases={workerReleases}
