@@ -475,6 +475,7 @@ def log_server_binding() -> None:
             _run_seed()
         except Exception as _seed_err:
             logger.warning("DB seed failed (non-fatal): %s", _seed_err)
+        _load_persisted_tasks()
     logger.info("Server running on: http://%s:%s", SERVER_HOST, SERVER_PORT)
     logger.info("Loaded workflows: %s from %s", len(WORKFLOW_REGISTRY), WORKFLOWS_CONFIG_PATH)
     logger.info("Loaded brain audit entries: %s", len(brain_audit_log))
@@ -488,9 +489,55 @@ def log_server_binding() -> None:
     logger.info("Loaded learned procedure templates: %s", len(learned_procedure_templates))
     logger.info("Loaded worker releases: %s (packages dir: %s)", len(worker_releases), WORKER_PACKAGES_DIR)
     logger.info("Loaded navigation rules for %s tenant(s)", len(navigation_rules_by_tenant))
+    logger.info("Loaded persisted tasks into queue: %s", len(tasks))
     active = _get_active_release()
     if active:
         logger.info("Active worker release: v%s id=%s channel=%s", active["version"], active["id"], active["channel"])
+
+
+def _load_persisted_tasks() -> None:
+    """Populate the in-memory tasks list from the DB on startup.
+
+    This is the key durability fix: tasks that were queued, assigned,
+    or in-flight when the process last died are reloaded into memory so
+    workers can continue polling without data loss.
+
+    Stale assigned/running tasks (older than BILL_CORE_STALE_TASK_MINUTES,
+    default 120 min) are automatically requeued so no task is silently lost.
+    """
+    if not _DB_ENABLED:
+        return
+    try:
+        from task_store import load_tasks_from_db
+        loaded = load_tasks_from_db()
+
+        # Deduplicate against any tasks already in memory (e.g., populated by tests)
+        existing_ids = {t.get("id") for t in tasks}
+        new_tasks = [t for t in loaded if t.get("id") not in existing_ids]
+
+        requeued: list[dict] = []
+        for task in new_tasks:
+            if task.pop("_requeued_on_startup", False):
+                requeued.append(task)
+
+        tasks.extend(new_tasks)
+
+        # Persist requeued status changes back to DB
+        for task in requeued:
+            try:
+                save_task_db(task)
+            except Exception as _save_err:
+                logger.warning("Failed to persist requeued task id=%s: %s", task.get("id"), _save_err)
+
+        if requeued:
+            logger.warning(
+                "TASK_STARTUP_RECOVERY: requeued %d stale task(s) — they were "
+                "assigned/running at last shutdown and exceeded the stale threshold.",
+                len(requeued),
+            )
+
+    except Exception as exc:
+        logger.warning("_load_persisted_tasks failed (non-fatal): %s", exc)
 
 
 def _version_key(version: str) -> tuple[int, ...]:
@@ -8037,7 +8084,16 @@ def get_system_status() -> dict:
 @app.get("/api/tasks", response_model=list[TaskRecord])
 def list_tasks(limit: int = 20) -> list[TaskRecord]:
     safe_limit = max(1, min(limit, 200))
-    ordered = sorted(tasks, key=lambda task: task.get("created_at", ""), reverse=True)
+    source: list[dict] = tasks
+    if not source and _DB_ENABLED:
+        # Safety fallback: startup load may not have completed yet, or the
+        # process was restarted and startup loading is still in flight.
+        try:
+            from task_store import list_tasks_db
+            source = list_tasks_db(limit=safe_limit)
+        except Exception:
+            source = []
+    ordered = sorted(source, key=lambda task: task.get("created_at", ""), reverse=True)
     return [TaskRecord(**task) for task in ordered[:safe_limit]]
 
 

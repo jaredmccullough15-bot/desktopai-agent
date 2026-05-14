@@ -68,6 +68,7 @@ REQUIRED_ROOT_FILES = [
     "bill_voice_events.py",  # Phase Voice: event-to-speech mapping
     "task_service.py",  # Task service used by main.py and conversational module
     "teaching_reasoning_service.py",  # Teaching Mode deterministic reasoning layer
+    "task_store.py",                   # Durable task queue startup loader
 ]
 
 REQUIRED_DIRS = [
