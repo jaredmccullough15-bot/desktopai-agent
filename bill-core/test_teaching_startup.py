@@ -574,7 +574,12 @@ class TestTeachingConversationStepCapture:
         assert steps[0]["employee_explanation"] == "First I log into HealthSherpa and open the clients page."
         assert steps[0]["bill_summary"]
         assert steps[0]["confirmed"] is False
-        assert "Is that correct?" in body["reply"]
+        # New: reply contains an acknowledgment ack prefix (sophistication pass
+        # replaced "Is that correct?" with confidence-tiered focused follow-ups)
+        ack_variants = ("Got it", "Understood", "Makes sense", "Noted")
+        assert any(ack in body["reply"] for ack in ack_variants), (
+            f"Expected reply to start with an ack variant, got: {body['reply'][:120]}"
+        )
 
     def test_confirm_endpoint_marks_step_confirmed(self, client):
         sid = self._seed_session()

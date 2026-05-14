@@ -9,3 +9,15 @@ pnpm-debug.log*
 
 .env
 sessions/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Package output (worker build artifacts)
+package-output/
+
+# Archived / disabled files
+*.disabled
+
