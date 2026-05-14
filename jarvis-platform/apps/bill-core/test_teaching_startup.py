@@ -12,6 +12,7 @@ Covers:
 7. Unknown session_id returns 404
 """
 
+import re
 import uuid
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -202,6 +203,7 @@ class TestTeachingStatusEndpoints:
         assert res.status_code == 200
         data = res.json()
         assert data["status"] == "active"
+        assert data["voice_prompt_text"] == "Teaching mode is active. Walk me through what this workflow is for."
 
         # Confirm GET also reflects the update
         get_res = client.get(f"/api/teaching/session/{sid}/status")
@@ -313,6 +315,60 @@ class TestCanonicalTeachingStartupEndpoints:
         assert captured["payload"]["draft_id"]
         assert captured["payload"]["session_id"]
         assert captured["payload"]["target_machine_uuid"] == "worker-uuid-1"
+
+    def test_brain_command_includes_apprentice_teaching_session_intro(self, client):
+        import main as m
+        from schemas import MachineRecord
+
+        def _fake_create_task(payload: dict):
+            return m.TaskCreateResponse(id="task-brain-intro", status="queued")
+
+        worker = MachineRecord(
+            machine_uuid="worker-uuid-intro",
+            machine_name="Worker-Intro",
+            status="idle",
+            worker_version="1.0.0",
+            last_seen=datetime.utcnow().isoformat(),
+            online=True,
+            execution_mode="production",
+            current_task_id=None,
+            current_step=None,
+        )
+
+        with patch.object(m, "_create_task_record", side_effect=_fake_create_task), patch.object(
+            m, "list_machines", return_value=[worker]
+        ):
+            res = client.post(
+                "/api/brain/command",
+                json={
+                    "command": "Let's create a new workflow called Test Workflow",
+                    "target_machine_uuid": "worker-uuid-intro",
+                },
+            )
+
+        assert res.status_code == 200
+        data = res.json()
+        assert data["recognized_intent"] == "start_new_workflow"
+        assert data["teaching_mode"] is not None
+        assert data["teaching_session"] is not None
+        assert data["teaching_session"]["status"] == "intro"
+        assert data["teaching_session"]["workflow_name"] == "Test Workflow"
+        assert data["teaching_session"]["workflow_summary"] is None
+        assert data["teaching_session"]["steps"] == []
+        assert data["reply"] is not None
+        assert "started a teaching session" in data["reply"].lower()
+        assert "quick explanation" in data["reply"].lower()
+        assert data["voice_text"] == "Teaching mode is starting for Test Workflow. Once the browser opens, tell me what this workflow does."
+        assert data["teaching_mode"]["voice_prompt_text"] == data["voice_text"]
+        assert data["teaching_mode"]["target_machine_name"] == "Worker-Intro"
+        assert data["reply"] == (
+            "Sounds good. I started a teaching session for Test Workflow. "
+            "Can you give me a quick explanation of what this workflow does?"
+        )
+        assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", data["voice_text"], re.IGNORECASE)
+        assert "task-brain-intro" not in data["voice_text"]
+        assert "session_id" not in data["voice_text"].lower()
+        assert "task-brain-intro" not in data["reply"]
 
     def test_bill_chat_returns_teaching_mode_and_queues_valid_payload(self, client):
         import main as m
@@ -586,6 +642,47 @@ class TestTeachingConversationStepCapture:
         assert res.status_code == 200
         steps = res.json()["teaching_session"]["steps"]
         assert steps[0]["exceptions"] == ["If the member is missing DOB, stop and escalate."]
+
+
+    def test_navigation_message_with_url_creates_navigate_action(self, client):
+        sid = self._seed_session()
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "This workflow submits renewal applications for existing clients."},
+        )
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "Navigate to https://go.trackvia.com/#/signin"},
+        )
+
+        assert res.status_code == 200
+        body = res.json()
+        step = body["teaching_session"]["steps"][0]
+        assert step["order"] == 1
+        assert step["employee_explanation"] == "Navigate to https://go.trackvia.com/#/signin"
+        assert step["observed_actions"]
+        action = step["observed_actions"][0]
+        assert action["type"] == "navigate"
+        assert action["url"] == "https://go.trackvia.com/#/signin"
+        assert "trackvia" in step["title"].lower()
+
+    def test_navigation_message_without_protocol_normalizes_to_https(self, client):
+        sid = self._seed_session()
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "This workflow submits renewal applications for existing clients."},
+        )
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "go to google.com"},
+        )
+
+        assert res.status_code == 200
+        action = res.json()["teaching_session"]["steps"][0]["observed_actions"][0]
+        assert action["type"] == "navigate"
+        assert action["url"] == "https://google.com"
 
 
 class TestTeachingActionCapture:
@@ -960,6 +1057,61 @@ class TestTeachingReviewApproveContinue:
         update_res = client.post(f"/api/teaching/session/{sid2}/approve")
         assert update_res.status_code == 200
         assert update_res.json()["draft_result"]["draft_id"] == created_draft_id
+
+
+    def test_approve_navigation_url_step_is_runnable_and_run_taught_uses_start_url(self, client, monkeypatch):
+        import main as m
+
+        m.workflow_learning_drafts.clear()
+        captured_payloads: list[dict] = []
+
+        def _fake_create_task_record(payload):
+            captured_payloads.append(dict(payload))
+            return {"id": "task-url-run", "status": "queued"}
+
+        monkeypatch.setattr(m, "_create_task_record", _fake_create_task_record)
+
+        sid = self._seed_session([
+            {
+                "id": "step-url",
+                "order": 1,
+                "title": "Navigate to trackvia.com sign-in page",
+                "employee_explanation": "Navigate to https://go.trackvia.com/#/signin",
+                "bill_summary": "You start by opening https://go.trackvia.com/#/signin.",
+                "decision_rules": [],
+                "exceptions": [],
+                "required_inputs": [],
+                "confirmed": True,
+                "observed_actions": [
+                    {
+                        "id": "a-url",
+                        "type": "navigate",
+                        "label": "Open go.trackvia.com",
+                        "url": "https://go.trackvia.com/#/signin",
+                        "selector": None,
+                        "value_redacted": None,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                ],
+            }
+        ])
+
+        approve_res = client.post(f"/api/teaching/session/{sid}/approve")
+        assert approve_res.status_code == 200
+        readiness = approve_res.json()["execution_readiness"]
+        assert readiness["has_start_url"] is True
+        assert readiness["start_url"] == "https://go.trackvia.com/#/signin"
+        assert readiness["runnable"] is True
+        assert readiness["blocking_reasons"] == []
+
+        draft_id = approve_res.json()["draft_result"]["draft_id"]
+        run_res = client.post(f"/api/workflows/{draft_id}/run-taught", json={})
+        assert run_res.status_code == 200
+        assert captured_payloads
+        assert captured_payloads[0]["task_type"] == "taught_workflow"
+        assert captured_payloads[0]["start_url"] == "https://go.trackvia.com/#/signin"
+        assert captured_payloads[0]["action_plan"][0]["action"] in {"navigate", "open_url"}
+        assert captured_payloads[0]["action_plan"][0]["url"] == "https://go.trackvia.com/#/signin"
 
     def test_continue_sets_teaching_status(self, client):
         sid = self._seed_session([

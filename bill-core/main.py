@@ -91,6 +91,17 @@ from schemas import (
     NavigationMapping,
     NavigationRule,
     NavigationRuleMapping,
+    TeachingStartupState,
+    TeachingStartupStatusRequest,
+    BrowserAction,
+    TeachingSessionActionRequest,
+    WorkflowStep,
+    TeachingSession,
+    TeachingSessionMessageRequest,
+    TeachingSessionMessageResponse,
+    TeachingSessionReviewStepSummary,
+    TeachingSessionReviewSummary,
+    TeachingSessionReviewResponse,
 )
 
 # ---------------------------------------------------------------------------
@@ -259,6 +270,11 @@ except Exception as _playbook_endpoints_import_err:
 SERVER_HOST = (os.getenv("BILL_CORE_HOST") or "0.0.0.0").strip() or "0.0.0.0"
 SERVER_PORT = (os.getenv("BILL_CORE_PORT") or "8000").strip() or "8000"
 DEFAULT_TEACH_SESSION_WORKER_API_BASE = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com"
+DEFAULT_TEACH_SESSION_WORKER_API_FALLBACK = "https://api.bill-core.com"
+
+# In-memory store for active teaching startup sessions (keyed by session_id).
+# Persists for the lifetime of the process; reset on server restart.
+_teaching_startup_sessions: dict[str, dict] = {}
 
 
 def _looks_like_proxy_api_base(value: str) -> bool:
@@ -272,16 +288,76 @@ def _looks_like_proxy_api_base(value: str) -> bool:
     return path == "/api/proxy"
 
 
+def _check_teaching_api_base_health(url: str) -> tuple[bool, str]:
+    """Check if a teaching API base URL is healthy by probing /health endpoint."""
+    health_url = url.rstrip("/") + "/health"
+    try:
+        import requests as _requests
+        resp = _requests.get(health_url, timeout=5)
+        # Cloudflare Tunnel hard-error (HTTP 530 or recognisable HTML body)
+        if resp.status_code == 530:
+            return False, f"CLOUDFLARE_TUNNEL_ERROR (HTTP 530)"
+        if "Cloudflare Tunnel error" in resp.text or (
+            "cloudflare" in resp.text.lower() and "error" in resp.text.lower()
+        ):
+            return False, f"CLOUDFLARE_TUNNEL_ERROR (HTML body)"
+        if not resp.ok:
+            return False, f"HTTP {resp.status_code}"
+        try:
+            data = resp.json()
+            status = str(data.get("status", "")).lower()
+            if status in ("ok", "healthy", ""):
+                return True, "ok"
+            return False, f"Health status: {data.get('status')}"
+        except Exception:
+            return False, f"Non-JSON response"
+    except Exception as exc:
+        return False, f"Connection error: {type(exc).__name__}"
+
+
 def _resolve_teach_session_worker_api_base(requested_api_base: str) -> str:
+    """Resolve the API base URL for teaching session callbacks.
+    
+    Try:
+    1. Requested API base (if provided and valid HTTP URL)
+    2. Environment variables: BILL_CORE_WORKER_API_BASE, BILL_CORE_URL, JARVIS_CORE_URL, BILL_CORE_PUBLIC_URL
+    3. Primary default (Cloudflare tunnel) with health check
+    4. Fallback default (AWS Beanstalk) with health check
+    5. Primary default (no fallback available)
+    """
     requested = (requested_api_base or "").strip().rstrip("/")
     if requested.startswith(("http://", "https://")) and not _looks_like_proxy_api_base(requested):
+        logger.info(f"TEACHING_CALLBACK_API_BASE_SELECTED url={requested} (requested)")
         return requested
 
     for env_name in ("BILL_CORE_WORKER_API_BASE", "BILL_CORE_URL", "JARVIS_CORE_URL", "BILL_CORE_PUBLIC_URL"):
         raw = (os.getenv(env_name) or "").strip().rstrip("/")
         if raw.startswith(("http://", "https://")) and not _looks_like_proxy_api_base(raw):
+            logger.info(f"TEACHING_CALLBACK_API_BASE_SELECTED url={raw} (env: {env_name})")
             return raw
 
+    # Health check: try primary, then fallback
+    candidates = [
+        (DEFAULT_TEACH_SESSION_WORKER_API_BASE, "primary"),
+        (DEFAULT_TEACH_SESSION_WORKER_API_FALLBACK, "fallback"),
+    ]
+    
+    for url, label in candidates:
+        url = url.rstrip("/")
+        logger.info(f"[teaching-api-base] Probing {url}/health (candidate: {label})...")
+        healthy, reason = _check_teaching_api_base_health(url)
+        if healthy:
+            logger.info(f"TEACHING_CALLBACK_API_BASE_SELECTED url={url} ({label})")
+            return url
+        else:
+            logger.warning(f"[teaching-api-base] {label} {url} is unreachable: {reason}")
+    
+    # All candidates exhausted; fall back to primary without health check
+    logger.warning(
+        f"[teaching-api-base] No healthy endpoint found. "
+        f"Defaulting to primary {DEFAULT_TEACH_SESSION_WORKER_API_BASE} "
+        f"(worker will surface errors at callback time)"
+    )
     return DEFAULT_TEACH_SESSION_WORKER_API_BASE
 
 WORKERS_STORE_PATH = Path(os.getenv("BILL_CORE_WORKERS_STORE") or (Path(__file__).resolve().parent / "workers_store.json"))
@@ -461,7 +537,7 @@ def _build_worker_update_instruction(current_version: str, machine_uuid: str) ->
         package_url_base = (os.getenv("BILL_WORKER_PACKAGE_PUBLIC_URL") or "").strip().rstrip("/")
         if not package_url_base:
             # auto-derive from the API's own public URL
-            package_url_base = (os.getenv("BILL_CORE_PUBLIC_URL") or "https://api.bill-core.com").strip().rstrip("/")
+            package_url_base = (os.getenv("BILL_CORE_PUBLIC_URL") or "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com").strip().rstrip("/")
         package_url = f"{package_url_base}/worker/update/package/{active_release.get('id', '')}"
         package_sha256 = active_release.get("package_sha256") or None
         channel = active_release.get("channel", "optional")
@@ -504,7 +580,7 @@ def _build_worker_update_instruction(current_version: str, machine_uuid: str) ->
         machine_uuid, current_version, latest_version, update_available, force_update,
     )
 
-    public_url = (os.getenv("BILL_CORE_PUBLIC_URL") or "https://api.bill-core.com").strip().rstrip("/")
+    public_url = (os.getenv("BILL_CORE_PUBLIC_URL") or "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com").strip().rstrip("/")
     updater_script_url = f"{public_url}/worker/updater-script"
 
     return WorkerUpdateInstruction(
@@ -1620,7 +1696,7 @@ def _extract_workflow_name_from_conversation(command_text: str) -> str | None:
     value = _extract_name_with_patterns(command_text, patterns)
     if not value:
         return None
-    return re.sub(r"\s+", "_", value.strip()).strip("_-")[:80] or None
+    return re.sub(r"\s+", " ", value.strip()).strip()[:80] or None
 
 
 def _parse_command_parameters(command_text: str) -> dict[str, Any]:
@@ -2018,19 +2094,20 @@ def _step_from_text_line(line: str, order: int) -> dict[str, Any]:
         "validation_rules": [],
     }
 
-    url_match = re.search(r"https?://\S+", stripped)
+    urls = extract_urls_from_message(stripped)
+    first_url = urls[0] if urls else ""
     selector_match = re.search(r"selector\s*[:=]?\s*([#\.\[\]a-zA-Z0-9_\-:'\(\)\s]+)", stripped)
     quoted_match = re.search(r"['\"]([^'\"]{2,120})['\"]", stripped)
     transition_match = re.search(r"\b(next page|continue|submit|go to|navigat(e|ion) to)\b", lowered)
 
-    if "open" in lowered and url_match:
+    if first_url and _is_navigation_instruction(stripped, urls):
         step.update(
             {
                 "action": "open_url",
-                "url": url_match.group(0),
+                "url": first_url,
                 "step_name": "Open Page",
                 "intent": "Navigate to the required starting page.",
-                "description": f"Opens the browser to {url_match.group(0)}.",
+                "description": f"Opens the browser to {first_url}.",
                 "purpose": "Navigate to the target page.",
                 "success_condition": "Target page loads and URL matches expected.",
                 "failure_condition": "Page fails to load or redirects to an unexpected URL.",
@@ -2270,6 +2347,17 @@ def _build_workflow_draft(payload: WorkflowLearningCreateRequest) -> dict[str, A
         "rule_suggestions": [],
         "workflow_annotations": [],
         "training_memory": [],
+        "execution_readiness": {
+            "executable": False,
+            "runnable": False,
+            "has_start_url": False,
+            "start_url": None,
+            "executable_action_count": 0,
+            "manual_action_count": 0,
+            "redacted_input_count": 0,
+            "blocking_reasons": ["Workflow has not been validated for execution readiness yet."],
+            "warnings": [],
+        },
     }
 
 
@@ -2321,6 +2409,7 @@ def _normalize_workflow_draft(item: dict[str, Any]) -> dict[str, Any]:
         "rule_suggestions": [dict(x) for x in (item.get("rule_suggestions") or []) if isinstance(x, dict)],
         "workflow_annotations": [dict(x) for x in (item.get("workflow_annotations") or []) if isinstance(x, dict)],
         "training_memory": [dict(x) for x in (item.get("training_memory") or []) if isinstance(x, dict)],
+        "execution_readiness": dict(item.get("execution_readiness") or {}),
     }
 
 
@@ -2845,8 +2934,100 @@ def _find_workflow_draft(draft_id: str) -> tuple[int, dict[str, Any]] | tuple[No
 
 
 def _to_executable_browser_steps(draft_steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _from_observed_action(action: dict[str, Any]) -> list[dict[str, Any]]:
+        action_type = str(action.get("type") or "").strip().lower()
+        selector = str(action.get("selector") or "").strip()
+        url = str(action.get("url") or "").strip()
+
+        if action_type == "navigate" and url:
+            return [{"action": "open_url", "url": url}]
+        if action_type in {"click", "submit"} and selector:
+            return [{"action": "click_selector", "selector": selector, "timeout_ms": 20000}]
+        if action_type == "type" and selector:
+            value = ""
+            if action.get("value_redacted"):
+                return [
+                    {
+                        "action": "manual_approval",
+                        "instruction": "Sensitive input was redacted during teaching and requires human entry.",
+                    }
+                ]
+            return [{"action": "type_text", "selector": selector, "value": value, "timeout_ms": 20000}]
+        if action_type == "select" and selector:
+            return [
+                {
+                    "action": "select_option",
+                    "selector": selector,
+                    "value": str(action.get("value") or ""),
+                    "timeout_ms": 20000,
+                }
+            ]
+        return []
+
+    def _from_legacy_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        converted: list[dict[str, Any]] = []
+        for item in actions:
+            action_name = str(item.get("action") or "").strip().lower()
+            if action_name == "open_url" and item.get("url"):
+                converted.append({"action": "open_url", "url": item.get("url")})
+            elif action_name == "wait_for_element":
+                converted.append(
+                    {
+                        "action": "wait_for_element",
+                        "selector": item.get("selector") or "body",
+                        "timeout_ms": int(item.get("timeout_ms") or 20000),
+                    }
+                )
+            elif action_name == "click_selector" and item.get("selector"):
+                converted.append(
+                    {
+                        "action": "click_selector",
+                        "selector": str(item.get("selector") or "").strip(),
+                        "timeout_ms": int(item.get("timeout_ms") or 20000),
+                    }
+                )
+            elif action_name in {"type_text", "fill_field", "input_text"} and item.get("selector"):
+                converted.append(
+                    {
+                        "action": "type_text",
+                        "selector": str(item.get("selector") or "").strip(),
+                        "value": str(item.get("value") or item.get("text") or ""),
+                        "timeout_ms": int(item.get("timeout_ms") or 20000),
+                    }
+                )
+            elif action_name == "select_option" and item.get("selector"):
+                converted.append(
+                    {
+                        "action": "select_option",
+                        "selector": str(item.get("selector") or "").strip(),
+                        "value": str(item.get("value") or ""),
+                        "timeout_ms": int(item.get("timeout_ms") or 20000),
+                    }
+                )
+            elif action_name == "take_screenshot":
+                converted.append({"action": "take_screenshot", "name": item.get("name") or "draft-capture"})
+            elif action_name in {"manual_step", "manual_approval", ""}:
+                converted.append(
+                    {
+                        "action": "manual_step",
+                        "instruction": str(item.get("instruction") or item.get("step_name") or item.get("name") or "Manual step"),
+                    }
+                )
+        return converted
+
     executable: list[dict[str, Any]] = []
     for draft_step in sorted(draft_steps, key=lambda item: int(item.get("step_order") or 0)):
+        observed_actions = draft_step.get("observed_actions")
+        if isinstance(observed_actions, list) and observed_actions:
+            for observed_action in observed_actions:
+                executable.extend(_from_observed_action(dict(observed_action or {})))
+            continue
+
+        nested_actions = draft_step.get("actions")
+        if isinstance(nested_actions, list) and nested_actions:
+            executable.extend(_from_legacy_actions([dict(item or {}) for item in nested_actions]))
+            continue
+
         action = str(draft_step.get("action") or "").strip()
         if action == "open_url":
             executable.append({"action": "open_url", "url": draft_step.get("url")})
@@ -2913,6 +3094,239 @@ def _to_executable_browser_steps(draft_steps: list[dict[str, Any]]) -> list[dict
             )
 
     return executable
+
+
+def _slugify_workflow_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def _resolve_approved_workflow_draft(workflow_id: str) -> dict[str, Any] | None:
+    needle = str(workflow_id or "").strip()
+    if not needle:
+        return None
+
+    approved = [
+        item
+        for item in workflow_learning_drafts
+        if str(item.get("review_status") or "").strip().lower() in {"approved", "published"}
+    ]
+    if not approved:
+        return None
+
+    for item in approved:
+        if str(item.get("draft_id") or "") == needle:
+            return item
+
+    lowered = needle.lower()
+    for item in sorted(approved, key=lambda d: str(d.get("updated_at") or ""), reverse=True):
+        candidates = [
+            str(item.get("workflow_name") or ""),
+            str(item.get("published_workflow_name") or ""),
+        ]
+        for candidate in candidates:
+            candidate_lower = candidate.strip().lower()
+            if candidate_lower and (candidate_lower == lowered or _slugify_workflow_name(candidate_lower) == _slugify_workflow_name(lowered)):
+                return item
+    return None
+
+
+def _build_taught_action_plan(draft_steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    action_plan: list[dict[str, Any]] = []
+    ordered_steps = sorted(
+        [dict(step or {}) for step in draft_steps],
+        key=lambda item: int(item.get("step_order") or item.get("order") or 0),
+    )
+
+    for step in ordered_steps:
+        step_name = str(step.get("step_name") or step.get("title") or step.get("name") or "").strip()
+        observed_actions = step.get("observed_actions")
+        if isinstance(observed_actions, list) and observed_actions:
+            for action in observed_actions:
+                action_dict = dict(action or {})
+                action_type = str(action_dict.get("type") or "").strip().lower()
+                plan_item = {
+                    "action": action_type,
+                    "selector": action_dict.get("selector"),
+                    "label": action_dict.get("label"),
+                    "url": action_dict.get("url"),
+                    "value": action_dict.get("value"),
+                    "value_redacted": action_dict.get("value_redacted"),
+                    "step_name": step_name,
+                }
+                action_plan.append(plan_item)
+            continue
+
+        action_name = str(step.get("action") or "").strip().lower()
+        if action_name in {"", "manual_step", "manual_approval"}:
+            continue
+
+        action_map = {
+            "open_url": "navigate",
+            "wait_for_element": "wait",
+            "click_selector": "click",
+            "type_text": "type",
+            "fill_field": "type",
+            "input_text": "type",
+            "select_option": "select",
+            "submit": "submit",
+        }
+
+        mapped_action = action_map.get(action_name, action_name)
+        action_plan.append(
+            {
+                "action": mapped_action,
+                "selector": step.get("selector"),
+                "label": step.get("step_name") or step.get("name"),
+                "url": step.get("url"),
+                "value": step.get("value"),
+                "value_redacted": step.get("value_redacted"),
+                "step_name": step_name,
+            }
+        )
+
+    return action_plan
+
+
+def validate_taught_workflow_executable(draft: dict[str, Any]) -> dict[str, Any]:
+    steps = [dict(item or {}) for item in (draft.get("steps") or [])]
+    action_plan = _build_taught_action_plan(steps)
+
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    executable_action_count = 0
+    manual_action_count = 0
+    redacted_input_count = 0
+    start_url: str | None = None
+
+    if not action_plan:
+        blocking_reasons.append("No executable taught actions were captured.")
+
+    for index, action in enumerate(action_plan, start=1):
+        action_name = str(action.get("action") or "").strip().lower()
+        selector = str(action.get("selector") or "").strip()
+        label = str(action.get("label") or action.get("step_name") or "").strip()
+        url = str(action.get("url") or "").strip()
+        value_redacted = str(action.get("value_redacted") or "").strip().lower()
+
+        if value_redacted and value_redacted not in {"none", "null"}:
+            redacted_input_count += 1
+
+        if action_name in {"manual_step", "manual_approval", ""}:
+            manual_action_count += 1
+            continue
+
+        if action_name in {"navigate", "open_url"}:
+            if url:
+                executable_action_count += 1
+                if not start_url:
+                    start_url = url
+            else:
+                blocking_reasons.append(f"Step {index} is navigation but missing URL.")
+            continue
+
+        if action_name in {"wait", "wait_for_element"}:
+            executable_action_count += 1
+            continue
+
+        if action_name in {"click", "click_selector", "submit"}:
+            if selector or label:
+                executable_action_count += 1
+                if not selector and label:
+                    warnings.append(f"Step {index} click uses label fallback because selector is missing.")
+            else:
+                blocking_reasons.append(f"Step {index} click/submit action has no selector or label fallback.")
+            continue
+
+        if action_name in {"type", "type_text", "select", "select_option"}:
+            if value_redacted and value_redacted not in {"none", "null"}:
+                manual_action_count += 1
+                warnings.append(
+                    f"Step {index} contains redacted input and will require human input during execution."
+                )
+                continue
+            if selector:
+                executable_action_count += 1
+            else:
+                blocking_reasons.append(f"Step {index} {action_name} action is missing selector.")
+            continue
+
+        blocking_reasons.append(f"Step {index} has unsupported action '{action_name or 'unknown'}'.")
+
+    has_start_url = bool(start_url)
+    if not has_start_url:
+        blocking_reasons.append("No starting page was captured.")
+
+    if executable_action_count == 0:
+        blocking_reasons.append("Workflow is manual-only and needs more teaching before it can run.")
+
+    return {
+        "executable": executable_action_count > 0,
+        "runnable": executable_action_count > 0 and has_start_url and not blocking_reasons,
+        "has_start_url": has_start_url,
+        "start_url": start_url,
+        "executable_action_count": executable_action_count,
+        "manual_action_count": manual_action_count,
+        "redacted_input_count": redacted_input_count,
+        "blocking_reasons": blocking_reasons,
+        "warnings": warnings,
+    }
+
+
+def _first_taught_navigation_url(action_plan: list[dict[str, Any]]) -> str | None:
+    for action in action_plan:
+        action_name = str(action.get("action") or "").strip().lower()
+        if action_name in {"navigate", "open_url"}:
+            url = str(action.get("url") or "").strip()
+            if url:
+                return url
+    return None
+
+
+@app.post("/api/workflows/{workflow_id}/run-taught", response_model=TaskCreateResponse)
+def run_taught_workflow(workflow_id: str, payload: ProcedureRunRequest) -> TaskCreateResponse:
+    draft = _resolve_approved_workflow_draft(workflow_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Approved workflow draft not found")
+
+    readiness = validate_taught_workflow_executable(draft)
+    if not readiness.get("runnable"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Workflow is not runnable yet.",
+                "blocking_reasons": list(readiness.get("blocking_reasons") or []),
+                "warnings": list(readiness.get("warnings") or []),
+            },
+        )
+
+    steps = [dict(item or {}) for item in (draft.get("steps") or [])]
+    action_plan = _build_taught_action_plan(steps)
+    if not action_plan:
+        raise HTTPException(status_code=422, detail="Approved taught workflow has no executable actions")
+
+    first_url = str(readiness.get("start_url") or "").strip() or _first_taught_navigation_url(action_plan)
+    if not first_url:
+        raise HTTPException(
+            status_code=422,
+            detail="Workflow has no starting URL. Teach Bill the first navigation step.",
+        )
+
+    runtime_payload: dict[str, Any] = {
+        "task_type": "taught_workflow",
+        "mode": str(payload.mode or "interactive_visible"),
+        "workflow_name": str(draft.get("workflow_name") or workflow_id),
+        "workflow_learning_draft_id": str(draft.get("draft_id") or ""),
+        "taught_workflow_id": workflow_id,
+        "workflow_learning_source": "approved_draft",
+        "action_plan": action_plan,
+        "start_url": first_url,
+    }
+    if payload.target_machine_uuid:
+        runtime_payload["target_machine_uuid"] = payload.target_machine_uuid
+    if isinstance(payload.payload, dict) and payload.payload:
+        runtime_payload["runtime_payload"] = dict(payload.payload)
+
+    return _create_task_record(runtime_payload)
 
 
 def _is_published_workflow(workflow_name: str | None) -> bool:
@@ -4661,7 +5075,12 @@ def list_workflow_learning_drafts(limit: int = 100, review_status: str | None = 
         needle = review_status.strip().lower()
         records = [item for item in records if str(item.get("review_status") or "").strip().lower() == needle]
     records = sorted(records, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
-    return [WorkflowLearningDraftRecord(**item) for item in records[:safe_limit]]
+    hydrated: list[dict[str, Any]] = []
+    for item in records[:safe_limit]:
+        hydrated_item = dict(item)
+        hydrated_item["execution_readiness"] = validate_taught_workflow_executable(hydrated_item)
+        hydrated.append(hydrated_item)
+    return [WorkflowLearningDraftRecord(**item) for item in hydrated]
 
 
 @app.post("/api/brain/workflow-learning/drafts", response_model=WorkflowLearningDraftRecord)
@@ -5495,6 +5914,17 @@ def publish_workflow_learning_draft(draft_id: str, payload: WorkflowDraftPublish
     if not workflow_name:
         raise HTTPException(status_code=400, detail="Draft workflow_name is required")
 
+    readiness = validate_taught_workflow_executable(draft)
+    if not readiness.get("runnable"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "This taught workflow cannot be published as runnable yet because no starting page was captured. Teach Bill the first navigation step.",
+                "blocking_reasons": list(readiness.get("blocking_reasons") or []),
+                "warnings": list(readiness.get("warnings") or []),
+            },
+        )
+
     executable_steps = _to_executable_browser_steps(list(draft.get("steps") or []))
 
     workflow_record = WorkflowRecord(
@@ -5525,9 +5955,11 @@ def publish_workflow_learning_draft(draft_id: str, payload: WorkflowDraftPublish
             "task_type": "browser_workflow",
             "mode": "interactive_visible",
             "step_delay_ms": 800,
+            "start_url": str(readiness.get("start_url") or "").strip(),
             "steps": executable_steps,
             "workflow_learning_source": "published_draft",
         },
+        "published_static_procedure": False,
     }
     PROCEDURE_TEMPLATES[workflow_name] = template
     learned_existing_idx = next((i for i, item in enumerate(learned_procedure_templates) if str(item.get("name") or "") == workflow_name), None)
@@ -5540,6 +5972,7 @@ def publish_workflow_learning_draft(draft_id: str, payload: WorkflowDraftPublish
     updated = dict(draft)
     updated["review_status"] = "published"
     updated["published_workflow_name"] = workflow_name
+    updated["execution_readiness"] = readiness
     updated["updated_at"] = datetime.utcnow().isoformat()
     notes = [str(updated.get("reviewer_notes") or "").strip()]
     if payload.approved_by:
@@ -5753,6 +6186,10 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     requires_confirmation = False
     pending_interaction_id: str | None = None
     pending_questions: list[str] = []
+    _teach_mode_state: TeachingStartupState | None = None
+    _teach_session_obj: TeachingSession | None = None
+    _teach_reply: str | None = None
+    _teach_voice_text: str | None = None
 
     worker_hint_match = re.search(r"on worker\s+(.+)$", command_text, flags=re.IGNORECASE)
     worker_hint = worker_hint_match.group(1).strip() if worker_hint_match else None
@@ -5863,6 +6300,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
                     workflow_learning_drafts.append(draft)
                     _save_workflow_learning_drafts()
 
+                    _teach_session_id = str(uuid4())
                     task_payload = {
                         "task_type": "teach_session",
                         "draft_id": draft.get("draft_id"),
@@ -5870,13 +6308,59 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
                         "api_base": _resolve_teach_session_worker_api_base(""),
                         "start_url": "",
                         "target_machine_uuid": selected_worker.machine_uuid,
+                        "session_id": _teach_session_id,
                     }
                     task = _create_task_record(task_payload)
 
+                    _teach_voice_text = (
+                        f"Teaching mode is starting for {workflow_name}. "
+                        "Once the browser opens, tell me what this workflow does."
+                    )
+                    _teach_reply = (
+                        f"Sounds good. I started a teaching session for {workflow_name}. "
+                        "Can you give me a quick explanation of what this workflow does?"
+                    )
+                    _teach_mode_state = TeachingStartupState(
+                        session_id=_teach_session_id,
+                        task_id=task.id,
+                        workflow_name=workflow_name,
+                        target_machine_uuid=selected_worker.machine_uuid,
+                        target_machine_name=selected_worker.machine_name,
+                        status="browser_opening",
+                        voice_prompt_text=_teach_voice_text,
+                    )
+                    _teach_session_obj = TeachingSession(
+                        session_id=_teach_session_id,
+                        workflow_name=workflow_name,
+                        workflow_summary=None,
+                        status="intro",
+                        steps=[],
+                    )
+                    _teaching_startup_sessions[_teach_session_id] = {
+                        "session_id": _teach_session_id,
+                        "task_id": task.id,
+                        "draft_id": draft.get("draft_id"),
+                        "workflow_name": workflow_name,
+                        "target_machine_uuid": selected_worker.machine_uuid,
+                        "target_machine_name": selected_worker.machine_name,
+                        "status": "browser_opening",
+                        "message": "",
+                        "overlay_enabled": True,
+                        "voice_prompt_text": _teach_voice_text,
+                        "created_at": datetime.utcnow().isoformat(),
+                        "updated_at": datetime.utcnow().isoformat(),
+                        "teaching_session": {
+                            "session_id": _teach_session_id,
+                            "workflow_name": workflow_name,
+                            "workflow_summary": None,
+                            "status": "intro",
+                            "steps": [],
+                        },
+                    }
                     before_execution = "I created a teach-mode draft and prepared a worker-targeted teaching session."
                     after_execution = (
-                        f"Started teaching workflow '{workflow_name}' as task {task.id} on "
-                        f"{selected_worker.machine_name} ({selected_worker.machine_uuid})."
+                        f"Teaching session started for '{workflow_name}'. "
+                        f"The browser will open shortly on {selected_worker.machine_name}."
                     )
                     suggested_next_action = (
                         "Use the teaching overlay while performing the process; Bill will capture steps and ask guiding questions."
@@ -6466,6 +6950,7 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         command=command_text,
         before_execution=before_execution,
         after_execution=after_execution,
+        reply=_teach_reply,
         selected_workflow=selected_workflow,
         selected_worker_uuid=selected_worker.machine_uuid if selected_worker else None,
         selected_worker_name=selected_worker.machine_name if selected_worker else None,
@@ -6476,12 +6961,680 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
         pending_questions=pending_questions,
         live_reasoning=decision_reasoning + preflight_warnings,
         task=task,
-        speak_response=speak_response,
-        voice_text=voice_text,
+        speak_response=speak_response if not _teach_mode_state else True,
+        voice_text=_teach_voice_text if _teach_voice_text else voice_text,
         suggested_emotion=suggested_emotion,
         suggested_style_profile=suggested_style_profile,
         voice_event_type=voice_event_type,
+        teaching_mode=_teach_mode_state,
+        teaching_session=_teach_session_obj,
     )
+
+
+# ---------------------------------------------------------------------------
+# Teaching Mode Session Helpers
+# ---------------------------------------------------------------------------
+
+_VAGUE_FILLERS: frozenset[str] = frozenset({
+    "okay", "ok", "yes", "yep", "yup", "sure", "right", "got it", "alright",
+    "sounds good", "makes sense", "understood", "of course", "cool", "great",
+    "uh huh", "mm", "hmm", "yeah", "nope", "no", "thanks", "thank you",
+    "i see", "noted", "done", "next", "continue", "go on",
+})
+
+_DECISION_RULE_STARTERS: tuple[str, ...] = (
+    "always", "never", "make sure", "verify", "check", "ensure",
+    "must", "should", "require", "confirm",
+)
+
+_DOMAIN_URL_RE: re.Pattern[str] = re.compile(
+    r"\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s\"'<>]*)?(?:\?[^\s\"'<>]*)?(?:#[^\s\"'<>]*)?\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_extracted_url(raw_url: str) -> str | None:
+    candidate = str(raw_url or "").strip()
+    if not candidate:
+        return None
+
+    candidate = candidate.strip("()[]{}<>'\"")
+    candidate = candidate.rstrip(".,;:!?")
+    if not candidate:
+        return None
+
+    if candidate.lower().startswith(("mailto:", "tel:")):
+        return None
+
+    if candidate.lower().startswith("www."):
+        candidate = f"https://{candidate}"
+    elif not re.match(r"^https?://", candidate, re.IGNORECASE):
+        if re.match(r"^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#].*)?$", candidate, re.IGNORECASE):
+            candidate = f"https://{candidate}"
+        else:
+            return None
+
+    parsed = urlparse(candidate)
+    if not parsed.netloc:
+        return None
+
+    return candidate
+
+
+def extract_urls_from_message(message: str) -> list[str]:
+    text = str(message or "")
+    if not text:
+        return []
+
+    candidates: list[str] = []
+    for pattern in (r"https?://[^\s\"'<>]+", r"www\.[^\s\"'<>]+"):
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            candidates.append(match.group(0))
+
+    for match in _DOMAIN_URL_RE.finditer(text):
+        candidates.append(match.group(0))
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        value = _normalize_extracted_url(candidate)
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(value)
+
+    return normalized
+
+
+def _is_navigation_instruction(text: str, extracted_urls: list[str] | None = None) -> bool:
+    urls = extracted_urls if extracted_urls is not None else extract_urls_from_message(text)
+    if not urls:
+        return False
+
+    lowered = str(text or "").strip().lower()
+    navigation_terms = (
+        "navigate",
+        "go to",
+        "open",
+        "visit",
+        "browse",
+        "login",
+        "log in",
+        "log into",
+        "sign in",
+        "signin",
+        "start at",
+        "begin at",
+    )
+    if any(term in lowered for term in navigation_terms):
+        return True
+
+    if lowered.startswith(("http://", "https://", "www.")):
+        return True
+
+    return len(lowered.split()) <= 6
+
+
+def _url_domain_label(url: str) -> str:
+    parsed = urlparse(url)
+    domain = (parsed.netloc or "").lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain or str(url)
+
+
+def _url_destination_label(url: str) -> str:
+    domain = _url_domain_label(url)
+    path = (urlparse(url).path or "").lower()
+    if any(token in path for token in ("signin", "sign-in", "login", "log-in")):
+        return f"{domain} sign-in page"
+    return domain
+
+
+def _build_text_navigation_observed_actions(message: str) -> list[dict[str, Any]]:
+    urls = extract_urls_from_message(message)
+    if not _is_navigation_instruction(message, urls):
+        return []
+
+    first_url = urls[0]
+    return [
+        {
+            "id": str(uuid4()),
+            "type": "navigate",
+            "label": f"Open {_url_domain_label(first_url)}",
+            "url": first_url,
+            "selector": None,
+            "value_redacted": None,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    ]
+
+
+def _is_vague_message(text: str) -> bool:
+    if extract_urls_from_message(text):
+        return False
+    clean = " ".join(text.lower().split()).rstrip(".!?")
+    if clean in _VAGUE_FILLERS:
+        return True
+    action_verbs = (
+        "click", "open", "navigate", "go", "search", "find", "fill",
+        "enter", "submit", "select", "choose", "login", "log", "check",
+        "verify", "filter", "type", "scroll", "download", "upload",
+    )
+    words = clean.split()
+    if len(words) <= 3 and not any(v in clean for v in action_verbs):
+        return True
+    return False
+
+
+def _is_decision_rule(text: str) -> bool:
+    lower = text.lower().strip()
+    return lower.startswith(_DECISION_RULE_STARTERS) and len(text.split()) > 3
+
+
+def _is_exception_rule(text: str) -> bool:
+    lower = text.lower().strip()
+    exception_triggers = ("stop", "escalate", "skip", "missing", "cannot", "don't", "do not", "n/a")
+    return (
+        (lower.startswith("if ") or lower.startswith("when ") or lower.startswith("unless "))
+        and any(k in lower for k in exception_triggers)
+    )
+
+
+def _infer_step_title_from_text(message: str, existing_steps: list[dict]) -> str:
+    import re as _re
+    text = message.strip().rstrip(".")
+    urls = extract_urls_from_message(message)
+    if _is_navigation_instruction(message, urls):
+        return f"Navigate to {_url_destination_label(urls[0])}"
+    site_m = _re.search(r"\b(?:log|navigate|go)\s+(?:in)?to\s+([A-Za-z0-9]+)", text, _re.IGNORECASE)
+    open_m = _re.search(r"\bopen\s+(?:the\s+)?(.+?)(?:\s+and\b|\s*$)", text, _re.IGNORECASE)
+    if site_m and open_m:
+        site = site_m.group(1).strip()
+        page = open_m.group(1).strip().rstrip(".")
+        return f"Open {site} {page}"
+    if open_m:
+        page = open_m.group(1).strip().rstrip(".")
+        return f"Open {page}"
+    nav_m = _re.search(r"\bnavigate\s+to\s+(.+?)(?:\s+and\b|\s*$)", text, _re.IGNORECASE)
+    if nav_m:
+        return f"Navigate to {nav_m.group(1).strip().rstrip('.')}"
+    search_m = _re.search(r"\b(?:search|find|lookup)\s+(?:for\s+)?(.+?)(?:\s+and\b|\s*$)", text, _re.IGNORECASE)
+    if search_m:
+        return f"Search for {search_m.group(1).strip().rstrip('.')}"
+    click_m = _re.search(r"\bclick\s+(?:the\s+)?(.+?)(?:\s+and\b|\s+button\b|\s*$)", text, _re.IGNORECASE)
+    if click_m:
+        return f"Click {click_m.group(1).strip().rstrip('.')}"
+    submit_m = _re.search(r"\b(submit|fill|enter|type)\s+(?:the\s+)?(.+?)(?:\s+and\b|\s*$)", text, _re.IGNORECASE)
+    if submit_m:
+        verb = submit_m.group(1).capitalize()
+        return f"{verb} {submit_m.group(2).strip().rstrip('.')}"
+    words = text.split()[:8]
+    short = " ".join(words)
+    if len(text.split()) > 8:
+        short += "..."
+    return short or f"Step {len(existing_steps) + 1}"
+
+
+def _bill_summary_from_text(message: str, step_order: int) -> str:
+    lower = message.lower()
+    urls = extract_urls_from_message(message)
+    if _is_navigation_instruction(message, urls):
+        return f"You start by opening {urls[0]}."
+    if any(w in lower for w in ("navigate", "open", "go to", "login", "log into", "log in")):
+        return "I saw you navigate to the required page."
+    if any(w in lower for w in ("search", "find", "lookup")):
+        return "I saw you search for the member."
+    if any(w in lower for w in ("submit", "save", "finish")):
+        return "I saw you submit the form."
+    if any(w in lower for w in ("click",)):
+        return "I saw you complete an action on the page."
+    return f"I captured Step {step_order}."
+
+
+def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
+    draft_steps: list[dict[str, Any]] = []
+    next_order = 1
+    for s in sorted(steps, key=lambda item: int(item.get("order") or 0)):
+        title = str(s.get("title") or "Observed browser step").strip() or "Observed browser step"
+        description = str(s.get("employee_explanation") or s.get("bill_summary") or "").strip()
+        observed_actions = list(s.get("observed_actions") or [])
+
+        if not observed_actions:
+            draft_steps.append(
+                {
+                    "id": str(uuid4()),
+                    "step_order": next_order,
+                    "name": f"step_{next_order}",
+                    "step_name": title,
+                    "action": "manual_step",
+                    "instruction": description or title,
+                    "manual_review_required": True,
+                    "description": description,
+                    "decision_rules": list(s.get("decision_rules") or []),
+                    "exceptions": list(s.get("exceptions") or []),
+                    "required_inputs": list(s.get("required_inputs") or []),
+                }
+            )
+            next_order += 1
+            continue
+
+        for action in observed_actions:
+            action_type = str(action.get("type") or "").strip().lower()
+            selector = str(action.get("selector") or "").strip() or None
+            value_redacted = action.get("value_redacted")
+            step_payload: dict[str, Any] = {
+                "id": str(uuid4()),
+                "step_order": next_order,
+                "name": f"step_{next_order}",
+                "step_name": title,
+                "description": description,
+                "decision_rules": list(s.get("decision_rules") or []),
+                "exceptions": list(s.get("exceptions") or []),
+                "required_inputs": list(s.get("required_inputs") or []),
+            }
+
+            if action_type == "navigate":
+                step_payload.update({"action": "open_url", "url": str(action.get("url") or "")})
+            elif action_type in {"click", "submit"}:
+                if selector:
+                    step_payload.update({"action": "click_selector", "selector": selector, "timeout_ms": 20000})
+                else:
+                    step_payload.update(
+                        {
+                            "action": "manual_approval",
+                            "instruction": f"Could not replay click action for step '{title}' because selector was missing.",
+                            "manual_review_required": True,
+                        }
+                    )
+            elif action_type == "type":
+                if selector and not value_redacted:
+                    step_payload.update(
+                        {
+                            "action": "type_text",
+                            "selector": selector,
+                            "value": str(action.get("value") or ""),
+                            "timeout_ms": 20000,
+                        }
+                    )
+                else:
+                    step_payload.update(
+                        {
+                            "action": "manual_approval",
+                            "instruction": "Sensitive text input was redacted during teaching and needs human entry.",
+                            "manual_review_required": True,
+                            "value_redacted": "[redacted]",
+                        }
+                    )
+            elif action_type == "select":
+                if selector:
+                    step_payload.update(
+                        {
+                            "action": "select_option",
+                            "selector": selector,
+                            "value": str(action.get("value") or ""),
+                            "timeout_ms": 20000,
+                        }
+                    )
+                else:
+                    step_payload.update(
+                        {
+                            "action": "manual_approval",
+                            "instruction": f"Could not replay select action for step '{title}' because selector was missing.",
+                            "manual_review_required": True,
+                        }
+                    )
+            else:
+                step_payload.update(
+                    {
+                        "action": "manual_approval",
+                        "instruction": f"Unrecognized taught action '{action_type}' in step '{title}'.",
+                        "manual_review_required": True,
+                    }
+                )
+
+            draft_steps.append(step_payload)
+            next_order += 1
+
+    return draft_steps
+
+
+def _build_teaching_startup_state(session_id: str) -> TeachingStartupState:
+    record = _teaching_startup_sessions[session_id]
+    return TeachingStartupState(
+        session_id=session_id,
+        task_id=record.get("task_id"),
+        workflow_name=record.get("workflow_name", ""),
+        target_machine_uuid=record.get("target_machine_uuid"),
+        target_machine_name=record.get("target_machine_name"),
+        status=record.get("status", "browser_opening"),
+        message=record.get("message", ""),
+        overlay_enabled=record.get("overlay_enabled", True),
+        voice_prompt_text=record.get("voice_prompt_text", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Teaching Mode Session Routes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/teaching/session/{session_id}/status", response_model=TeachingStartupState)
+def get_teaching_session_status(session_id: str) -> TeachingStartupState:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    return _build_teaching_startup_state(session_id)
+
+
+@app.post("/api/teaching/session/{session_id}/status", response_model=TeachingStartupState)
+def post_teaching_session_status(session_id: str, body: TeachingStartupStatusRequest) -> TeachingStartupState:
+    if body.status not in ("active", "failed"):
+        raise HTTPException(status_code=422, detail="status must be 'active' or 'failed'")
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    record["status"] = body.status
+    record["message"] = body.message or ""
+    record["updated_at"] = datetime.utcnow().isoformat()
+    if body.task_id:
+        record["task_id"] = body.task_id
+    if body.status == "active":
+        record["voice_prompt_text"] = "Teaching mode is active. Walk me through what this workflow is for."
+    logger.info("TEACHING_SESSION_STATUS session_id=%s status=%s", session_id, body.status)
+    return _build_teaching_startup_state(session_id)
+
+
+@app.post("/api/teaching/session/{session_id}/conversation", response_model=TeachingSessionMessageResponse)
+def teaching_session_conversation(session_id: str, body: TeachingSessionMessageRequest) -> TeachingSessionMessageResponse:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    ts: dict = record.get("teaching_session") or {
+        "session_id": session_id,
+        "workflow_name": record.get("workflow_name", "Workflow"),
+        "workflow_summary": None,
+        "status": "intro",
+        "steps": [],
+    }
+    message = (body.message or "").strip()
+    steps: list[dict] = list(ts.get("steps") or [])
+    current_status = ts.get("status", "intro")
+    if current_status == "intro" or not ts.get("workflow_summary"):
+        ts["workflow_summary"] = message
+        ts["status"] = "teaching"
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        return TeachingSessionMessageResponse(reply="Got it. Where do we start?", teaching_session=TeachingSession.model_validate(ts))
+    if steps and _is_decision_rule(message):
+        steps[-1].setdefault("decision_rules", []).append(message)
+        ts["steps"] = steps
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        return TeachingSessionMessageResponse(reply="Got it. I'll apply that rule for this step.", teaching_session=TeachingSession.model_validate(ts))
+    if steps and _is_exception_rule(message):
+        steps[-1].setdefault("exceptions", []).append(message)
+        ts["steps"] = steps
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        return TeachingSessionMessageResponse(reply="Noted. I'll handle that exception.", teaching_session=TeachingSession.model_validate(ts))
+    if _is_vague_message(message):
+        ts["steps"] = steps
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        return TeachingSessionMessageResponse(reply="I need a little more detail. What action should Bill perform or watch for?", teaching_session=TeachingSession.model_validate(ts))
+    step_order = len(steps) + 1
+    title = _infer_step_title_from_text(message, steps)
+    bill_summary = _bill_summary_from_text(message, step_order)
+    observed_actions = _build_text_navigation_observed_actions(message)
+    new_step: dict = {
+        "id": str(uuid4()), "order": step_order, "title": title, "observed_actions": observed_actions,
+        "employee_explanation": message, "bill_summary": bill_summary, "bill_confidence": 0.8,
+        "pending_question": "Is that correct?", "needs_reasoning": False,
+        "unanswered_question": True, "confirmed": False, "decision_rules": [], "exceptions": [], "required_inputs": [],
+    }
+    steps.append(new_step)
+    ts["steps"] = steps
+    ts["status"] = "teaching"
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    return TeachingSessionMessageResponse(reply=f"{bill_summary} Is that correct?", teaching_session=TeachingSession.model_validate(ts))
+
+
+@app.post("/api/teaching/session/{session_id}/steps/{step_id}/confirm", response_model=TeachingSessionMessageResponse)
+def confirm_teaching_step(session_id: str, step_id: str) -> TeachingSessionMessageResponse:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    if not ts:
+        raise HTTPException(status_code=404, detail="No teaching session in record")
+    steps: list[dict] = list(ts.get("steps") or [])
+    matched = False
+    for step in steps:
+        if step.get("id") == step_id:
+            step["confirmed"] = True
+            step["unanswered_question"] = False
+            matched = True
+            break
+    if not matched:
+        raise HTTPException(status_code=404, detail="Step not found")
+    ts["steps"] = steps
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    return TeachingSessionMessageResponse(reply="Got it \u2014 that step is confirmed.", teaching_session=TeachingSession.model_validate(ts))
+
+
+@app.post("/api/teaching/session/{session_id}/review", response_model=TeachingSessionReviewResponse)
+def review_teaching_session(session_id: str) -> TeachingSessionReviewResponse:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    if not ts:
+        raise HTTPException(status_code=404, detail="No teaching session in record")
+    steps: list[dict] = list(ts.get("steps") or [])
+    ts["status"] = "review"
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    confirmed = sum(1 for s in steps if s.get("confirmed"))
+    step_summaries = [
+        TeachingSessionReviewStepSummary(
+            step_id=s.get("id", ""), order=int(s.get("order", 0)), title=s.get("title", ""),
+            confirmed=bool(s.get("confirmed")), bill_summary=s.get("bill_summary", ""),
+            employee_explanation=s.get("employee_explanation"),
+            observed_actions=[BrowserAction(**a) for a in (s.get("observed_actions") or [])],
+            decision_rules=s.get("decision_rules", []), exceptions=s.get("exceptions", []),
+            required_inputs=s.get("required_inputs", []),
+        ) for s in steps
+    ]
+    review_summary = TeachingSessionReviewSummary(
+        workflow_summary=ts.get("workflow_summary") or "", total_steps=len(steps),
+        confirmed_steps=confirmed, unconfirmed_steps=len(steps) - confirmed, steps=step_summaries,
+    )
+    wf_name = ts.get("workflow_name", "this workflow")
+    step_titles = ", ".join(s.get("title", "") for s in steps[:5])
+    reply = (f"Here's what I've learned about '{wf_name}': {len(steps)} step(s) captured ({confirmed} confirmed). Steps: {step_titles}. Review each step and approve when ready.")
+    return TeachingSessionReviewResponse(reply=reply, teaching_session=TeachingSession.model_validate(ts), review_summary=review_summary, warnings=[])
+
+
+@app.post("/api/teaching/session/{session_id}/continue", response_model=TeachingSessionMessageResponse)
+def continue_teaching_session(session_id: str) -> TeachingSessionMessageResponse:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    if not ts:
+        raise HTTPException(status_code=404, detail="No teaching session in record")
+    ts["status"] = "teaching"
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    return TeachingSessionMessageResponse(reply="OK, let's keep going. What's the next step?", teaching_session=TeachingSession.model_validate(ts))
+
+
+@app.post("/api/teaching/session/{session_id}/approve", response_model=TeachingSessionReviewResponse)
+def approve_teaching_session(session_id: str) -> TeachingSessionReviewResponse:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    if not ts:
+        raise HTTPException(status_code=404, detail="No teaching session in record")
+    steps: list[dict] = list(ts.get("steps") or [])
+    if not steps:
+        raise HTTPException(status_code=400, detail="Cannot approve a workflow with no steps")
+    warnings: list[str] = []
+    if any(not s.get("confirmed") for s in steps):
+        warnings.append("Some steps are not confirmed yet. You can approve anyway, but Bill may need more training.")
+    workflow_name = ts.get("workflow_name", "Untitled")
+    latest_readiness: dict[str, Any] | None = None
+    existing_draft_id: str | None = record.get("draft_id")
+    draft_result: dict = {}
+    if existing_draft_id:
+        idx, existing = _find_workflow_draft(existing_draft_id)
+        if existing is not None and idx is not None:
+            updated = dict(existing)
+            updated["steps"] = _convert_teaching_steps_to_draft(steps)
+            updated["workflow_summary"] = ts.get("workflow_summary") or ""
+            updated["updated_at"] = datetime.utcnow().isoformat()
+            updated["review_status"] = "approved"
+            latest_readiness = validate_taught_workflow_executable(updated)
+            updated["execution_readiness"] = latest_readiness
+            workflow_learning_drafts[idx] = updated
+            _save_workflow_learning_drafts()
+            draft_result = {"draft_id": existing_draft_id, "action": "updated"}
+        else:
+            existing_draft_id = None
+    if not existing_draft_id:
+        draft_req = WorkflowLearningCreateRequest(learning_path="demonstration", workflow_name=workflow_name, goal=f"Workflow '{workflow_name}' taught via Teaching Mode.", source_text=ts.get("workflow_summary") or "")
+        new_draft = _build_workflow_draft(draft_req)
+        new_draft["steps"] = _convert_teaching_steps_to_draft(steps)
+        new_draft["workflow_summary"] = ts.get("workflow_summary") or ""
+        new_draft["review_status"] = "approved"
+        latest_readiness = validate_taught_workflow_executable(new_draft)
+        new_draft["execution_readiness"] = latest_readiness
+        workflow_learning_drafts.append(new_draft)
+        _save_workflow_learning_drafts()
+        created_draft_id = new_draft.get("draft_id", str(uuid4()))
+        record["draft_id"] = created_draft_id
+        draft_result = {"draft_id": created_draft_id, "action": "created"}
+    ts["status"] = "approved"
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    confirmed = sum(1 for s in steps if s.get("confirmed"))
+    step_summaries = [
+        TeachingSessionReviewStepSummary(
+            step_id=s.get("id", ""), order=int(s.get("order", 0)), title=s.get("title", ""),
+            confirmed=bool(s.get("confirmed")), bill_summary=s.get("bill_summary", ""),
+            employee_explanation=s.get("employee_explanation"),
+            observed_actions=[BrowserAction(**a) for a in (s.get("observed_actions") or [])],
+            decision_rules=s.get("decision_rules", []), exceptions=s.get("exceptions", []),
+            required_inputs=s.get("required_inputs", []),
+        ) for s in steps
+    ]
+    review_summary = TeachingSessionReviewSummary(
+        workflow_summary=ts.get("workflow_summary") or "", total_steps=len(steps),
+        confirmed_steps=confirmed, unconfirmed_steps=len(steps) - confirmed, steps=step_summaries,
+    )
+    if latest_readiness:
+        warnings.extend([str(item) for item in (latest_readiness.get("warnings") or [])])
+        if not latest_readiness.get("runnable"):
+            reasons = [str(item) for item in (latest_readiness.get("blocking_reasons") or [])]
+            if reasons:
+                warnings.append("Workflow saved, but it is not runnable yet.")
+                warnings.extend([f"Reason: {reason}" for reason in reasons])
+
+    if latest_readiness and latest_readiness.get("runnable"):
+        reply = f"Workflow '{workflow_name}' approved and ready to test. Bill created a playbook draft."
+    else:
+        reply = f"Workflow '{workflow_name}' saved, but Bill needs more training before it can run."
+
+    return TeachingSessionReviewResponse(
+        reply=reply,
+        teaching_session=TeachingSession.model_validate(ts),
+        review_summary=review_summary,
+        warnings=warnings,
+        draft_result=draft_result,
+        execution_readiness=latest_readiness,
+    )
+
+
+@app.post("/api/teaching/session/{session_id}/actions", response_model=TeachingSessionMessageResponse)
+def teaching_session_record_action(session_id: str, body: TeachingSessionActionRequest) -> TeachingSessionMessageResponse:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    if not ts:
+        raise HTTPException(status_code=404, detail="No teaching session in record")
+    steps: list[dict] = list(ts.get("steps") or [])
+    action_dict = body.action.model_dump()
+    _SENSITIVE_LABELS = ("password", "mfa", "pin", "ssn", "social", "token", "secret", "otp", "code")
+    label = (action_dict.get("label") or "").lower()
+    if body.action.type == "type":
+        action_dict["value_redacted"] = "[redacted]"
+    if any(s in label for s in _SENSITIVE_LABELS):
+        action_dict["label"] = "[sensitive]"
+        action_dict["selector"] = None
+        action_dict["value_redacted"] = "[redacted]"
+    target_step: dict | None = None
+    if body.step_id:
+        for s in steps:
+            if s.get("id") == body.step_id:
+                target_step = s
+                break
+    if target_step is None:
+        for s in reversed(steps):
+            if not s.get("confirmed"):
+                target_step = s
+                break
+    if target_step is None:
+        temp_step: dict = {
+            "id": str(uuid4()), "order": len(steps) + 1, "title": "Observed browser activity",
+            "observed_actions": [], "employee_explanation": None, "bill_summary": "",
+            "bill_confidence": 0.5, "pending_question": None, "needs_reasoning": False,
+            "unanswered_question": False, "confirmed": False, "decision_rules": [], "exceptions": [], "required_inputs": [],
+        }
+        steps.append(temp_step)
+        target_step = temp_step
+    target_step.setdefault("observed_actions", []).append(action_dict)
+    ts["steps"] = steps
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    return TeachingSessionMessageResponse(reply="Action captured.", teaching_session=TeachingSession.model_validate(ts))
+
+
+@app.post("/api/bill/chat")
+def bill_chat(payload: dict = Body(default={})) -> dict:
+    message = str(payload.get("message") or "").strip()
+    target_machine_uuid = str(payload.get("target_machine_uuid") or "").strip() or None
+    message_lower = message.lower()
+    if not _is_new_workflow_command(message_lower):
+        return {"reply": "I can help you start a new workflow.", "intent": "unknown", "action": "none", "task_id": None, "workflow_id": None, "next_required_input": None, "metadata": {}, "teaching_mode": None, "session_id": None, "draft_id": None}
+    workflow_name = _extract_workflow_name_from_conversation(message)
+    if not workflow_name:
+        return {"reply": "What should we call this workflow?", "intent": "start_new_workflow", "action": "request_workflow_name", "task_id": None, "workflow_id": None, "next_required_input": "workflow_name", "metadata": {}, "teaching_mode": None, "session_id": None, "draft_id": None}
+    machines = list_machines()
+    selected_worker: MachineRecord | None = None
+    if target_machine_uuid:
+        selected_worker = _find_worker_by_hint(machines, target_machine_uuid)
+    if selected_worker is None:
+        selected_worker = _select_best_worker(machines, target_machine_uuid)
+    if selected_worker is None:
+        return {"reply": "No worker is available.", "intent": "start_new_workflow", "action": "request_worker", "task_id": None, "workflow_id": None, "next_required_input": "target_machine_uuid", "metadata": {}, "teaching_mode": None, "session_id": None, "draft_id": None}
+    draft_request = WorkflowLearningCreateRequest(learning_path="demonstration", workflow_name=workflow_name, goal=f"Teach workflow '{workflow_name}' from conversational command.", source_text="")
+    draft = _build_workflow_draft(draft_request)
+    workflow_learning_drafts.append(draft)
+    _save_workflow_learning_drafts()
+    draft_id = draft.get("draft_id", str(uuid4()))
+    teach_session_id = str(uuid4())
+    task_payload: dict = {"task_type": "teach_session", "draft_id": draft_id, "workflow_name": workflow_name, "api_base": _resolve_teach_session_worker_api_base(""), "start_url": "", "target_machine_uuid": selected_worker.machine_uuid, "session_id": teach_session_id}
+    task = _create_task_record(task_payload)
+    voice_prompt_text = f"Teaching mode is starting for {workflow_name}. Once the browser opens, tell me what this workflow does."
+    teaching_mode_state = TeachingStartupState(session_id=teach_session_id, task_id=task.id, workflow_name=workflow_name, target_machine_uuid=selected_worker.machine_uuid, target_machine_name=selected_worker.machine_name, status="browser_opening", voice_prompt_text=voice_prompt_text)
+    _teaching_startup_sessions[teach_session_id] = {"session_id": teach_session_id, "task_id": task.id, "draft_id": draft_id, "workflow_name": workflow_name, "target_machine_uuid": selected_worker.machine_uuid, "target_machine_name": selected_worker.machine_name, "status": "browser_opening", "message": "", "overlay_enabled": True, "voice_prompt_text": voice_prompt_text, "created_at": datetime.utcnow().isoformat(), "updated_at": datetime.utcnow().isoformat(), "teaching_session": {"session_id": teach_session_id, "workflow_name": workflow_name, "workflow_summary": None, "status": "intro", "steps": []}}
+    return {"reply": f"Sounds good. I started a teaching session for {workflow_name}. Can you give me a quick explanation of what this workflow does?", "intent": "start_new_workflow", "action": "teach_session_queued", "task_id": task.id, "workflow_id": draft_id, "next_required_input": None, "metadata": {"draft_id": draft_id, "session_id": teach_session_id, "target_machine_uuid": selected_worker.machine_uuid}, "teaching_mode": teaching_mode_state.model_dump(), "session_id": teach_session_id, "draft_id": draft_id}
 
 
 @app.get("/api/machines", response_model=list[MachineRecord])
