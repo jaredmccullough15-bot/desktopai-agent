@@ -71,13 +71,31 @@ async function proxyRequest(
   const search = request.nextUrl.search;
   const url = `${BACKEND}/${path}${search}`;
 
-  const headers: Record<string, string> = {};
+  const headers = new Headers();
   const requestContentType = request.headers.get("content-type");
   if (requestContentType) {
-    headers["Content-Type"] = requestContentType;
+    headers.set("Content-Type", requestContentType);
   }
   const authHeader = request.headers.get("authorization");
-  if (authHeader) headers["authorization"] = authHeader;
+  if (authHeader) headers.set("authorization", authHeader);
+
+  const dashboardApiKey = (process.env.BILL_CORE_DASHBOARD_API_KEY ?? "").trim();
+  if (dashboardApiKey) {
+    // Inject only on the server proxy; never expose this key to the browser.
+    headers.set("X-Bill-Core-Key", dashboardApiKey);
+    console.log(`[auth-proxy] Dashboard key present=true, path=${path}, method=${method}`);
+  } else {
+    console.warn(`[auth-proxy] WARNING: Dashboard key missing! path=${path}, method=${method}`);
+    return NextResponse.json(
+      { error: "Bill Web proxy is missing BILL_CORE_DASHBOARD_API_KEY at runtime" },
+      {
+        status: 500,
+        headers: {
+          "Cache-Control": "no-store",
+        },
+      }
+    );
+  }
 
   let body: string | undefined;
   if (method !== "GET" && method !== "DELETE") {
@@ -95,11 +113,13 @@ async function proxyRequest(
       body,
     });
     const data = await response.arrayBuffer();
+    console.log(`[auth-proxy] Response: status=${response.status}, path=${path}, method=${method}`);
     return new NextResponse(data, {
       status: response.status,
       headers: { "Content-Type": response.headers.get("Content-Type") || "application/octet-stream" },
     });
   } catch (err) {
+    console.error(`[auth-proxy] Proxy error: ${String(err)}, path=${path}, method=${method}`);
     return NextResponse.json({ error: "Proxy error", detail: String(err) }, { status: 502 });
   }
 }

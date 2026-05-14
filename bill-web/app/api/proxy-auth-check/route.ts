@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const DEFAULT_BACKEND = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
 
 function resolveBackendBase(): string {
@@ -30,10 +33,18 @@ export async function GET() {
   const dashboardApiKey = (process.env.BILL_CORE_DASHBOARD_API_KEY ?? "").trim();
   const backendBase = resolveBackendBase();
 
-  return NextResponse.json({
-    proxy_runtime: true,
-    dashboard_key_present: dashboardApiKey.length > 0,
-    backend_base: backendBase,
-    node_env: process.env.NODE_ENV ?? "unknown",
-  });
+  return NextResponse.json(
+    {
+      proxy_runtime: true,
+      dashboard_key_present: dashboardApiKey.length > 0,
+      backend_base: backendBase,
+      node_env: process.env.NODE_ENV ?? "unknown",
+      timestamp: new Date().toISOString(),
+    },
+    {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      },
+    }
+  );
 }

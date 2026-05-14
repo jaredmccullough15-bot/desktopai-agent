@@ -86,6 +86,15 @@ async function proxyRequest(
     console.log(`[auth-proxy] Dashboard key present=true, path=${path}, method=${method}`);
   } else {
     console.warn(`[auth-proxy] WARNING: Dashboard key missing! path=${path}, method=${method}`);
+    return NextResponse.json(
+      { error: "Bill Web proxy is missing BILL_CORE_DASHBOARD_API_KEY at runtime" },
+      {
+        status: 500,
+        headers: {
+          "Cache-Control": "no-store",
+        },
+      }
+    );
   }
 
   let body: string | undefined;
