@@ -21,6 +21,7 @@ from worker.executors.browser_workflow import WorkflowExecutionError, run as run
 from worker.executors.click_selector import run as run_click_selector
 from worker.executors.open_url_and_screenshot import run as run_open_url_and_screenshot
 from worker.executors.smart_sherpa_sync import run as run_smart_sherpa_sync
+from worker.executors.taught_workflow import run as run_taught_workflow
 from worker.executors.type_text import run as run_type_text
 from worker.executors.wait_for_element import run as run_wait_for_element
 from worker.browser_profile import (
@@ -39,7 +40,7 @@ SECRETS_PATH = APP_ROOT / "secrets.local.json"
 LOGS_DIR = APP_ROOT / "logs"
 SCREENSHOTS_DIR = APP_ROOT / "screenshots"
 DOWNLOADS_DIR = APP_ROOT / "downloads"
-WORKER_VERSION = "0.3.32"
+WORKER_VERSION = "0.3.33"
 HEARTBEAT_INTERVAL_SECONDS = 10.0
 POLLING_INTERVAL_SECONDS = 5.0
 UPDATE_CHECK_INTERVAL_SECONDS = 120.0
@@ -53,6 +54,7 @@ BILL_CHROME_PROFILE_DIR = Path(os.getenv("LOCALAPPDATA") or str(Path.home() / "A
 CHROME_PROFILE_DIRECTORY = "Default"
 REMOTE_DEBUGGING_PORT = 9222
 BROWSER_PROFILE_POLICY = "bill_profile"
+WORKER_SHARED_SECRET = ""
 
 DEFAULT_BILL_BOOKMARKS: list[dict[str, Any]] = [
     {
@@ -115,6 +117,7 @@ DEFAULT_CONFIG = {
     "auto_update_enabled": True,
     "poll_interval_seconds": 5,
     "log_level": "INFO",
+    "worker_shared_secret": "",
     "prefer_system_chrome": PREFER_SYSTEM_CHROME,
     "bill_chrome_profile_dir": str(BILL_CHROME_PROFILE_DIR),
     "bill_bookmarks": [dict(item) for item in DEFAULT_BILL_BOOKMARKS],
@@ -151,6 +154,19 @@ def log_warn(message: str) -> None:
 
 def log_error(message: str) -> None:
     print(f"{_timestamp()} [ERROR] {message}")
+
+
+def _core_auth_headers(headers: dict[str, str] | None = None) -> dict[str, str]:
+    merged = dict(headers or {})
+    if WORKER_SHARED_SECRET:
+        merged["X-Bill-Worker-Key"] = WORKER_SHARED_SECRET
+    return merged
+
+
+def _core_request(method: str, url: str, **kwargs: Any) -> requests.Response:
+    existing_headers = kwargs.pop("headers", None)
+    kwargs["headers"] = _core_auth_headers(dict(existing_headers or {}))
+    return requests.request(method, url, **kwargs)
 
 
 def _truncate_text(value: str, max_len: int = 700) -> str:
@@ -709,6 +725,7 @@ def apply_runtime_config() -> dict[str, Any]:
     global CHROME_PROFILE_DIRECTORY
     global REMOTE_DEBUGGING_PORT
     global BROWSER_PROFILE_POLICY
+    global WORKER_SHARED_SECRET
 
     config = load_worker_config()
 
@@ -793,6 +810,15 @@ def apply_runtime_config() -> dict[str, Any]:
 
     WORKER_UI_ENABLED = True
 
+    WORKER_SHARED_SECRET = str(
+        _get_setting(
+            config,
+            "worker_shared_secret",
+            ["BILL_CORE_WORKER_SHARED_SECRET"],
+            "",
+        )
+    ).strip()
+
     screenshots_dir = _resolve_dir(str(SCREENSHOTS_DIR), SCREENSHOTS_DIR, APP_ROOT)
     downloads_dir = _resolve_dir(str(DOWNLOADS_DIR), DOWNLOADS_DIR, APP_ROOT)
 
@@ -827,6 +853,7 @@ def apply_runtime_config() -> dict[str, Any]:
     os.environ["JARVIS_WORKER_BROWSER_PROFILE_POLICY"] = BROWSER_PROFILE_POLICY
     os.environ["BILL_WORKER_BOOKMARKS_JSON"] = json.dumps(BILL_BOOKMARKS)
     os.environ["JARVIS_WORKER_BOOKMARKS_JSON"] = json.dumps(BILL_BOOKMARKS)
+    os.environ["BILL_CORE_WORKER_SHARED_SECRET"] = WORKER_SHARED_SECRET
 
     return {
         "core_url": API_BASE,
@@ -968,7 +995,7 @@ def _download_update_package(package_url: str, destination_path: Path) -> None:
         return
 
     if scheme in {"http", "https"}:
-        with requests.get(package_url, stream=True, timeout=60) as response:
+        with _core_request("GET", package_url, stream=True, timeout=60) as response:
             response.raise_for_status()
             with open(destination_path, "wb") as out_file:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -1155,7 +1182,7 @@ try {
     script_downloaded = False
     if updater_script_url:
         try:
-            resp = requests.get(updater_script_url, timeout=15)
+            resp = _core_request("GET", updater_script_url, timeout=15)
             resp.raise_for_status()
             script_path.write_text(resp.text, encoding="utf-8")
             script_downloaded = True
@@ -1409,7 +1436,8 @@ def maybe_apply_update_on_connect(
             timeout=20,
             params={"machine_uuid": machine_uuid, "current_version": WORKER_VERSION},
         )
-        response = requests.get(
+        response = _core_request(
+            "GET",
             check_url,
             params={"machine_uuid": machine_uuid, "current_version": WORKER_VERSION},
             timeout=20,
@@ -1483,7 +1511,8 @@ def register_worker(machine_name: str, machine_uuid: str, runtime_state: Runtime
             f"machine_uuid={payload['machine_uuid']} machine_name={payload['machine_name']} "
             f"worker_version={payload['worker_version']} execution_mode={payload['execution_mode']}"
         )
-        response = requests.post(
+        response = _core_request(
+            "POST",
             register_url,
             json=payload,
             timeout=10,
@@ -1527,7 +1556,8 @@ def _report_update_status(
     snap = runtime_state.snapshot()
     heartbeat_url = f"{API_BASE}/worker/heartbeat"
     try:
-        requests.post(
+        _core_request(
+            "POST",
             heartbeat_url,
             json={
                 "machine_name": machine_name,
@@ -1552,7 +1582,8 @@ def send_heartbeat(machine_name: str, machine_uuid: str, runtime_state: RuntimeS
     heartbeat_url = f"{API_BASE}/worker/heartbeat"
     try:
         _log_http_start("heartbeat", heartbeat_url, timeout=10)
-        response = requests.post(
+        response = _core_request(
+            "POST",
             heartbeat_url,
             json={
                 "machine_name": machine_name,
@@ -1597,7 +1628,7 @@ def _post_teaching_session_status(
     last_error = ""
     for attempt in range(1, 4):
         try:
-            resp = requests.post(url, json=body, timeout=10)
+            resp = _core_request("POST", url, json=body, timeout=10)
             if resp.ok:
                 log_info(
                     f"[worker] TEACHING_SESSION_{status.upper()} session_id={session_id} task_id={task_id}"
@@ -1692,6 +1723,20 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
         spec.loader.exec_module(_ts)  # type: ignore[union-attr]
 
     try:
+        # Post the active callback immediately when Chrome opens (not after the
+        # entire session ends), so the frontend poll doesn't time out.
+        active_callback_sent: list[bool] = [False]
+
+        def _on_browser_ready() -> None:
+            active_callback_sent[0] = True
+            _post_teaching_session_status(
+                api_base=api_base,
+                session_id=teach_session_id,
+                task_id=str(payload.get("task_id") or ""),
+                status="active",
+                message="Teaching browser opened successfully. Walk me through the workflow.",
+            )
+
         session_result = _ts.run_session(
             draft_id,
             api_base,
@@ -1700,17 +1745,18 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
             chrome_user_data_dir=str(chrome_user_data_dir),
             profile_directory=chrome_profile_directory,
             remote_debugging_port=remote_debugging_port,
+            on_browser_ready=_on_browser_ready,
         )
         browser_launch_succeeded = bool((session_result or {}).get("browser_launch_succeeded"))
         log_info(f"[worker] teach_session browser launch succeeded={browser_launch_succeeded}")
 
-        # ── Notify Core that the browser is open and teaching is active ───────
-        if teach_session_id:
+        # ── If browser never became ready, post failure now ───────────────────
+        if teach_session_id and not active_callback_sent[0]:
             _post_teaching_session_status(
                 api_base=api_base,
                 session_id=teach_session_id,
                 task_id=str(payload.get("task_id") or ""),
-                status="active" if browser_launch_succeeded else "failed",
+                status="failed" if not browser_launch_succeeded else "active",
                 message=(
                     "Teaching browser opened successfully. Walk me through the workflow."
                     if browser_launch_succeeded
@@ -1783,7 +1829,7 @@ def poll_next_task(machine_uuid: str, state: dict[str, Any], runtime_state: Runt
     try:
         params = {"machine_uuid": machine_uuid}
         _log_http_start("task-poll", poll_url, timeout=10, params=params)
-        response = requests.get(poll_url, params=params, timeout=10)
+        response = _core_request("GET", poll_url, params=params, timeout=10)
         response.raise_for_status()
         try:
             task = response.json()
@@ -1828,7 +1874,7 @@ def poll_recovery_actions(machine_uuid: str, state: dict[str, Any], runtime_stat
         list_url = f"{API_BASE}/api/tasks/paused-for-human-recovery"
         params = {"machine_uuid": machine_uuid, "include_auto": "true"}
         _log_http_start("recovery-poll", list_url, timeout=10, params=params)
-        response = requests.get(list_url, params=params, timeout=10)
+        response = _core_request("GET", list_url, params=params, timeout=10)
         response.raise_for_status()
         payload = response.json() if response.content else {}
         paused_tasks = payload.get("tasks") if isinstance(payload, dict) else []
@@ -1908,7 +1954,7 @@ def poll_recovery_actions(machine_uuid: str, state: dict[str, Any], runtime_stat
                 }
 
                 _log_http_start("recovery-complete", completed_url, timeout=15)
-                completed_response = requests.post(completed_url, json=completed_payload, timeout=15)
+                completed_response = _core_request("POST", completed_url, json=completed_payload, timeout=15)
                 completed_response.raise_for_status()
                 log_info(
                     f"Recovery action completed: task_id={task_id} action_id={action_id} "
@@ -2055,6 +2101,7 @@ def process_task(machine_uuid: str, task: dict, state: dict[str, Any], runtime_s
     execution_feedback: list[dict[str, Any]] = []
     browser_task_types = {
         "browser_workflow",
+        "taught_workflow",
         "open_url_and_screenshot",
         "click_selector",
         "type_text",
@@ -2065,7 +2112,7 @@ def process_task(machine_uuid: str, task: dict, state: dict[str, Any], runtime_s
 
     if task_type == "browser_workflow":
         execution_mode = _normalize_mode(str(payload.get("mode") or "interactive_visible"), "interactive_visible")
-    elif task_type in {"open_url_and_screenshot", "click_selector", "type_text", "wait_for_element", "smart_sherpa_sync"}:
+    elif task_type in {"taught_workflow", "open_url_and_screenshot", "click_selector", "type_text", "wait_for_element", "smart_sherpa_sync"}:
         execution_mode = _normalize_mode(str(payload.get("mode") if payload.get("mode") else default_worker_mode), default_worker_mode)
     else:
         execution_mode = default_worker_mode
@@ -2160,6 +2207,12 @@ def process_task(machine_uuid: str, task: dict, state: dict[str, Any], runtime_s
                     result_json = run_browser_workflow(
                         payload,
                         secret_resolver=lambda name: resolve_secret_value(name, secrets),
+                        progress_callback=update_step,
+                        default_mode=execution_mode,
+                    )
+                elif task_type == "taught_workflow":
+                    result_json = run_taught_workflow(
+                        payload,
                         progress_callback=update_step,
                         default_mode=execution_mode,
                     )
@@ -2380,7 +2433,6 @@ def start_local_status_panel(machine_name: str, machine_uuid_getter: callable, r
                     options.add_experimental_option("detach", True)
 
                     driver = webdriver.Chrome(options=options)
-                    driver.get("https://www.google.com")
                     selenium_state["driver"] = driver
                     runtime_state.set_step("Selenium attached to debug Chrome")
                 except Exception as error:
@@ -2460,7 +2512,8 @@ def complete_task(machine_uuid: str, task_id: str | None, result_json: dict[str,
         return
 
     try:
-        requests.post(
+        _core_request(
+            "POST",
             f"{API_BASE}/worker/tasks/{task_id}/complete",
             json={"machine_uuid": machine_uuid, "result_json": result_json},
             timeout=10,
@@ -2487,7 +2540,8 @@ def fail_task(machine_uuid: str, task_id: str | None, error_message: str, result
                 f"detected_modals={len(detected_modals)} "
                 f"detected_overlays={len(detected_overlays)}"
             )
-        requests.post(
+        _core_request(
+            "POST",
             f"{API_BASE}/worker/tasks/{task_id}/fail",
             json={
                 "machine_uuid": machine_uuid,

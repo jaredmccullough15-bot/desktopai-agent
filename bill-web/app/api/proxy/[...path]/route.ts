@@ -79,6 +79,12 @@ async function proxyRequest(
   const authHeader = request.headers.get("authorization");
   if (authHeader) headers["authorization"] = authHeader;
 
+  const dashboardApiKey = (process.env.BILL_CORE_DASHBOARD_API_KEY ?? "").trim();
+  if (dashboardApiKey) {
+    // Inject only on the server proxy; never expose this key to the browser.
+    headers["X-Bill-Core-Key"] = dashboardApiKey;
+  }
+
   let body: string | undefined;
   if (method !== "GET" && method !== "DELETE") {
     try {

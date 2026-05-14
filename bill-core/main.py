@@ -21,7 +21,9 @@ from uuid import uuid4
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+
+from auth import enforce_request_auth, validate_auth_configuration
 
 from error_explainer import (
     classify_error,
@@ -187,6 +189,16 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("bill-core")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    try:
+        enforce_request_auth(request)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
 
 # ---------------------------------------------------------------------------
 # Startup validation (reliability check — no business logic changes)
@@ -464,6 +476,7 @@ DEFAULT_WORKFLOW_RECORDS: list[dict[str, Any]] = [
 
 @app.on_event("startup")
 def log_server_binding() -> None:
+    validate_auth_configuration()
     _startup_validate()
     global WORKFLOW_REGISTRY
     WORKFLOW_REGISTRY = _load_workflow_registry()
