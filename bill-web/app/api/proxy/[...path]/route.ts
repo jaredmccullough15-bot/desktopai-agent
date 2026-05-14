@@ -71,18 +71,18 @@ async function proxyRequest(
   const search = request.nextUrl.search;
   const url = `${BACKEND}/${path}${search}`;
 
-  const headers: Record<string, string> = {};
+  const headers = new Headers();
   const requestContentType = request.headers.get("content-type");
   if (requestContentType) {
-    headers["Content-Type"] = requestContentType;
+    headers.set("Content-Type", requestContentType);
   }
   const authHeader = request.headers.get("authorization");
-  if (authHeader) headers["authorization"] = authHeader;
+  if (authHeader) headers.set("authorization", authHeader);
 
   const dashboardApiKey = (process.env.BILL_CORE_DASHBOARD_API_KEY ?? "").trim();
   if (dashboardApiKey) {
     // Inject only on the server proxy; never expose this key to the browser.
-    headers["X-Bill-Core-Key"] = dashboardApiKey;
+    headers.set("X-Bill-Core-Key", dashboardApiKey);
     console.log(`[auth-proxy] Dashboard key present=true, path=${path}, method=${method}`);
   } else {
     console.warn(`[auth-proxy] WARNING: Dashboard key missing! path=${path}, method=${method}`);
