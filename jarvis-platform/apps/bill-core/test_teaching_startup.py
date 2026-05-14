@@ -685,6 +685,85 @@ class TestTeachingConversationStepCapture:
         assert action["url"] == "https://google.com"
 
 
+class TestTeachingLanguageSophistication:
+    @pytest.mark.parametrize(
+        "message, expected_intent",
+        [
+            ("log into TrackVia", "authentication"),
+            ("go to the upload dashboard", "navigation"),
+            ("click pending uploads", "navigation"),
+            ("search for the client", "search"),
+            ("skip this one if it is missing", "decision_skip"),
+            ("submit when everything looks right", "submission"),
+            ("if it errors out just refresh", "recovery"),
+            ("use the SSO login", "authentication"),
+            ("download the report", "reporting"),
+            ("wait for the queue to load", "waiting"),
+        ],
+    )
+    def test_phrase_library_maps_employee_language_to_intents(self, message, expected_intent):
+        import main as m
+
+        analysis = m._analyze_teaching_message(message, [])
+        assert expected_intent in analysis["intents"]
+        assert analysis["title"]
+        assert analysis["bill_summary"]
+
+    def test_confidence_thresholds_drive_interrupt_behavior(self):
+        import main as m
+
+        high = m._analyze_teaching_message("Navigate to https://go.trackvia.com/#/signin", [])
+        assert high["confidence"] >= 0.9
+        assert high["should_interrupt"] is False
+
+        medium = m._analyze_teaching_message("submit when everything looks right", [])
+        assert 0.7 <= medium["confidence"] < 0.9
+
+        low = m._analyze_teaching_message("do that", [])
+        assert low["confidence"] < 0.7
+        assert low["should_interrupt"] is True
+
+    def test_followup_questions_are_focused(self):
+        import main as m
+
+        search = m._analyze_teaching_message("search for the client", [])
+        assert "search" in str(search.get("followup_question") or "").lower()
+        assert "client" in str(search.get("followup_question") or "").lower()
+
+        submit = m._analyze_teaching_message("submit when everything looks right", [])
+        assert "verify" in str(submit.get("followup_question") or "").lower()
+
+        recovery = m._analyze_teaching_message("if it errors out just refresh", [])
+        assert "next" in str(recovery.get("followup_question") or "").lower()
+
+    def test_skip_phrase_is_classified_as_decision_skip_with_exception_context(self):
+        import main as m
+
+        analysis = m._analyze_teaching_message("skip if inactive", [])
+        assert analysis["primary_intent"] == "decision_skip"
+        assert analysis["exceptions"]
+
+    def test_reply_style_varies_and_avoids_old_robotic_phrase(self, client):
+        sid = TestTeachingConversationStepCapture()._seed_session()
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "This workflow processes reports."},
+        )
+        first = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "download the report"},
+        )
+        second = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "wait for the queue to load"},
+        )
+        first_reply = first.json()["reply"]
+        second_reply = second.json()["reply"]
+        assert "i'll treat that as" not in first_reply.lower()
+        assert "i'll treat that as" not in second_reply.lower()
+        assert first_reply != second_reply
+
+
 class TestTeachingActionCapture:
     def _seed_session(self, steps: list[dict] | None = None):
         import main as m

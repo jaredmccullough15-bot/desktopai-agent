@@ -6992,6 +6992,52 @@ _DOMAIN_URL_RE: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
+_TEACHING_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "navigation": (
+        r"\b(go to|open|navigate to|pull up|load|launch|head to|visit)\b",
+        r"\bclick\s+(pending uploads|upload dashboard|dashboard|tab|menu)\b",
+    ),
+    "authentication": (
+        r"\b(log\s*into|log\s*in|sign\s*into|sign\s*in|use\s+sso|sso\b|authenticate)\b",
+    ),
+    "search": (
+        r"\b(search for|look up|find (the )?(client|member|account)|pull (the )?account)\b",
+    ),
+    "decision_skip": (
+        r"\b(skip (this|it)|skip if|only do this when|if (it is )?(missing|blank|inactive)|if missing|if blank|if inactive)\b",
+    ),
+    "submission": (
+        r"\b(submit|finalize|complete|finish|send it through)\b",
+    ),
+    "recovery": (
+        r"\b(refresh|reload|try again|close (the )?popup|back out|return to dashboard)\b",
+    ),
+    "reporting": (
+        r"\b(export|download|save (the )?csv|print (the )?report)\b",
+    ),
+    "waiting": (
+        r"\b(wait for (it|the queue)|wait until ready|wait until (it|page) (loads|is ready)|wait for (the )?queue|wait for (the )?page to load|once the page finishes loading)\b",
+    ),
+}
+
+_INTENT_PRIORITY: tuple[str, ...] = (
+    "navigation",
+    "authentication",
+    "search",
+    "submission",
+    "reporting",
+    "recovery",
+    "waiting",
+    "decision_skip",
+)
+
+_TEACHING_ACK_VARIANTS: tuple[str, ...] = (
+    "Got it.",
+    "Okay, I saw that.",
+    "Looks good.",
+    "I think this step is clear.",
+)
+
 
 def _normalize_extracted_url(raw_url: str) -> str | None:
     candidate = str(raw_url or "").strip()
@@ -7113,6 +7159,137 @@ def _build_text_navigation_observed_actions(message: str) -> list[dict[str, Any]
     ]
 
 
+def _extract_teaching_intents(message: str) -> list[str]:
+    lowered = str(message or "").strip().lower()
+    if not lowered:
+        return []
+
+    intents: list[str] = []
+    for intent, patterns in _TEACHING_INTENT_PATTERNS.items():
+        if any(re.search(pattern, lowered, re.IGNORECASE) for pattern in patterns):
+            intents.append(intent)
+
+    urls = extract_urls_from_message(message)
+    if urls and "navigation" not in intents:
+        intents.append("navigation")
+
+    return intents
+
+
+def _select_primary_intent(intents: list[str]) -> str | None:
+    if not intents:
+        return None
+    for item in _INTENT_PRIORITY:
+        if item in intents:
+            return item
+    return intents[0]
+
+
+def _compose_teaching_followup_question(primary_intent: str | None, message: str, has_url: bool, step_order: int) -> str | None:
+    lower = str(message or "").lower()
+    if primary_intent == "authentication":
+        return "Does Bill always use SSO, or is there another login method in some cases?"
+    if primary_intent == "search":
+        return "What tells Bill which client or account to search for?"
+    if primary_intent == "decision_skip":
+        return "When exactly should Bill skip this step?"
+    if primary_intent == "submission":
+        return "What should Bill verify before submitting?"
+    if primary_intent == "recovery":
+        return "If refresh fails, what should Bill try next?"
+    if primary_intent == "reporting":
+        return "Where should Bill save the exported report?"
+    if primary_intent == "waiting":
+        return "What visual cue tells Bill the page is ready?"
+    if primary_intent == "navigation" and not has_url:
+        if "dashboard" in lower:
+            return "What URL should Bill open for that dashboard?"
+        return "What exact page URL should Bill start on?"
+    if step_order == 1 and not has_url:
+        return "What page should Bill open first?"
+    return None
+
+
+def _teaching_confidence(primary_intent: str | None, message: str, has_url: bool) -> float:
+    if has_url and primary_intent == "navigation":
+        return 0.96
+    if primary_intent in {"navigation", "authentication", "search", "waiting"}:
+        return 0.82
+    if primary_intent in {"submission", "decision_skip", "recovery", "reporting"}:
+        return 0.76
+    if len(str(message or "").split()) <= 4:
+        return 0.58
+    return 0.64
+
+
+def _select_teaching_ack(step_order: int, confidence: float) -> str:
+    if confidence >= 0.9:
+        return _TEACHING_ACK_VARIANTS[0]
+    return _TEACHING_ACK_VARIANTS[(step_order - 1) % len(_TEACHING_ACK_VARIANTS)]
+
+
+def _build_intent_observed_actions(primary_intent: str | None, message: str, urls: list[str]) -> list[dict[str, Any]]:
+    if primary_intent == "navigation":
+        return _build_text_navigation_observed_actions(message)
+    if primary_intent == "waiting":
+        return [
+            {
+                "id": str(uuid4()),
+                "type": "wait",
+                "label": "Wait for page to finish loading",
+                "url": None,
+                "selector": None,
+                "value_redacted": None,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        ]
+    return []
+
+
+def _analyze_teaching_message(message: str, existing_steps: list[dict]) -> dict[str, Any]:
+    step_order = len(existing_steps) + 1
+    urls = extract_urls_from_message(message)
+    intents = _extract_teaching_intents(message)
+    primary_intent = _select_primary_intent(intents)
+    has_url = bool(urls)
+
+    title = _infer_step_title_from_text(message, existing_steps)
+    bill_summary = _bill_summary_from_text(message, step_order)
+    observed_actions = _build_intent_observed_actions(primary_intent, message, urls)
+    confidence = _teaching_confidence(primary_intent, message, has_url)
+    followup = _compose_teaching_followup_question(primary_intent, message, has_url, step_order)
+
+    exceptions: list[str] = []
+    decision_rules: list[str] = []
+    if primary_intent == "decision_skip" or _is_exception_rule(message):
+        exceptions.append(message)
+    elif _is_decision_rule(message):
+        decision_rules.append(message)
+
+    inferred_data: dict[str, Any] = {}
+    if urls:
+        inferred_data["url"] = urls[0]
+    if primary_intent:
+        inferred_data["intent"] = primary_intent
+
+    return {
+        "step_order": step_order,
+        "title": title,
+        "bill_summary": bill_summary,
+        "observed_actions": observed_actions,
+        "confidence": confidence,
+        "followup_question": followup,
+        "needs_reasoning": confidence < 0.7,
+        "should_interrupt": confidence < 0.7 and bool(followup),
+        "intents": intents,
+        "primary_intent": primary_intent,
+        "exceptions": exceptions,
+        "decision_rules": decision_rules,
+        "inferred_data": inferred_data,
+        "ack_prefix": _select_teaching_ack(step_order, confidence),
+    }
+
+
 def _is_vague_message(text: str) -> bool:
     if extract_urls_from_message(text):
         return False
@@ -7150,6 +7327,24 @@ def _infer_step_title_from_text(message: str, existing_steps: list[dict]) -> str
     urls = extract_urls_from_message(message)
     if _is_navigation_instruction(message, urls):
         return f"Navigate to {_url_destination_label(urls[0])}"
+    lower = text.lower()
+    if "sso" in lower and any(token in lower for token in ("log in", "login", "sign in", "sign into")):
+        site_match = _re.search(r"\b(?:to|into)\s+([A-Za-z0-9]+)", text, _re.IGNORECASE)
+        site = site_match.group(1).strip() if site_match else "the portal"
+        return f"Sign into {site} with SSO"
+    if any(token in lower for token in ("upload dashboard", "queue", "pending uploads")):
+        if "pending uploads" in lower:
+            return "Open Pending Uploads"
+        if "upload dashboard" in lower:
+            return "Open Upload Dashboard"
+    if any(token in lower for token in ("download", "export", "report", "csv")):
+        return "Download Report"
+    if any(token in lower for token in ("refresh", "reload", "try again")):
+        return "Refresh and Retry"
+    if "skip" in lower and "if" in lower:
+        return "Skip Step When Condition Matches"
+    if "wait" in lower:
+        return "Wait for Page Ready State"
     site_m = _re.search(r"\b(?:log|navigate|go)\s+(?:in)?to\s+([A-Za-z0-9]+)", text, _re.IGNORECASE)
     open_m = _re.search(r"\bopen\s+(?:the\s+)?(.+?)(?:\s+and\b|\s*$)", text, _re.IGNORECASE)
     if site_m and open_m:
@@ -7184,12 +7379,22 @@ def _bill_summary_from_text(message: str, step_order: int) -> str:
     urls = extract_urls_from_message(message)
     if _is_navigation_instruction(message, urls):
         return f"You start by opening {urls[0]}."
+    if any(w in lower for w in ("sso", "authenticate", "log in", "sign in")):
+        return "You authenticate into the system using the login flow you described."
     if any(w in lower for w in ("navigate", "open", "go to", "login", "log into", "log in")):
         return "I saw you navigate to the required page."
     if any(w in lower for w in ("search", "find", "lookup")):
-        return "I saw you search for the member."
+        return "You search for the client or account using the criteria you provide."
     if any(w in lower for w in ("submit", "save", "finish")):
-        return "I saw you submit the form."
+        return "You submit the workflow after validating the required checks."
+    if any(w in lower for w in ("download", "export", "csv", "report")):
+        return "You export or download the report once the data is ready."
+    if any(w in lower for w in ("refresh", "reload", "try again")):
+        return "If there is an error, you recover by refreshing and retrying."
+    if any(w in lower for w in ("wait", "queue", "ready")):
+        return "You wait until the page is fully ready before continuing."
+    if "skip" in lower and "if" in lower:
+        return "You apply a skip rule based on the condition you described."
     if any(w in lower for w in ("click",)):
         return "I saw you complete an action on the page."
     return f"I captured Step {step_order}."
@@ -7202,23 +7407,75 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
         title = str(s.get("title") or "Observed browser step").strip() or "Observed browser step"
         description = str(s.get("employee_explanation") or s.get("bill_summary") or "").strip()
         observed_actions = list(s.get("observed_actions") or [])
+        inferred_action = str(s.get("inferred_action") or "").strip().lower()
+        inferred_data = dict(s.get("inferred_data") or {}) if isinstance(s.get("inferred_data"), dict) else {}
 
         if not observed_actions:
-            draft_steps.append(
-                {
-                    "id": str(uuid4()),
-                    "step_order": next_order,
-                    "name": f"step_{next_order}",
-                    "step_name": title,
-                    "action": "manual_step",
-                    "instruction": description or title,
-                    "manual_review_required": True,
-                    "description": description,
-                    "decision_rules": list(s.get("decision_rules") or []),
-                    "exceptions": list(s.get("exceptions") or []),
-                    "required_inputs": list(s.get("required_inputs") or []),
-                }
-            )
+            if inferred_action == "navigation" and inferred_data.get("url"):
+                draft_steps.append(
+                    {
+                        "id": str(uuid4()),
+                        "step_order": next_order,
+                        "name": f"step_{next_order}",
+                        "step_name": title,
+                        "action": "open_url",
+                        "url": str(inferred_data.get("url") or ""),
+                        "manual_review_required": False,
+                        "description": description,
+                        "decision_rules": list(s.get("decision_rules") or []),
+                        "exceptions": list(s.get("exceptions") or []),
+                        "required_inputs": list(s.get("required_inputs") or []),
+                    }
+                )
+            elif inferred_action == "waiting":
+                draft_steps.append(
+                    {
+                        "id": str(uuid4()),
+                        "step_order": next_order,
+                        "name": f"step_{next_order}",
+                        "step_name": title,
+                        "action": "wait_for_element",
+                        "selector": "body",
+                        "timeout_ms": 20000,
+                        "manual_review_required": False,
+                        "description": description,
+                        "decision_rules": list(s.get("decision_rules") or []),
+                        "exceptions": list(s.get("exceptions") or []),
+                        "required_inputs": list(s.get("required_inputs") or []),
+                    }
+                )
+            elif inferred_action in {"authentication", "search", "submission", "decision_skip", "recovery", "reporting", "navigation"}:
+                draft_steps.append(
+                    {
+                        "id": str(uuid4()),
+                        "step_order": next_order,
+                        "name": f"step_{next_order}",
+                        "step_name": title,
+                        "action": "manual_approval",
+                        "instruction": description or title,
+                        "manual_review_required": True,
+                        "description": description,
+                        "decision_rules": list(s.get("decision_rules") or []),
+                        "exceptions": list(s.get("exceptions") or []),
+                        "required_inputs": list(s.get("required_inputs") or []),
+                    }
+                )
+            else:
+                draft_steps.append(
+                    {
+                        "id": str(uuid4()),
+                        "step_order": next_order,
+                        "name": f"step_{next_order}",
+                        "step_name": title,
+                        "action": "manual_step",
+                        "instruction": description or title,
+                        "manual_review_required": True,
+                        "description": description,
+                        "decision_rules": list(s.get("decision_rules") or []),
+                        "exceptions": list(s.get("exceptions") or []),
+                        "required_inputs": list(s.get("required_inputs") or []),
+                    }
+                )
             next_order += 1
             continue
 
@@ -7287,6 +7544,22 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
                             "manual_review_required": True,
                         }
                     )
+            elif action_type == "wait":
+                step_payload.update(
+                    {
+                        "action": "wait_for_element",
+                        "selector": selector or "body",
+                        "timeout_ms": 20000,
+                    }
+                )
+            elif action_type in {"refresh", "recover", "authenticate", "search", "download", "export"}:
+                step_payload.update(
+                    {
+                        "action": "manual_approval",
+                        "instruction": description or f"Complete '{title}' using the taught behavior.",
+                        "manual_review_required": True,
+                    }
+                )
             else:
                 step_payload.update(
                     {
@@ -7384,22 +7657,47 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         record["teaching_session"] = ts
         _teaching_startup_sessions[session_id] = record
         return TeachingSessionMessageResponse(reply="I need a little more detail. What action should Bill perform or watch for?", teaching_session=TeachingSession.model_validate(ts))
-    step_order = len(steps) + 1
-    title = _infer_step_title_from_text(message, steps)
-    bill_summary = _bill_summary_from_text(message, step_order)
-    observed_actions = _build_text_navigation_observed_actions(message)
+    analysis = _analyze_teaching_message(message, steps)
+    step_order = int(analysis["step_order"])
+    title = str(analysis["title"])
+    bill_summary = str(analysis["bill_summary"])
+    observed_actions = list(analysis["observed_actions"])
+    bill_confidence = float(analysis["confidence"])
+    followup_question = analysis.get("followup_question")
+    needs_reasoning = bool(analysis.get("needs_reasoning"))
+    unanswered_question = bool(analysis.get("should_interrupt"))
+    inferred_action = str(analysis.get("primary_intent") or "")
+    inferred_data = dict(analysis.get("inferred_data") or {})
+    decision_rules = list(analysis.get("decision_rules") or [])
+    exceptions = list(analysis.get("exceptions") or [])
+    ack_prefix = str(analysis.get("ack_prefix") or "Got it.")
+
     new_step: dict = {
         "id": str(uuid4()), "order": step_order, "title": title, "observed_actions": observed_actions,
-        "employee_explanation": message, "bill_summary": bill_summary, "bill_confidence": 0.8,
-        "pending_question": "Is that correct?", "needs_reasoning": False,
-        "unanswered_question": True, "confirmed": False, "decision_rules": [], "exceptions": [], "required_inputs": [],
+        "employee_explanation": message, "bill_summary": bill_summary, "bill_confidence": bill_confidence,
+        "pending_question": followup_question, "needs_reasoning": needs_reasoning,
+        "unanswered_question": unanswered_question, "confirmed": False,
+        "decision_rules": decision_rules, "exceptions": exceptions, "required_inputs": [],
+        "inferred_action": inferred_action, "inferred_data": inferred_data,
     }
     steps.append(new_step)
     ts["steps"] = steps
     ts["status"] = "teaching"
     record["teaching_session"] = ts
     _teaching_startup_sessions[session_id] = record
-    return TeachingSessionMessageResponse(reply=f"{bill_summary} Is that correct?", teaching_session=TeachingSession.model_validate(ts))
+
+    if bill_confidence >= 0.9:
+        reply = f"{ack_prefix} {bill_summary}"
+    elif bill_confidence >= 0.75:
+        if followup_question:
+            reply = f"{ack_prefix} {bill_summary} {followup_question}"
+        else:
+            reply = f"{ack_prefix} {bill_summary} Does that look right?"
+    else:
+        focused_question = followup_question or "What should Bill use as the deciding signal for this step?"
+        reply = f"{ack_prefix} {bill_summary} {focused_question}"
+
+    return TeachingSessionMessageResponse(reply=reply, teaching_session=TeachingSession.model_validate(ts))
 
 
 @app.post("/api/teaching/session/{session_id}/steps/{step_id}/confirm", response_model=TeachingSessionMessageResponse)
