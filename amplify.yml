@@ -8,6 +8,10 @@ applications:
             - npm ci
         build:
           commands:
+            - test -n "$BILL_CORE_DASHBOARD_API_KEY" || (echo "Missing BILL_CORE_DASHBOARD_API_KEY in Amplify environment variables" && exit 1)
+            - rm -f .env.production
+            - env | grep -e '^BILL_CORE_DASHBOARD_API_KEY=' >> .env.production
+            - env | grep -e '^BILL_CORE_API_BASE=' >> .env.production || true
             - npm run build
       artifacts:
         baseDirectory: .next
