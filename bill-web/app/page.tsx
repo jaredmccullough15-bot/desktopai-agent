@@ -483,12 +483,15 @@ const getConfiguredApiBase = (): string => {
 };
 
 const getApiBase = (): string => {
-  // When running in a browser over HTTPS, use the Next.js API proxy to avoid
-  // mixed-content blocking (HTTPS page -> HTTP backend).
-  if (typeof window !== "undefined" && window.location.protocol === "https:") {
+  // Force all browser dashboard calls through the Next.js proxy so auth
+  // header injection happens server-side for every request.
+  if (typeof window !== "undefined") {
+    console.log("[auth-proxy] using proxy path /api/proxy");
     return "/api/proxy";
   }
-  return getConfiguredApiBase();
+  const configured = getConfiguredApiBase();
+  console.log(`[auth-proxy] server-side api base ${configured}`);
+  return configured;
 };
 
 // Worker payloads must always use the real backend URL (never /api/proxy).
@@ -1494,9 +1497,9 @@ export default function Home() {
   };
 
   const fetchJson = async <T,>(url: string): Promise<T> => {
-    console.log(`[dashboard] Fetching URL: ${url}`);
+    console.log(`[auth-proxy] fetching ${url}`);
     const response = await fetch(url, { cache: "no-store" });
-    console.log(`[dashboard] Response status for ${url}: ${response.status}`);
+    console.log(`[auth-proxy] response ${response.status} for ${url}`);
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
@@ -1509,6 +1512,7 @@ export default function Home() {
     setErrors({});
 
     const apiBase = getApiBase();
+    console.log(`[dashboard] loadDashboardData: apiBase = ${apiBase}, window.location.protocol = ${typeof window !== "undefined" ? window.location.protocol : "N/A"}`);
 
     if (!apiBase) {
       setErrors({

@@ -83,6 +83,9 @@ async function proxyRequest(
   if (dashboardApiKey) {
     // Inject only on the server proxy; never expose this key to the browser.
     headers["X-Bill-Core-Key"] = dashboardApiKey;
+    console.log(`[auth-proxy] Dashboard key present=true, path=${path}, method=${method}`);
+  } else {
+    console.warn(`[auth-proxy] WARNING: Dashboard key missing! path=${path}, method=${method}`);
   }
 
   let body: string | undefined;
@@ -101,11 +104,13 @@ async function proxyRequest(
       body,
     });
     const data = await response.arrayBuffer();
+    console.log(`[auth-proxy] Response: status=${response.status}, path=${path}, method=${method}`);
     return new NextResponse(data, {
       status: response.status,
       headers: { "Content-Type": response.headers.get("Content-Type") || "application/octet-stream" },
     });
   } catch (err) {
+    console.error(`[auth-proxy] Proxy error: ${String(err)}, path=${path}, method=${method}`);
     return NextResponse.json({ error: "Proxy error", detail: String(err) }, { status: 502 });
   }
 }
