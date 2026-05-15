@@ -173,8 +173,17 @@ type TeachingSession = {
   sessionId: string;
   workflowName: string;
   workflowSummary?: string;
-  status: "intro" | "teaching" | "review" | "approved";
+  status: "intro" | "teaching" | "review" | "approved" | "ready" | "needs_more_teaching";
   steps: WorkflowStep[];
+};
+
+type GuidedStepEditState = {
+  title: string;
+  employeeExplanation: string;
+  billSummary: string;
+  decisionRules: string;
+  exceptions: string;
+  requiredInputs: string;
 };
 
 type TeachingSessionApiResponse = {
@@ -678,6 +687,15 @@ export default function Home() {
   const [guidedTeachingReviewSummary, setGuidedTeachingReviewSummary] = useState<TeachingReviewSummary | null>(null);
   const [guidedTeachingWarnings, setGuidedTeachingWarnings] = useState<string[]>([]);
   const [guidedTeachingApprovalMessage, setGuidedTeachingApprovalMessage] = useState<string | null>(null);
+  const [editingStepId, setEditingStepId] = useState<string | null>(null);
+  const [editingStepState, setEditingStepState] = useState<GuidedStepEditState>({
+    title: "",
+    employeeExplanation: "",
+    billSummary: "",
+    decisionRules: "",
+    exceptions: "",
+    requiredInputs: "",
+  });
   const [teachingVoiceError, setTeachingVoiceError] = useState<string | null>(null);
   // Teaching startup state — tracks browser_opening → active/failed
   const [teachingStartupState, setTeachingStartupState] = useState<TeachingStartupState | null>(null);
@@ -1036,100 +1054,181 @@ export default function Home() {
     return `Clicked ${action.label || "element"}`;
   }, []);
 
-  const submitGuidedTeachingMessage = useCallback(async (overrideMessage?: string) => {
+  const setGuidedTeachingFromSession = useCallback((session: TeachingSession) => {
+    setGuidedTeachingSession(session);
+    setGuidedTeachingWarnings([]);
+    setGuidedTeachingReviewSummary({
+      workflowSummary: session.workflowSummary,
+      totalSteps: session.steps.length,
+      confirmedSteps: session.steps.filter((step) => step.confirmed).length,
+      unconfirmedSteps: session.steps.filter((step) => !step.confirmed).length,
+    });
+  }, []);
+
+  const getLatestRelevantStep = useCallback((): WorkflowStep | null => {
+    if (!guidedTeachingSession || guidedTeachingSession.steps.length === 0) {
+      return null;
+    }
+    const latestUnconfirmed = [...guidedTeachingSession.steps].reverse().find((step) => !step.confirmed);
+    return latestUnconfirmed ?? guidedTeachingSession.steps[guidedTeachingSession.steps.length - 1] ?? null;
+  }, [guidedTeachingSession]);
+
+  const callTeachingStepEndpoint = useCallback(async (
+    stepId: string,
+    method: "PATCH" | "DELETE" | "POST",
+    suffix = "",
+    payload?: Record<string, unknown>,
+  ) => {
+    if (!guidedTeachingSession) {
+      return;
+    }
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      throw new Error("NEXT_PUBLIC_API_BASE is not set");
+    }
+    const response = await fetch(
+      `${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/steps/${stepId}${suffix}`,
+      {
+        method,
+        headers: payload ? { "Content-Type": "application/json" } : undefined,
+        body: payload ? JSON.stringify(payload) : undefined,
+      },
+    );
+    const body = (await response.json()) as { detail?: string; teaching_session?: TeachingSessionApiResponse["teaching_session"] };
+    if (!response.ok) {
+      throw new Error(body.detail ?? `Step correction failed (${response.status})`);
+    }
+    if (body.teaching_session) {
+      setGuidedTeachingFromSession(mapApiTeachingSession(body.teaching_session));
+    }
+  }, [guidedTeachingSession, mapApiTeachingSession, setGuidedTeachingFromSession]);
+
+  const handleEditStep = useCallback((step: WorkflowStep) => {
+    setEditingStepId(step.id);
+    setEditingStepState({
+      title: step.title,
+      employeeExplanation: step.employeeExplanation ?? "",
+      billSummary: step.billSummary,
+      decisionRules: step.decisionRules.join("; "),
+      exceptions: step.exceptions.join("; "),
+      requiredInputs: step.requiredInputs.join(", "),
+    });
+  }, []);
+
+  const handleCancelEditStep = useCallback(() => {
+    setEditingStepId(null);
+  }, []);
+
+  const handleSaveEditStep = useCallback(async (stepId: string) => {
     if (!guidedTeachingSession || guidedTeachingBusy) return;
-    const message = (overrideMessage ?? guidedTeachingInput).trim();
-    if (!message) return;
-
-    const targetStepId = guidedTeachingTargetStepId;
     setGuidedTeachingBusy(true);
-    setGuidedTeachingMessages((current) => [...current, { role: "user", message }]);
-    setGuidedTeachingInput("");
+    try {
+      await callTeachingStepEndpoint(stepId, "PATCH", "", {
+        title: editingStepState.title,
+        employee_explanation: editingStepState.employeeExplanation,
+        bill_summary: editingStepState.billSummary,
+        decision_rules: editingStepState.decisionRules.split(";").map((value) => value.trim()).filter(Boolean),
+        exceptions: editingStepState.exceptions.split(";").map((value) => value.trim()).filter(Boolean),
+        required_inputs: editingStepState.requiredInputs.split(",").map((value) => value.trim()).filter(Boolean),
+      });
+      setEditingStepId(null);
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: "I updated that step." }]);
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't save those edits: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [callTeachingStepEndpoint, editingStepState, guidedTeachingBusy, guidedTeachingSession]);
 
+  const handleDeleteStep = useCallback(async (step: WorkflowStep, assistantMessage = "No problem, I removed that step.") => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    setGuidedTeachingBusy(true);
+    try {
+      await callTeachingStepEndpoint(step.id, "DELETE");
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: assistantMessage }]);
+      if (guidedTeachingTargetStepId === step.id) {
+        setGuidedTeachingTargetStepId(null);
+      }
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't remove that step: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [callTeachingStepEndpoint, guidedTeachingBusy, guidedTeachingSession, guidedTeachingTargetStepId]);
+
+  const handleNotImportant = useCallback(async (step: WorkflowStep) => {
+    await handleDeleteStep(step, "No problem, I removed that step.");
+  }, [handleDeleteStep]);
+
+  const handleRedoStep = useCallback(async (step: WorkflowStep) => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    setGuidedTeachingBusy(true);
+    try {
+      await callTeachingStepEndpoint(step.id, "POST", "/redo");
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: "Okay, let's redo that step." }]);
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't redo that step: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [callTeachingStepEndpoint, guidedTeachingBusy, guidedTeachingSession]);
+
+  const handleAddDetail = useCallback((step: WorkflowStep) => {
+    setGuidedTeachingTargetStepId(step.id);
+    setGuidedTeachingInput(`Additional detail for Step ${step.order}: `);
+    setGuidedTeachingMessages((current) => [
+      ...current,
+      { role: "assistant", message: "Got it. Add the detail and I'll attach it to this step." },
+    ]);
+  }, []);
+
+  const confirmGuidedTeachingStep = useCallback(async (stepId: string) => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    setGuidedTeachingBusy(true);
     try {
       const apiBase = getApiBase();
       if (!apiBase) {
         throw new Error("NEXT_PUBLIC_API_BASE is not set");
       }
-
-      const response = await fetch(
-        `${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/conversation`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, step_id: targetStepId }),
-        },
-      );
+      const response = await fetch(`${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/steps/${stepId}/confirm`, {
+        method: "POST",
+      });
       const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
       if (!response.ok) {
-        throw new Error(body.detail ?? `Teaching conversation failed (${response.status})`);
+        throw new Error(body.detail ?? `Confirm step failed (${response.status})`);
       }
-
-      const mapped = mapApiTeachingSession(body.teaching_session);
-      setGuidedTeachingSession(mapped);
-      setGuidedTeachingReviewSummary(null);
-      setGuidedTeachingWarnings([]);
-      setGuidedTeachingApprovalMessage(null);
-      setGuidedTeachingTargetStepId(null);
+      applyGuidedTeachingApiResponse(body);
       setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
     } catch (error) {
       setGuidedTeachingMessages((current) => [
         ...current,
         {
           role: "assistant",
-          message: `I couldn't save that teaching note: ${error instanceof Error ? error.message : "Unknown error"}`,
+          message: `I couldn't confirm that step: ${error instanceof Error ? error.message : "Unknown error"}`,
         },
       ]);
     } finally {
       setGuidedTeachingBusy(false);
     }
-  }, [guidedTeachingBusy, guidedTeachingInput, guidedTeachingSession, guidedTeachingTargetStepId, mapApiTeachingSession]);
-
-  useEffect(() => {
-    if (!pendingTeachingTranscript || !guidedTeachingSession || guidedTeachingBusy) {
-      return;
-    }
-
-    void submitGuidedTeachingMessage(pendingTeachingTranscript);
-    setPendingTeachingTranscript((current) => (current === pendingTeachingTranscript ? null : current));
-  }, [pendingTeachingTranscript, guidedTeachingBusy, guidedTeachingSession, submitGuidedTeachingMessage]);
-
-  const confirmGuidedTeachingStep = useCallback(
-    async (stepId: string) => {
-      if (!guidedTeachingSession || guidedTeachingBusy) return;
-      setGuidedTeachingBusy(true);
-      try {
-        const apiBase = getApiBase();
-        if (!apiBase) {
-          throw new Error("NEXT_PUBLIC_API_BASE is not set");
-        }
-        const response = await fetch(
-          `${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/steps/${stepId}/confirm`,
-          { method: "POST" },
-        );
-        const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
-        if (!response.ok) {
-          throw new Error(body.detail ?? `Step confirmation failed (${response.status})`);
-        }
-        setGuidedTeachingSession(mapApiTeachingSession(body.teaching_session));
-        setGuidedTeachingReviewSummary(null);
-        setGuidedTeachingWarnings([]);
-        setGuidedTeachingApprovalMessage(null);
-        setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
-      } catch (error) {
-        setGuidedTeachingMessages((current) => [
-          ...current,
-          {
-            role: "assistant",
-            message: `I couldn't confirm that step: ${error instanceof Error ? error.message : "Unknown error"}`,
-          },
-        ]);
-      } finally {
-        setGuidedTeachingBusy(false);
-      }
-    },
-    [guidedTeachingBusy, guidedTeachingSession, mapApiTeachingSession],
-  );
+  }, [applyGuidedTeachingApiResponse, guidedTeachingBusy, guidedTeachingSession]);
 
   const reviewGuidedTeachingSession = useCallback(async () => {
     if (!guidedTeachingSession || guidedTeachingBusy) return;
@@ -1161,6 +1260,96 @@ export default function Home() {
       setGuidedTeachingBusy(false);
     }
   }, [applyGuidedTeachingApiResponse, guidedTeachingBusy, guidedTeachingSession]);
+
+  const submitGuidedTeachingMessage = useCallback(async (overrideMessage?: string) => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    const message = (overrideMessage ?? guidedTeachingInput).trim();
+    if (!message) return;
+
+    const normalized = message.toLowerCase().replace(/\s+/g, " ").trim();
+    const latestStep = getLatestRelevantStep();
+
+    setGuidedTeachingMessages((current) => [...current, { role: "user", message }]);
+    setGuidedTeachingInput("");
+
+    if (latestStep) {
+      if (/(^|\b)(delete the last step|remove the last step)(\b|$)/.test(normalized)) {
+        await handleDeleteStep(latestStep, "No problem, I removed that step.");
+        return;
+      }
+
+      if (/(^|\b)(that click wasn't important|that click was not important|not important)(\b|$)/.test(normalized)) {
+        await handleNotImportant(latestStep);
+        return;
+      }
+
+      if (/(^|\b)(redo that step|redo last step)(\b|$)/.test(normalized)) {
+        await handleRedoStep(latestStep);
+        return;
+      }
+
+      if (/(^|\b)(no that's wrong|no thats wrong|that's wrong|that is wrong)(\b|$)/.test(normalized)) {
+        handleEditStep(latestStep);
+        setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: "I opened that step for editing." }]);
+        return;
+      }
+
+      if (/(^|\b)(add detail|add more detail|additional detail)(\b|$)/.test(normalized)) {
+        handleAddDetail(latestStep);
+        return;
+      }
+    }
+
+    const targetStepId = guidedTeachingTargetStepId;
+    setGuidedTeachingBusy(true);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const response = await fetch(
+        `${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/conversation`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, step_id: targetStepId }),
+        },
+      );
+      const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Teaching conversation failed (${response.status})`);
+      }
+
+      const mapped = mapApiTeachingSession(body.teaching_session);
+      setGuidedTeachingFromSession(mapped);
+      setGuidedTeachingApprovalMessage(null);
+      setGuidedTeachingTargetStepId(null);
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't process that teaching update: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [
+    getLatestRelevantStep,
+    guidedTeachingSession,
+    guidedTeachingBusy,
+    guidedTeachingInput,
+    handleDeleteStep,
+    handleNotImportant,
+    handleRedoStep,
+    handleEditStep,
+    handleAddDetail,
+    guidedTeachingTargetStepId,
+    mapApiTeachingSession,
+    setGuidedTeachingFromSession,
+  ]);
 
   const teachingHotkeyEnabled =
     Boolean(guidedTeachingSession) &&
@@ -3653,6 +3842,31 @@ export default function Home() {
 
           {teachingOverlayOpen ? (
             <section className="w-full rounded-2xl border border-cyan-400/30 bg-slate-950/95 p-4 text-slate-100 shadow-2xl shadow-slate-950/60 backdrop-blur">
+              {/* Progress/Status Panel */}
+              <div className="mb-4 flex flex-col gap-2 rounded-xl border border-cyan-400/20 bg-cyan-500/5 p-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Progress</span>
+                  <span className="ml-auto text-xs text-slate-400">{guidedTeachingSession.workflowName}</span>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {/* State indicator */}
+                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "intro" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Intro</span>
+                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "teaching" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Learning</span>
+                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "review" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Reviewing</span>
+                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "ready" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Ready to Run</span>
+                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "needs_more_teaching" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Needs More Teaching</span>
+                </div>
+                <div className="flex flex-wrap gap-4 mt-2 text-xs">
+                  <span>Summary: <span className="font-semibold text-cyan-100">{guidedTeachingReviewSummary?.workflowSummary || guidedTeachingSession.workflowSummary || "—"}</span></span>
+                  <span>Steps: <span className="font-semibold text-cyan-100">{guidedTeachingReviewSummary?.totalSteps ?? guidedTeachingSession.steps.length}</span></span>
+                  <span>Confirmed: <span className="font-semibold text-emerald-200">{guidedTeachingReviewSummary?.confirmedSteps ?? guidedTeachingSession.steps.filter((step) => step.confirmed).length}</span></span>
+                  <span>Unconfirmed: <span className="font-semibold text-amber-200">{guidedTeachingReviewSummary?.unconfirmedSteps ?? guidedTeachingSession.steps.filter((step) => !step.confirmed).length}</span></span>
+                  <span>Status: <span className={`font-semibold ${guidedTeachingSession.status === "ready" ? "text-emerald-200" : guidedTeachingSession.status === "needs_more_teaching" ? "text-amber-200" : "text-slate-200"}`}>{guidedTeachingSession.status === "ready" ? "Runnable" : guidedTeachingSession.status === "needs_more_teaching" ? "Needs More Teaching" : guidedTeachingSession.status.charAt(0).toUpperCase() + guidedTeachingSession.status.slice(1)}</span></span>
+                  <span>Warnings: <span className="font-semibold text-amber-200">{guidedTeachingWarnings.length}</span></span>
+                  <span>Approval: <span className={`font-semibold ${guidedTeachingSession.status === "approved" ? "text-emerald-200" : "text-slate-200"}`}>{guidedTeachingSession.status === "approved" ? "Approved" : "Pending"}</span></span>
+                </div>
+              </div>
+              {/* End Progress/Status Panel */}
               <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Mode Active</p>
@@ -3797,68 +4011,163 @@ export default function Home() {
                       guidedTeachingSession.steps.map((step) => (
                         <article key={step.id} className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 text-sm">
                           <div className="flex items-start justify-between gap-3">
-                            <div>
+                            <div className="flex-1">
                               <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Step {step.order}</p>
-                              <h3 className="mt-1 font-semibold text-white">{step.title}</h3>
+                              {editingStepId === step.id ? (
+                                <input
+                                  value={editingStepState.title}
+                                  onChange={(event) => setEditingStepState((current) => ({ ...current, title: event.target.value }))}
+                                  className="mt-1 w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-white"
+                                  placeholder="Step title"
+                                />
+                              ) : (
+                                <h3 className="mt-1 font-semibold text-white">{step.title}</h3>
+                              )}
                             </div>
                             <span className={`rounded-full border px-2 py-1 text-[10px] ${step.confirmed ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : "border-amber-400/40 bg-amber-500/10 text-amber-100"}`}>
                               {step.confirmed ? "Confirmed" : "Needs Confirmation"}
                             </span>
                           </div>
-                          <p className="mt-2 text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
-                          <div className="mt-2 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
-                            <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">What Bill thinks he learned</p>
-                            <p className="mt-1 text-xs text-cyan-100">{step.billSummary || "Bill is still interpreting this step."}</p>
-                            <p className="mt-1 text-[11px] text-cyan-200/90">Confidence: {(Math.max(0, Math.min(1, step.billConfidence || 0)) * 100).toFixed(0)}%</p>
-                            {step.pendingQuestion && (
-                              <p className="mt-1 text-xs text-cyan-50">{step.pendingQuestion}</p>
-                            )}
-                          </div>
-                          <div className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-2">
-                            <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
-                            {step.observedActions.length === 0 ? (
-                              <p className="mt-1 text-xs text-slate-400">No browser actions captured yet.</p>
+
+                          {editingStepId === step.id ? (
+                            <div className="mt-2 space-y-2">
+                              <textarea
+                                value={editingStepState.billSummary}
+                                onChange={(event) => setEditingStepState((current) => ({ ...current, billSummary: event.target.value }))}
+                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                placeholder="Bill summary"
+                              />
+                              <textarea
+                                value={editingStepState.employeeExplanation}
+                                onChange={(event) => setEditingStepState((current) => ({ ...current, employeeExplanation: event.target.value }))}
+                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                placeholder="Employee explanation"
+                              />
+                              <input
+                                value={editingStepState.decisionRules}
+                                onChange={(event) => setEditingStepState((current) => ({ ...current, decisionRules: event.target.value }))}
+                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                placeholder="Decision rules (semicolon separated)"
+                              />
+                              <input
+                                value={editingStepState.exceptions}
+                                onChange={(event) => setEditingStepState((current) => ({ ...current, exceptions: event.target.value }))}
+                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                placeholder="Exceptions (semicolon separated)"
+                              />
+                              <input
+                                value={editingStepState.requiredInputs}
+                                onChange={(event) => setEditingStepState((current) => ({ ...current, requiredInputs: event.target.value }))}
+                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                placeholder="Required inputs (comma separated)"
+                              />
+                            </div>
+                          ) : (
+                            <>
+                              <p className="mt-2 text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
+                              <div className="mt-2 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
+                                <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">What Bill thinks he learned</p>
+                                <p className="mt-1 text-xs text-cyan-100">{step.billSummary || "Bill is still interpreting this step."}</p>
+                                <p className="mt-1 text-[11px] text-cyan-200/90">Confidence: {(Math.max(0, Math.min(1, step.billConfidence || 0)) * 100).toFixed(0)}%</p>
+                                {step.pendingQuestion && (
+                                  <p className="mt-1 text-xs text-cyan-50">{step.pendingQuestion}</p>
+                                )}
+                              </div>
+                              <div className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-2">
+                                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
+                                {step.observedActions.length === 0 ? (
+                                  <p className="mt-1 text-xs text-slate-400">No browser actions captured yet.</p>
+                                ) : (
+                                  <ul className="mt-1 space-y-1 text-xs text-slate-300">
+                                    {step.observedActions.map((action) => (
+                                      <li key={action.id}>{formatObservedAction(action)}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                              <p className="mt-2 text-xs text-slate-400">Employee explanation: {step.employeeExplanation || "Pending"}</p>
+                              <p className="mt-1 text-xs text-slate-400">Required data: {step.requiredInputs.join(", ") || "Pending"}</p>
+                              <p className="mt-1 text-xs text-slate-400">Decision rules: {step.decisionRules.join("; ") || "None yet"}</p>
+                              <p className="mt-1 text-xs text-slate-400">Exceptions: {step.exceptions.join("; ") || "None yet"}</p>
+                            </>
+                          )}
+
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {editingStepId === step.id ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSaveEditStep(step.id)}
+                                  disabled={guidedTeachingBusy}
+                                  className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCancelEditStep()}
+                                  disabled={guidedTeachingBusy}
+                                  className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
+                                >
+                                  Cancel
+                                </button>
+                              </>
                             ) : (
-                              <ul className="mt-1 space-y-1 text-xs text-slate-300">
-                                {step.observedActions.map((action) => (
-                                  <li key={action.id}>{formatObservedAction(action)}</li>
-                                ))}
-                              </ul>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditStep(step)}
+                                  disabled={guidedTeachingBusy}
+                                  className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (window.confirm("Delete this step?")) {
+                                      void handleDeleteStep(step);
+                                    }
+                                  }}
+                                  disabled={guidedTeachingBusy}
+                                  className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Delete
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleRedoStep(step)}
+                                  disabled={guidedTeachingBusy}
+                                  className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Redo
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddDetail(step)}
+                                  disabled={guidedTeachingBusy}
+                                  className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Add Detail
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleNotImportant(step)}
+                                  disabled={guidedTeachingBusy}
+                                  className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Not Important
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void confirmGuidedTeachingStep(step.id)}
+                                  disabled={guidedTeachingBusy || step.confirmed}
+                                  className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Yes
+                                </button>
+                              </>
                             )}
-                          </div>
-                          <p className="mt-2 text-xs text-slate-400">Employee explanation: {step.employeeExplanation || "Pending"}</p>
-                          <p className="mt-1 text-xs text-slate-400">Required data: {step.requiredInputs.join(", ") || "Pending"}</p>
-                          <p className="mt-1 text-xs text-slate-400">Decision rules: {step.decisionRules.join("; ") || "None yet"}</p>
-                          <p className="mt-1 text-xs text-slate-400">Exceptions: {step.exceptions.join("; ") || "None yet"}</p>
-                          <div className="mt-2 flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => void confirmGuidedTeachingStep(step.id)}
-                              disabled={guidedTeachingBusy || step.confirmed}
-                              className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              Yes
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setGuidedTeachingTargetStepId(step.id);
-                                setGuidedTeachingInput(`Not quite for Step ${step.order}: `);
-                              }}
-                              className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
-                            >
-                              Not quite
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setGuidedTeachingTargetStepId(step.id);
-                                setGuidedTeachingInput(`Additional detail for Step ${step.order}: `);
-                              }}
-                              className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-100"
-                            >
-                              Add detail
-                            </button>
                           </div>
                         </article>
                       ))

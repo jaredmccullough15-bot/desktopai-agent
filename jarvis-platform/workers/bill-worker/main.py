@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+import random
 import uuid
 import hashlib
 import traceback
@@ -156,6 +157,87 @@ def log_error(message: str) -> None:
     print(f"{_timestamp()} [ERROR] {message}")
 
 
+@dataclass
+class CoreConnectivityTracker:
+    max_backoff_seconds: float = 60.0
+    max_exponential_failures: int = 10
+    failure_count: int = 0
+    degraded: bool = False
+    current_backoff_seconds: float = 0.0
+    next_retry_at: float = 0.0
+    degraded_since: float | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def _compute_backoff(self, failure_count: int) -> float:
+        # Exponential backoff with a hard cap so retries never stop completely.
+        effective_failures = min(max(0, int(failure_count)), max(0, int(self.max_exponential_failures)))
+        exponential_backoff = float(2 ** max(0, effective_failures - 1))
+        return max(0.0, min(float(self.max_backoff_seconds), exponential_backoff))
+
+    def note_failure(self, operation: str, error: Exception) -> float:
+        now = time.time()
+        with self.lock:
+            self.failure_count += 1
+            self.current_backoff_seconds = self._compute_backoff(self.failure_count)
+            max_jitter_by_ratio = min(1.0, self.current_backoff_seconds * 0.2)
+            max_jitter_by_cap = max(0.0, float(self.max_backoff_seconds) - self.current_backoff_seconds)
+            jitter = random.uniform(0.0, min(max_jitter_by_ratio, max_jitter_by_cap))
+            self.next_retry_at = now + self.current_backoff_seconds + jitter
+
+            if self.failure_count == 1:
+                log_warn(
+                    f"WORKER_CORE_REQUEST_FAILED operation={operation} "
+                    f"error={error.__class__.__name__} backoff_seconds={self.current_backoff_seconds:.1f}"
+                )
+
+            if self.failure_count >= 2 and not self.degraded:
+                self.degraded = True
+                self.degraded_since = now
+                log_warn(
+                    f"WORKER_CORE_UNREACHABLE operation={operation} "
+                    f"failure_count={self.failure_count} backoff_seconds={self.current_backoff_seconds:.1f}"
+                )
+            elif self.degraded:
+                log_warn(
+                    f"WORKER_CORE_UNREACHABLE operation={operation} "
+                    f"failure_count={self.failure_count} backoff_seconds={self.current_backoff_seconds:.1f}"
+                )
+
+            return max(0.0, self.next_retry_at - now)
+
+    def note_success(self, operation: str) -> None:
+        now = time.time()
+        with self.lock:
+            if self.degraded:
+                outage_seconds = 0.0
+                if self.degraded_since is not None:
+                    outage_seconds = max(0.0, now - self.degraded_since)
+                log_info(
+                    f"WORKER_CORE_RECOVERED operation={operation} "
+                    f"outage_seconds={outage_seconds:.1f} previous_failure_count={self.failure_count}"
+                )
+            self.failure_count = 0
+            self.degraded = False
+            self.current_backoff_seconds = 0.0
+            self.next_retry_at = 0.0
+            self.degraded_since = None
+
+    def seconds_until_next_attempt(self) -> float:
+        with self.lock:
+            if self.next_retry_at <= 0:
+                return 0.0
+            return max(0.0, self.next_retry_at - time.time())
+
+    def current_backoff(self) -> float:
+        with self.lock:
+            return max(0.0, self.current_backoff_seconds)
+
+
+CORE_CONNECTIVITY = CoreConnectivityTracker(max_backoff_seconds=60.0)
+LAST_RUNTIME_SNAPSHOT: dict[str, Any] = {}
+LAST_MACHINE_UUID: str | None = None
+
+
 def _core_auth_headers(headers: dict[str, str] | None = None) -> dict[str, str]:
     merged = dict(headers or {})
     if WORKER_SHARED_SECRET:
@@ -203,6 +285,7 @@ def _log_http_start(name: str, url: str, *, timeout: int, params: dict[str, Any]
 
 
 def _log_http_failure(name: str, url: str, error: Exception) -> None:
+    CORE_CONNECTIVITY.note_failure(name, error)
     if isinstance(error, requests.exceptions.SSLError):
         log_error(f"HTTP {name} TLS/SSL failure: url={url} error={error!r}")
         return
@@ -2376,6 +2459,12 @@ def process_task(machine_uuid: str, task: dict, state: dict[str, Any], runtime_s
 
 
 def start_local_status_panel(machine_name: str, machine_uuid_getter: callable, runtime_state: RuntimeState) -> None:
+    # Embedded Tk status panel disabled for thread-safety: background task polling threads
+    # cannot safely manipulate Tk objects from a different thread, causing Tcl_AsyncDelete
+    # errors when the worker is polling during shutdown.
+    print("[worker-ui] Embedded Tk status panel disabled for thread-safety; use browser-based dashboards.")
+    return
+
     try:
         import tkinter as tk
     except Exception as error:
@@ -2807,65 +2896,99 @@ def main() -> None:
     last_task_poll = 0.0
     last_update_check = 0.0
 
-    while True:
-        now = time.time()
+    try:
+        while True:
+            now = time.time()
+            core_backoff = CORE_CONNECTIVITY.current_backoff()
+            next_allowed_in = CORE_CONNECTIVITY.seconds_until_next_attempt()
 
-        if (not registration_ready) and (now - last_register_attempt) >= register_retry_seconds:
-            log_warn("Retrying registration with Bill Core...")
-            registration_payload = register_worker(machine_name, machine_uuid, runtime_state)
-            token = str((registration_payload or {}).get("token") or "").strip() or None
-            last_register_attempt = now
-            if token:
-                state["token"] = token
-                save_state(state)
-                registration_ready = True
-                if maybe_apply_update_from_registration(registration_payload, state, runtime_state=runtime_state):
-                    log_warn("Worker exiting cleanly to allow updater to replace files.")
-                    return
+            LAST_RUNTIME_SNAPSHOT.update(runtime_state.snapshot())
 
-                connection_confirmed = bool((registration_payload or {}).get("connection_confirmed", True))
-                pushed_update = (registration_payload or {}).get("update")
-                forced_update_pending = bool(pushed_update.get("force_update")) if isinstance(pushed_update, dict) else False
+            if next_allowed_in > 0:
+                runtime_state.set_connected(False)
+                # Keep loop responsive while honoring outage backoff.
+                time.sleep(min(1.0, next_allowed_in))
+                continue
 
-                if not connection_confirmed and forced_update_pending:
-                    log_error("Core requires forced update before worker can attach. Update did not complete; exiting.")
-                    return
+            effective_register_retry = max(register_retry_seconds, core_backoff)
+            if (not registration_ready) and (now - last_register_attempt) >= effective_register_retry:
+                log_warn("Retrying registration with Bill Core...")
+                registration_payload = register_worker(machine_name, machine_uuid, runtime_state)
+                token = str((registration_payload or {}).get("token") or "").strip() or None
+                last_register_attempt = now
+                if token:
+                    state["token"] = token
+                    save_state(state)
+                    registration_ready = True
+                    if maybe_apply_update_from_registration(registration_payload, state, runtime_state=runtime_state):
+                        log_warn("Worker exiting cleanly to allow updater to replace files.")
+                        return
 
-                should_exit_for_update = maybe_apply_update_on_connect(machine_uuid, state, runtime_state=runtime_state)
-                if should_exit_for_update:
-                    log_warn("Worker exiting cleanly to allow updater to replace files.")
-                    return
+                    connection_confirmed = bool((registration_payload or {}).get("connection_confirmed", True))
+                    pushed_update = (registration_payload or {}).get("update")
+                    forced_update_pending = bool(pushed_update.get("force_update")) if isinstance(pushed_update, dict) else False
 
-        if not registration_ready:
-            runtime_state.set_connected(False)
+                    if not connection_confirmed and forced_update_pending:
+                        log_error("Core requires forced update before worker can attach. Update did not complete; exiting.")
+                        return
+
+                    should_exit_for_update = maybe_apply_update_on_connect(machine_uuid, state, runtime_state=runtime_state)
+                    if should_exit_for_update:
+                        log_warn("Worker exiting cleanly to allow updater to replace files.")
+                        return
+
+            if not registration_ready:
+                runtime_state.set_connected(False)
+                time.sleep(1)
+                continue
+
+            effective_heartbeat_interval = max(HEARTBEAT_INTERVAL_SECONDS, core_backoff)
+            if now - last_heartbeat >= effective_heartbeat_interval:
+                log_info("Startup sequence step 2/3: heartbeat") if last_heartbeat == 0.0 else None
+                send_heartbeat(machine_name, machine_uuid, runtime_state)
+                last_heartbeat = now
+
+            effective_poll_interval = max(POLLING_INTERVAL_SECONDS, core_backoff)
+            if now - last_task_poll >= effective_poll_interval:
+                log_info("Startup sequence step 3/3: task poll") if last_task_poll == 0.0 else None
+                poll_next_task(machine_uuid, state, runtime_state)
+                poll_recovery_actions(machine_uuid, state, runtime_state)
+                last_task_poll = now
+
+            effective_update_check_interval = max(UPDATE_CHECK_INTERVAL_SECONDS, core_backoff)
+            if AUTO_UPDATE_ENABLED and (now - last_update_check) >= effective_update_check_interval:
+                if runtime_state.snapshot().get("status") == "idle":
+                    if maybe_apply_queued_update(machine_uuid, state, runtime_state):
+                        log_warn("Worker exiting cleanly to allow updater to replace files.")
+                        return
+                    if maybe_apply_update_on_connect(machine_uuid, state, runtime_state=runtime_state):
+                        log_warn("Worker exiting cleanly to allow updater to replace files.")
+                        return
+                else:
+                    if str(state.get("pending_update_version") or "").strip():
+                        log_info("Worker is busy; pending update remains queued until idle.")
+                last_update_check = now
+
             time.sleep(1)
-            continue
-
-        if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
-            log_info("Startup sequence step 2/3: heartbeat") if last_heartbeat == 0.0 else None
-            send_heartbeat(machine_name, machine_uuid, runtime_state)
-            last_heartbeat = now
-
-        if now - last_task_poll >= POLLING_INTERVAL_SECONDS:
-            log_info("Startup sequence step 3/3: task poll") if last_task_poll == 0.0 else None
-            poll_next_task(machine_uuid, state, runtime_state)
-            poll_recovery_actions(machine_uuid, state, runtime_state)
-            last_task_poll = now
-
-        if AUTO_UPDATE_ENABLED and (now - last_update_check) >= UPDATE_CHECK_INTERVAL_SECONDS:
-            if runtime_state.snapshot().get("status") == "idle":
-                if maybe_apply_queued_update(machine_uuid, state, runtime_state):
-                    log_warn("Worker exiting cleanly to allow updater to replace files.")
-                    return
-                if maybe_apply_update_on_connect(machine_uuid, state, runtime_state=runtime_state):
-                    log_warn("Worker exiting cleanly to allow updater to replace files.")
-                    return
-            else:
-                if str(state.get("pending_update_version") or "").strip():
-                    log_info("Worker is busy; pending update remains queued until idle.")
-            last_update_check = now
-
-        time.sleep(1)
+    except Exception as loop_error:
+        snap = runtime_state.snapshot()
+        log_error(
+            "WORKER_MAIN_LOOP_CRASH "
+            f"error={loop_error!r} status={snap.get('status')} task={snap.get('current_task_id')} step={snap.get('current_step')}"
+        )
+        active_task_id = str(snap.get("current_task_id") or "").strip()
+        if active_task_id:
+            fail_task(
+                str(machine_uuid),
+                active_task_id,
+                f"Worker fatal loop crash: {loop_error}",
+                {
+                    "status": "worker_crash",
+                    "last_step": snap.get("current_step"),
+                    "last_mode": snap.get("execution_mode"),
+                },
+            )
+        raise
 
 
 if __name__ == "__main__":
@@ -2877,6 +3000,17 @@ if __name__ == "__main__":
     except Exception as error:
         traceback_text = traceback.format_exc()
         try:
+            if LAST_RUNTIME_SNAPSHOT:
+                log_error(
+                    "WORKER_FATAL_STATE "
+                    f"machine_uuid={LAST_MACHINE_UUID} "
+                    f"status={LAST_RUNTIME_SNAPSHOT.get('status')} "
+                    f"task={LAST_RUNTIME_SNAPSHOT.get('current_task_id')} "
+                    f"step={LAST_RUNTIME_SNAPSHOT.get('current_step')} "
+                    f"connected={LAST_RUNTIME_SNAPSHOT.get('connected')}"
+                )
+            if "Tcl_AsyncDelete" in str(error) or "tk" in str(error).lower():
+                log_error("Detected Tcl/Tk shutdown exception; worker core loop state captured above.")
             log_error(f"Startup failure: {error!r}")
             print(traceback_text, file=sys.stderr, end="")
         except Exception:
