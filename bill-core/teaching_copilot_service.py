@@ -20,9 +20,22 @@ _SENSITIVE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_MAX_BUTTONS = 20
+_MAX_INPUTS = 20
+_MAX_LINKS = 20
+_MAX_HEADINGS = 10
+_MAX_TEXT = 120
+
 
 def _is_sensitive(label: str) -> bool:
     return bool(_SENSITIVE_PATTERNS.search(label or ""))
+
+
+def _clean_text(value: Any, max_len: int = _MAX_TEXT) -> str:
+    text = str(value or "").strip()
+    if len(text) > max_len:
+        return text[:max_len]
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -32,57 +45,173 @@ def _is_sensitive(label: str) -> bool:
 class PageContextSnapshot:
     url: str = ""
     title: str = ""
-    buttons: list[str] = field(default_factory=list)        # visible button labels
-    inputs: list[dict] = field(default_factory=list)         # {label, placeholder, type}
+    visible_buttons: list[dict] = field(default_factory=list)   # {text, aria_label, role, selector_hint}
+    visible_inputs: list[dict] = field(default_factory=list)    # {label, placeholder, type, name, selector_hint, sensitive}
+    visible_links: list[dict] = field(default_factory=list)     # {text, href}
+    visible_headings: list[dict] = field(default_factory=list)  # {text, level}
+    # Backward-compatible aliases used in existing logic/UI
+    buttons: list[str] = field(default_factory=list)
+    inputs: list[dict] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
     headings: list[str] = field(default_factory=list)
     active_element: dict | None = None                       # {type, label}
     recent_click_label: str | None = None
     recent_type_field: str | None = None
+    recent_clicked_element: dict | None = None
+    recent_typed_field: str | None = None
     modal_present: bool = False
     modal_title: str | None = None
+    modal_summary: dict | None = None
+    page_changed: bool = False
     captured_at: float = field(default_factory=time.time)
 
     @classmethod
     def from_raw(cls, raw: dict) -> "PageContextSnapshot":
         """Build from a dict posted by the browser extension / worker."""
-        inputs_raw = raw.get("inputs") or []
-        safe_inputs = []
-        for inp in inputs_raw:
-            label = (inp.get("label") or inp.get("placeholder") or "")
-            if _is_sensitive(label):
-                safe_inputs.append({"label": "[redacted]", "placeholder": "[redacted]", "type": inp.get("type", "")})
+        buttons_raw = raw.get("visible_buttons")
+        if not buttons_raw:
+            buttons_raw = [{"text": b, "aria_label": "", "role": "button", "selector_hint": None} for b in (raw.get("buttons") or [])]
+        safe_buttons: list[dict] = []
+        for btn in list(buttons_raw)[:_MAX_BUTTONS]:
+            text = _clean_text((btn or {}).get("text") or (btn or {}).get("label") or "")
+            aria_label = _clean_text((btn or {}).get("aria_label") or "")
+            role = _clean_text((btn or {}).get("role") or "button")
+            selector_hint = _clean_text((btn or {}).get("selector_hint") or "") or None
+            safe_buttons.append(
+                {
+                    "text": text,
+                    "aria_label": aria_label,
+                    "role": role,
+                    "selector_hint": selector_hint,
+                }
+            )
+
+        inputs_raw = raw.get("visible_inputs")
+        if not inputs_raw:
+            inputs_raw = raw.get("inputs") or []
+        safe_inputs: list[dict] = []
+        for inp in list(inputs_raw)[:_MAX_INPUTS]:
+            label = _clean_text((inp or {}).get("label") or "")
+            placeholder = _clean_text((inp or {}).get("placeholder") or "")
+            input_type = _clean_text((inp or {}).get("type") or "text")
+            name = _clean_text((inp or {}).get("name") or "")
+            selector_hint = _clean_text((inp or {}).get("selector_hint") or "") or None
+            explicit_sensitive = bool((inp or {}).get("sensitive"))
+            sensitive = explicit_sensitive or _is_sensitive(f"{label} {placeholder} {name} {input_type}")
+            if sensitive:
+                safe_inputs.append(
+                    {
+                        "label": "[redacted]",
+                        "placeholder": "[redacted]",
+                        "type": input_type,
+                        "name": "[redacted]",
+                        "selector_hint": None,
+                        "sensitive": True,
+                    }
+                )
             else:
-                safe_inputs.append({
-                    "label": label,
-                    "placeholder": inp.get("placeholder", ""),
-                    "type": inp.get("type", "text"),
-                })
+                safe_inputs.append(
+                    {
+                        "label": label,
+                        "placeholder": placeholder,
+                        "type": input_type,
+                        "name": name,
+                        "selector_hint": selector_hint,
+                        "sensitive": False,
+                    }
+                )
+
+        links_raw = raw.get("visible_links")
+        if not links_raw:
+            links_raw = [{"text": l, "href": ""} for l in (raw.get("links") or [])]
+        safe_links: list[dict] = []
+        for link in list(links_raw)[:_MAX_LINKS]:
+            text = _clean_text((link or {}).get("text") or "")
+            href = _clean_text((link or {}).get("href") or "")
+            safe_links.append({"text": text, "href": href})
+
+        headings_raw = raw.get("visible_headings")
+        if not headings_raw:
+            headings_raw = [{"text": h, "level": None} for h in (raw.get("headings") or [])]
+        safe_headings: list[dict] = []
+        for heading in list(headings_raw)[:_MAX_HEADINGS]:
+            text = _clean_text((heading or {}).get("text") or "")
+            level = (heading or {}).get("level")
+            if _is_sensitive(text):
+                text = "[redacted]"
+            safe_headings.append({"text": text, "level": level})
+
         active = raw.get("active_element")
-        if active and _is_sensitive(active.get("label", "")):
-            active = {"type": active.get("type", ""), "label": "[redacted]"}
-        recent_click = raw.get("recent_click_label")
-        recent_type = raw.get("recent_type_field")
+        if active:
+            active = {
+                "type": _clean_text((active or {}).get("type") or ""),
+                "label": _clean_text((active or {}).get("label") or ""),
+            }
+            if _is_sensitive(active.get("label", "")):
+                active["label"] = "[redacted]"
+
+        recent_clicked_element = raw.get("recent_clicked_element")
+        if recent_clicked_element:
+            recent_clicked_element = {
+                "text": _clean_text((recent_clicked_element or {}).get("text") or (recent_clicked_element or {}).get("label") or ""),
+                "role": _clean_text((recent_clicked_element or {}).get("role") or ""),
+            }
+            if _is_sensitive(recent_clicked_element.get("text", "")):
+                recent_clicked_element["text"] = "[redacted]"
+
+        recent_click = _clean_text(raw.get("recent_click_label") or (recent_clicked_element or {}).get("text") or "") or None
+        recent_type = _clean_text(raw.get("recent_type_field") or raw.get("recent_typed_field") or "") or None
         if recent_type and _is_sensitive(recent_type):
             recent_type = "[redacted]"
+
+        modal_summary = raw.get("modal_summary")
+        if modal_summary:
+            modal_summary = {
+                "present": bool((modal_summary or {}).get("present", True)),
+                "title": _clean_text((modal_summary or {}).get("title") or ""),
+                "text": _clean_text((modal_summary or {}).get("text") or ""),
+            }
+            if _is_sensitive(str(modal_summary.get("title") or "")):
+                modal_summary["title"] = "[redacted]"
+            if _is_sensitive(str(modal_summary.get("text") or "")):
+                modal_summary["text"] = "[redacted]"
+
+        modal_present = bool(raw.get("modal_present"))
+        if modal_summary:
+            modal_present = bool(modal_summary.get("present", modal_present))
+
+        modal_title = _clean_text(raw.get("modal_title") or (modal_summary or {}).get("title") or "") or None
         return cls(
-            url=raw.get("url", ""),
-            title=raw.get("title", ""),
-            buttons=raw.get("buttons") or [],
-            inputs=safe_inputs,
-            links=raw.get("links") or [],
-            headings=raw.get("headings") or [],
+            url=_clean_text(raw.get("url") or ""),
+            title=_clean_text(raw.get("title") or ""),
+            visible_buttons=safe_buttons,
+            visible_inputs=safe_inputs,
+            visible_links=safe_links,
+            visible_headings=safe_headings,
+            buttons=[b.get("text") or "" for b in safe_buttons if b.get("text")],
+            inputs=[{"label": i.get("label"), "placeholder": i.get("placeholder"), "type": i.get("type")} for i in safe_inputs],
+            links=[l.get("text") or "" for l in safe_links if l.get("text")],
+            headings=[h.get("text") or "" for h in safe_headings if h.get("text")],
             active_element=active,
             recent_click_label=recent_click,
             recent_type_field=recent_type,
-            modal_present=bool(raw.get("modal_present")),
-            modal_title=raw.get("modal_title"),
+            recent_clicked_element=recent_clicked_element,
+            recent_typed_field=recent_type,
+            modal_present=modal_present,
+            modal_title=modal_title,
+            modal_summary=modal_summary,
+            page_changed=bool(raw.get("page_changed")),
+            captured_at=float(raw.get("captured_at") or time.time()),
         )
 
     def to_dict(self) -> dict:
         return {
             "url": self.url,
             "title": self.title,
+            "visible_buttons": self.visible_buttons,
+            "visible_inputs": self.visible_inputs,
+            "visible_links": self.visible_links,
+            "visible_headings": self.visible_headings,
             "buttons": self.buttons,
             "inputs": self.inputs,
             "links": self.links,
@@ -90,8 +219,12 @@ class PageContextSnapshot:
             "active_element": self.active_element,
             "recent_click_label": self.recent_click_label,
             "recent_type_field": self.recent_type_field,
+            "recent_clicked_element": self.recent_clicked_element,
+            "recent_typed_field": self.recent_typed_field,
             "modal_present": self.modal_present,
             "modal_title": self.modal_title,
+            "modal_summary": self.modal_summary,
+            "page_changed": self.page_changed,
             "captured_at": self.captured_at,
         }
 
@@ -303,9 +436,10 @@ class InterruptionTracker:
 # ---------------------------------------------------------------------------
 _REFERENCE_PATTERNS = [
     (re.compile(r"\b(that button|this button|click that|click it)\b", re.IGNORECASE), "button"),
-    (re.compile(r"\b(that field|this field|that input|this input|that box|this box)\b", re.IGNORECASE), "input"),
+    (re.compile(r"\b(that field|this field|that input|this input|that box|this box|use that field|use this field|search box)\b", re.IGNORECASE), "input"),
     (re.compile(r"\b(that link|this link)\b", re.IGNORECASE), "link"),
     (re.compile(r"\b(that popup|that modal|this popup|the popup|that dialog)\b", re.IGNORECASE), "modal"),
+    (re.compile(r"\b(the login button|login button)\b", re.IGNORECASE), "button"),
     (re.compile(r"\b(this step|that step)\b", re.IGNORECASE), "step"),
 ]
 
@@ -349,10 +483,31 @@ def resolve_natural_reference(
                 return ReferenceResolution(resolved=f"{lbl} button", selector=recent_action.get("selector"), clarification_needed=False, clarification_prompt=None)
         if page_context and page_context.recent_click_label:
             return ReferenceResolution(resolved=f"{page_context.recent_click_label} button", selector=None, clarification_needed=False, clarification_prompt=None)
-        if page_context and page_context.buttons:
-            if len(page_context.buttons) == 1:
-                return ReferenceResolution(resolved=f"{page_context.buttons[0]} button", selector=None, clarification_needed=False, clarification_prompt=None)
-            candidates = ", ".join(f'"{b}"' for b in page_context.buttons[:4])
+        button_labels = list(page_context.buttons if page_context else [])
+        if page_context and page_context.visible_buttons:
+            button_labels = [b.get("text") or "" for b in page_context.visible_buttons if b.get("text")]
+        link_labels: list[str] = []
+        if page_context:
+            if page_context.visible_links:
+                link_labels = [l.get("text") or "" for l in page_context.visible_links if l.get("text")]
+            elif page_context.links:
+                link_labels = [l for l in page_context.links if l]
+
+        if button_labels:
+            if "login button" in text_lower:
+                for btn in button_labels:
+                    if _LOGIN_LABELS.search(btn or ""):
+                        return ReferenceResolution(resolved=f"{btn} button", selector=None, clarification_needed=False, clarification_prompt=None)
+            if len(button_labels) == 1 and link_labels:
+                return ReferenceResolution(
+                    resolved=None,
+                    selector=None,
+                    clarification_needed=True,
+                    clarification_prompt=f"Do you mean the {button_labels[0]} button or the {link_labels[0]} link?",
+                )
+            if len(button_labels) == 1:
+                return ReferenceResolution(resolved=f"{button_labels[0]} button", selector=None, clarification_needed=False, clarification_prompt=None)
+            candidates = ", ".join(f'"{b}"' for b in button_labels[:4])
             return ReferenceResolution(resolved=None, selector=None, clarification_needed=True, clarification_prompt=f"Which button do you mean? I can see: {candidates}.")
         return ReferenceResolution(resolved=None, selector=None, clarification_needed=True, clarification_prompt="Which button do you mean? I don't have visibility into the page yet.")
 
@@ -367,18 +522,26 @@ def resolve_natural_reference(
             lbl = page_context.active_element.get("label") or ""
             if lbl and not _is_sensitive(lbl):
                 return ReferenceResolution(resolved=f"{lbl} field", selector=None, clarification_needed=False, clarification_prompt=None)
-        if page_context and page_context.inputs:
-            if len(page_context.inputs) == 1:
-                lbl = page_context.inputs[0].get("label") or page_context.inputs[0].get("placeholder") or "input"
+        input_rows = page_context.inputs if page_context else []
+        if page_context and page_context.visible_inputs:
+            input_rows = page_context.visible_inputs
+        if input_rows:
+            if len(input_rows) == 1:
+                lbl = input_rows[0].get("label") or input_rows[0].get("placeholder") or "input"
                 return ReferenceResolution(resolved=f"{lbl} field", selector=None, clarification_needed=False, clarification_prompt=None)
-            candidates = ", ".join(f'"{i.get("label") or i.get("placeholder", "field")}"' for i in page_context.inputs[:4])
+            candidates = ", ".join(f'"{i.get("label") or i.get("placeholder", "field")}"' for i in input_rows[:4])
             return ReferenceResolution(resolved=None, selector=None, clarification_needed=True, clarification_prompt=f"Which field do you mean? I can see: {candidates}.")
         return ReferenceResolution(resolved=None, selector=None, clarification_needed=True, clarification_prompt="Which field do you mean?")
 
     if ref_type == "link":
-        if page_context and page_context.links:
-            if len(page_context.links) == 1:
-                return ReferenceResolution(resolved=page_context.links[0], selector=None, clarification_needed=False, clarification_prompt=None)
+        links = page_context.links if page_context else []
+        if page_context and page_context.visible_links:
+            links = [l.get("text") or "" for l in page_context.visible_links if l.get("text")]
+        if links:
+            if len(links) == 1:
+                return ReferenceResolution(resolved=links[0], selector=None, clarification_needed=False, clarification_prompt=None)
+            candidates = ", ".join(f'"{l}"' for l in links[:4])
+            return ReferenceResolution(resolved=None, selector=None, clarification_needed=True, clarification_prompt=f"Which link do you mean? I can see: {candidates}.")
         return ReferenceResolution(resolved=None, selector=None, clarification_needed=True, clarification_prompt="Which link do you mean?")
 
     return ReferenceResolution(resolved=None, selector=None, clarification_needed=True, clarification_prompt="I'm not sure what you're referring to. Can you describe it?")
@@ -433,7 +596,10 @@ def handle_live_command(
     resolved_selector: str | None = None
     if page_context:
         # Look for exact/partial match in known buttons
-        for btn in page_context.buttons:
+        button_labels = page_context.buttons
+        if page_context.visible_buttons:
+            button_labels = [b.get("text") or "" for b in page_context.visible_buttons if b.get("text")]
+        for btn in button_labels:
             if raw_label.lower() in btn.lower() or btn.lower() in raw_label.lower():
                 display_label = btn
                 break

@@ -425,6 +425,23 @@ def _get_copilot_tracker(session_id: str) -> "InterruptionTracker | None":
     return _copilot_trackers[session_id]
 
 
+def _store_page_context_snapshot(ts: dict, raw_context: dict) -> "PageContextSnapshot | None":
+    if not _COPILOT_AVAILABLE:
+        return None
+    try:
+        page_ctx = PageContextSnapshot.from_raw(raw_context or {})
+    except Exception:
+        return None
+
+    snapshot_dict = page_ctx.to_dict()
+    ts["page_context_snapshot"] = snapshot_dict
+
+    history = list(ts.get("page_context_history") or [])
+    history.append(snapshot_dict)
+    ts["page_context_history"] = history[-5:]
+    return page_ctx
+
+
 def _looks_like_proxy_api_base(value: str) -> bool:
     candidate = (value or "").strip()
     if not candidate:
@@ -8400,11 +8417,12 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
         # Update page context snapshot if provided
         page_ctx: "PageContextSnapshot | None" = None
         if body.page_context:
+            page_ctx = _store_page_context_snapshot(ts, body.page_context)
+        elif ts.get("page_context_snapshot"):
             try:
-                page_ctx = PageContextSnapshot.from_raw(body.page_context)
-                ts["page_context_snapshot"] = page_ctx.to_dict()
+                page_ctx = PageContextSnapshot.from_raw(ts.get("page_context_snapshot") or {})
             except Exception:
-                pass
+                page_ctx = None
 
         # Interpret the action
         try:
@@ -8433,6 +8451,7 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
     )
 
 
+@app.post("/api/teaching/session/{session_id}/context", response_model=TeachingSessionMessageResponse)
 @app.post("/api/teaching/session/{session_id}/page-context", response_model=TeachingSessionMessageResponse)
 def teaching_session_page_context(session_id: str, body: dict = Body(default={})) -> TeachingSessionMessageResponse:
     if session_id not in _teaching_startup_sessions:
@@ -8448,16 +8467,17 @@ def teaching_session_page_context(session_id: str, body: dict = Body(default={})
     reply = "Context captured."
 
     if _COPILOT_AVAILABLE:
+        page_ctx = _store_page_context_snapshot(ts, body)
         try:
-            page_ctx = PageContextSnapshot.from_raw(body)
-            ts["page_context_snapshot"] = page_ctx.to_dict()
+            if page_ctx is None:
+                raise ValueError("context parse failed")
             copilot_notice = f"I noticed you're on {page_ctx.title or page_ctx.url or 'this page'}."
             if page_ctx.modal_present:
                 copilot_interpretation = "I detected a popup/modal on screen."
                 copilot_question = "What should Bill do when this popup appears?"
             else:
                 copilot_interpretation = "I'll use this page context to resolve references like 'that button' and 'this field'."
-            reply = "Page context captured."
+            reply = "Context captured."
         except Exception:
             reply = "Context captured."
 

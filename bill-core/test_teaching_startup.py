@@ -14,7 +14,9 @@ Covers:
 
 import re
 import uuid
+import importlib.util
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1541,6 +1543,136 @@ class TestTeachingCopilotPhase1:
         ).lower()
         assert "#sign-in-button" not in combined
         assert "button:has-text" not in combined
+
+    def test_context_snapshot_bounds_lists(self, client):
+        sid = self._seed_session()
+        many_buttons = [{"text": f"Button {i}", "aria_label": "", "role": "button", "selector_hint": f"#b{i}"} for i in range(40)]
+        many_inputs = [{"label": f"Field {i}", "placeholder": "", "type": "text", "name": f"f{i}", "selector_hint": f"#i{i}"} for i in range(40)]
+        many_links = [{"text": f"Link {i}", "href": f"/l/{i}"} for i in range(40)]
+        many_headings = [{"text": f"Heading {i}", "level": 2} for i in range(20)]
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/context",
+            json={
+                "url": "https://example.com/app",
+                "title": "Example",
+                "visible_buttons": many_buttons,
+                "visible_inputs": many_inputs,
+                "visible_links": many_links,
+                "visible_headings": many_headings,
+            },
+        )
+        assert res.status_code == 200
+        snap = res.json()["teaching_session"]["page_context_snapshot"]
+        assert len(snap.get("visible_buttons") or []) == 20
+        assert len(snap.get("visible_inputs") or []) == 20
+        assert len(snap.get("visible_links") or []) == 20
+        assert len(snap.get("visible_headings") or []) == 10
+
+    def test_context_endpoint_stores_latest_and_history_max_5(self, client):
+        import main as m
+        sid = self._seed_session()
+        for i in range(7):
+            res = client.post(
+                f"/api/teaching/session/{sid}/context",
+                json={
+                    "url": f"https://example.com/p/{i}",
+                    "title": f"Page {i}",
+                    "visible_buttons": [{"text": f"Button {i}", "aria_label": "", "role": "button", "selector_hint": f"#b{i}"}],
+                },
+            )
+            assert res.status_code == 200
+
+        stored = m._teaching_startup_sessions[sid]["teaching_session"]
+        latest = stored.get("page_context_snapshot") or {}
+        history = stored.get("page_context_history") or []
+        assert latest.get("title") == "Page 6"
+        assert len(history) == 5
+        assert history[0].get("title") == "Page 2"
+        assert history[-1].get("title") == "Page 6"
+
+    def test_click_that_button_uses_latest_visible_button_context(self, client):
+        import main as m
+        sid = self._seed_session()
+        record = m._teaching_startup_sessions[sid]
+        record["teaching_session"]["page_context_snapshot"] = {
+            "url": "https://go.trackvia.com/#/signin",
+            "title": "Sign In",
+            "visible_buttons": [{"text": "Sign In", "aria_label": "", "role": "button", "selector_hint": "button:has-text(\"Sign In\")"}],
+            "visible_inputs": [],
+            "visible_links": [],
+            "visible_headings": [],
+        }
+        m._teaching_startup_sessions[sid] = record
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "click that button"},
+        )
+        assert res.status_code == 200
+        steps = res.json()["teaching_session"]["steps"]
+        assert steps
+        assert "sign in" in steps[-1]["title"].lower()
+
+    def test_ambiguous_reference_with_button_and_link_asks_clarification(self, client):
+        import main as m
+        sid = self._seed_session()
+        record = m._teaching_startup_sessions[sid]
+        record["teaching_session"]["page_context_snapshot"] = {
+            "url": "https://go.trackvia.com/#/signin",
+            "title": "Sign In",
+            "visible_buttons": [{"text": "Sign In", "aria_label": "", "role": "button", "selector_hint": "button:has-text(\"Sign In\")"}],
+            "visible_links": [{"text": "Forgot Password", "href": "#forgot"}],
+            "visible_inputs": [],
+            "visible_headings": [],
+        }
+        m._teaching_startup_sessions[sid] = record
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "click that button"},
+        )
+        assert res.status_code == 200
+        reply = (res.json().get("reply") or "").lower()
+        assert "do you mean the sign in button or the forgot password link" in reply
+
+    def test_ui_bill_can_see_panel_does_not_render_selector_hint(self):
+        page_tsx = Path(__file__).resolve().parents[1] / "bill-web" / "app" / "page.tsx"
+        text = page_tsx.read_text(encoding="utf-8")
+        assert "Bill can currently see" in text
+        # Type declarations may include selector_hint, but render markup should not.
+        ui_region = text[text.find("Bill can currently see"):text.find("Floating Chat Panel")]
+        assert "selector_hint" not in ui_region
+
+    def test_context_payload_with_unexpected_shape_does_not_break_teaching_session(self, client):
+        sid = self._seed_session()
+        res = client.post(
+            f"/api/teaching/session/{sid}/context",
+            json={"url": "https://example.com", "visible_buttons": "invalid-shape"},
+        )
+        assert res.status_code == 200
+        follow_up = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "Click Sign In"},
+        )
+        assert follow_up.status_code == 200
+
+    def test_worker_context_post_failure_is_non_blocking(self):
+        module_path = Path(__file__).resolve().parents[1] / "jarvis-platform" / "workers" / "bill-worker" / "teach_session.py"
+        spec = importlib.util.spec_from_file_location("teach_session_under_test", module_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = 500
+        fake_resp.text = "server error"
+
+        with patch.object(module.requests, "post", return_value=fake_resp):
+            ok, err = module._post_teaching_context("http://localhost:8000", "session-1", {"url": "https://example.com"})
+
+        assert ok is False
+        assert err and "HTTP 500" in err
 
 
 if __name__ == "__main__":

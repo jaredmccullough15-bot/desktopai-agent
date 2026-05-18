@@ -232,6 +232,7 @@ class TeachingSession(BaseModel):
     status: Literal["intro", "teaching", "review", "approved"] = "intro"
     steps: list[WorkflowStep] = Field(default_factory=list)
     page_context_snapshot: dict | None = None  # last captured PageContextSnapshot
+    page_context_history: list[dict] = Field(default_factory=list)
 
 
 class TeachingSessionMessageRequest(BaseModel):

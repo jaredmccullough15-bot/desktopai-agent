@@ -178,6 +178,10 @@ type TeachingSession = {
   pageContextSnapshot?: {
     url?: string;
     title?: string;
+    visible_buttons?: Array<{ text?: string; aria_label?: string; role?: string; selector_hint?: string | null }>;
+    visible_inputs?: Array<{ label?: string; placeholder?: string; type?: string; name?: string; selector_hint?: string | null; sensitive?: boolean }>;
+    visible_links?: Array<{ text?: string; href?: string }>;
+    visible_headings?: Array<{ text?: string; level?: number | null }>;
     buttons?: string[];
     inputs?: Array<{ label?: string; placeholder?: string; type?: string }>;
     links?: string[];
@@ -213,6 +217,10 @@ type TeachingSessionApiResponse = {
     page_context_snapshot?: {
       url?: string;
       title?: string;
+      visible_buttons?: Array<{ text?: string; aria_label?: string; role?: string; selector_hint?: string | null }>;
+      visible_inputs?: Array<{ label?: string; placeholder?: string; type?: string; name?: string; selector_hint?: string | null; sensitive?: boolean }>;
+      visible_links?: Array<{ text?: string; href?: string }>;
+      visible_headings?: Array<{ text?: string; level?: number | null }>;
       buttons?: string[];
       inputs?: Array<{ label?: string; placeholder?: string; type?: string }>;
       links?: string[];
@@ -1017,6 +1025,10 @@ export default function Home() {
         ? {
             url: input.page_context_snapshot.url,
             title: input.page_context_snapshot.title,
+            visible_buttons: input.page_context_snapshot.visible_buttons,
+            visible_inputs: input.page_context_snapshot.visible_inputs,
+            visible_links: input.page_context_snapshot.visible_links,
+            visible_headings: input.page_context_snapshot.visible_headings,
             buttons: input.page_context_snapshot.buttons,
             inputs: input.page_context_snapshot.inputs,
             links: input.page_context_snapshot.links,
@@ -4249,6 +4261,49 @@ export default function Home() {
                       <p className="text-[11px] uppercase tracking-[0.14em] text-amber-200/80">Bill's question</p>
                       <p className="mt-1 text-amber-50">{guidedTeachingCopilotQuestion || "No question right now."}</p>
                     </div>
+                    <details className="rounded-md border border-sky-700/30 bg-slate-950/40 px-2 py-2" open>
+                      <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-sky-200/80">Bill can currently see</summary>
+                      <div className="mt-2 space-y-2 text-xs text-sky-50">
+                        <p>
+                          <span className="text-sky-200/80">Page:</span>{" "}
+                          {guidedTeachingSession.pageContextSnapshot?.title || "Unknown page"}
+                        </p>
+                        <p>
+                          <span className="text-sky-200/80">Domain:</span>{" "}
+                          {(() => {
+                            const urlValue = guidedTeachingSession.pageContextSnapshot?.url || "";
+                            if (!urlValue) return "Not available";
+                            try {
+                              return new URL(urlValue).hostname || "Not available";
+                            } catch {
+                              return "Not available";
+                            }
+                          })()}
+                        </p>
+                        <p>
+                          <span className="text-sky-200/80">Top buttons:</span>{" "}
+                          {(
+                            guidedTeachingSession.pageContextSnapshot?.visible_buttons?.map((b) => b.text).filter(Boolean)
+                              || guidedTeachingSession.pageContextSnapshot?.buttons
+                              || []
+                          ).slice(0, 4).join(", ") || "None detected"}
+                        </p>
+                        <p>
+                          <span className="text-sky-200/80">Top fields:</span>{" "}
+                          {(
+                            guidedTeachingSession.pageContextSnapshot?.visible_inputs?.map((i) => i.label || i.placeholder).filter(Boolean)
+                              || guidedTeachingSession.pageContextSnapshot?.inputs?.map((i) => i.label || i.placeholder).filter(Boolean)
+                              || []
+                          ).slice(0, 4).join(", ") || "None detected"}
+                        </p>
+                        <p>
+                          <span className="text-sky-200/80">Popup:</span>{" "}
+                          {guidedTeachingSession.pageContextSnapshot?.modal_present
+                            ? (guidedTeachingSession.pageContextSnapshot?.modal_title || "Popup detected")
+                            : "No popup detected"}
+                        </p>
+                      </div>
+                    </details>
                   </div>
                 </section>
 
