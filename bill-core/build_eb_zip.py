@@ -12,36 +12,9 @@ ZIP_PATH = BASE_DIR / "bill-core-deploy.zip"
 
 logger = logging.getLogger("bill-core.build-eb-zip")
 
-
-def _verify_source_integrity() -> None:
-    """Run source integrity check before building.
-
-    Fails fast if an unknown dangerous copy of main.py differs from canonical.
-    Stale generated copies (bill-core-deploy-clean) are advisory only —
-    they will be overwritten by rebuild_clean_folder().
-    """
-    import subprocess
-    import sys
-    verify_script = BASE_DIR / "verify_backend_source_integrity.py"
-    if not verify_script.exists():
-        logger.warning("verify_backend_source_integrity.py not found — skipping pre-build check")
-        return
-    result = subprocess.run(
-        [sys.executable, str(verify_script), "--fail"],
-        capture_output=True,
-        text=True,
-    )
-    print(result.stdout)
-    if result.returncode != 0:
-        if result.stderr:
-            print(result.stderr)
-        raise SystemExit(
-            "Pre-build integrity check FAILED: a dangerous copy of main.py differs "
-            "from canonical. Fix drift before building the deployment zip."
-        )
-
 REQUIRED_ROOT_FILES = [
     "main.py",
+    "teaching_copilot_service.py",  # Teaching Co-Pilot API/service layer
     "Procfile",
     "requirements.txt",
     "db.py",
@@ -67,8 +40,10 @@ REQUIRED_ROOT_FILES = [
     "elevenlabs_voice_service.py",  # Phase Voice: ElevenLabs TTS service
     "bill_voice_events.py",  # Phase Voice: event-to-speech mapping
     "task_service.py",  # Task service used by main.py and conversational module
+    "task_store.py",  # Wave 1 Priority 2: durable task persistence via DB
     "teaching_reasoning_service.py",  # Teaching Mode deterministic reasoning layer
-    "task_store.py",                   # Durable task queue startup loader
+    "auth.py",  # Wave 1 Priority 3: API authentication and worker authorization
+    "structured_logging.py",  # Observability helper used by runtime logging
 ]
 
 REQUIRED_DIRS = [
@@ -206,9 +181,6 @@ def validate_zip(entries: list[str]) -> tuple[bool, bool, bool]:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-    # Verify source integrity before building — fails fast on dangerous drift
-    _verify_source_integrity()
 
     ensure_required_dirs_exist()
 

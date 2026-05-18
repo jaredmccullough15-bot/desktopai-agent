@@ -14,6 +14,7 @@ logger = logging.getLogger("bill-core.build-eb-zip")
 
 REQUIRED_ROOT_FILES = [
     "main.py",
+    "teaching_copilot_service.py",  # Teaching Co-Pilot API/service layer
     "Procfile",
     "requirements.txt",
     "db.py",
@@ -39,7 +40,10 @@ REQUIRED_ROOT_FILES = [
     "elevenlabs_voice_service.py",  # Phase Voice: ElevenLabs TTS service
     "bill_voice_events.py",  # Phase Voice: event-to-speech mapping
     "task_service.py",  # Task service used by main.py and conversational module
+    "task_store.py",  # Wave 1 Priority 2: durable task persistence via DB
     "teaching_reasoning_service.py",  # Teaching Mode deterministic reasoning layer
+    "auth.py",  # Wave 1 Priority 3: API authentication and worker authorization
+    "structured_logging.py",  # Observability helper used by runtime logging
 ]
 
 REQUIRED_DIRS = [
