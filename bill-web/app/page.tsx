@@ -253,6 +253,13 @@ type TeachingSessionApiResponse = {
     review_status?: string;
     workflow_name?: string;
   } | null;
+  execution_readiness?: {
+    runnable?: boolean;
+    has_start_url?: boolean;
+    start_url?: string | null;
+    blocking_reasons?: string[];
+    execution_warnings?: string[];
+  } | null;
 };
 
 type TeachingReviewSummary = {
@@ -260,6 +267,14 @@ type TeachingReviewSummary = {
   totalSteps: number;
   confirmedSteps: number;
   unconfirmedSteps: number;
+};
+
+type TeachingExecutionReadiness = {
+  runnable?: boolean;
+  has_start_url?: boolean;
+  start_url?: string | null;
+  blocking_reasons?: string[];
+  execution_warnings?: string[];
 };
 
 type BrainCommandResponse = {
@@ -685,9 +700,13 @@ export default function Home() {
   const [guidedTeachingBusy, setGuidedTeachingBusy] = useState(false);
   const [guidedTeachingTargetStepId, setGuidedTeachingTargetStepId] = useState<string | null>(null);
   const [guidedTeachingReviewSummary, setGuidedTeachingReviewSummary] = useState<TeachingReviewSummary | null>(null);
+  const [guidedTeachingExecutionReadiness, setGuidedTeachingExecutionReadiness] = useState<TeachingExecutionReadiness | null>(null);
   const [guidedTeachingWarnings, setGuidedTeachingWarnings] = useState<string[]>([]);
   const [guidedTeachingApprovalMessage, setGuidedTeachingApprovalMessage] = useState<string | null>(null);
+  const [guidedTeachingRunNowBusy, setGuidedTeachingRunNowBusy] = useState(false);
+  const [guidedTeachingRunNowMessage, setGuidedTeachingRunNowMessage] = useState<string | null>(null);
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
+  const [editingAdvancedDetailsOpen, setEditingAdvancedDetailsOpen] = useState(false);
   const [editingStepState, setEditingStepState] = useState<GuidedStepEditState>({
     title: "",
     employeeExplanation: "",
@@ -993,6 +1012,7 @@ export default function Home() {
     (body: TeachingSessionApiResponse) => {
       setGuidedTeachingSession(mapApiTeachingSession(body.teaching_session));
       setGuidedTeachingWarnings(body.warnings ?? []);
+      setGuidedTeachingExecutionReadiness(body.execution_readiness ?? null);
       if (body.review_summary) {
         setGuidedTeachingReviewSummary({
           workflowSummary: body.review_summary.workflow_summary,
@@ -1018,8 +1038,10 @@ export default function Home() {
       });
       setGuidedTeachingInput("");
       setGuidedTeachingReviewSummary(null);
+      setGuidedTeachingExecutionReadiness(null);
       setGuidedTeachingWarnings([]);
       setGuidedTeachingApprovalMessage(null);
+      setGuidedTeachingRunNowMessage(null);
       setGuidedTeachingMessages([
         {
           role: "assistant",
@@ -1057,6 +1079,7 @@ export default function Home() {
   const setGuidedTeachingFromSession = useCallback((session: TeachingSession) => {
     setGuidedTeachingSession(session);
     setGuidedTeachingWarnings([]);
+    setGuidedTeachingExecutionReadiness(null);
     setGuidedTeachingReviewSummary({
       workflowSummary: session.workflowSummary,
       totalSteps: session.steps.length,
@@ -1064,6 +1087,89 @@ export default function Home() {
       unconfirmedSteps: session.steps.filter((step) => !step.confirmed).length,
     });
   }, []);
+
+  const estimateTeachingExecutionReadiness = useCallback((session: TeachingSession): TeachingExecutionReadiness => {
+    const blockingReasons: string[] = [];
+    const executionWarnings: string[] = [];
+    const allActions = session.steps.flatMap((step) => step.observedActions ?? []);
+    const firstNavigation = allActions.find((action) => action.type === "navigate" && Boolean(action.url?.trim()));
+    const hasStartUrl = Boolean(firstNavigation?.url);
+
+    if (session.steps.length === 0) {
+      blockingReasons.push("No steps were captured yet.");
+    }
+
+    if (allActions.length === 0) {
+      blockingReasons.push("Workflow is manual-only and needs more teaching before it can run.");
+    }
+
+    if (!hasStartUrl) {
+      blockingReasons.push("No starting page was captured.");
+    }
+
+    const hasManualOnlyStep = session.steps.some((step) => step.observedActions.length === 0);
+    if (hasManualOnlyStep) {
+      executionWarnings.push("At least one step is manual-only and may require a person during execution.");
+    }
+
+    const hasRedactedInput = allActions.some((action) => Boolean(action.valueRedacted));
+    if (hasRedactedInput) {
+      executionWarnings.push("At least one input is redacted and will require a person to enter data during the run.");
+    }
+
+    const hasUnconfirmedSteps = session.steps.some((step) => !step.confirmed);
+    if (hasUnconfirmedSteps) {
+      executionWarnings.push("Some steps are still unconfirmed.");
+    }
+
+    return {
+      runnable: blockingReasons.length === 0,
+      has_start_url: hasStartUrl,
+      start_url: firstNavigation?.url ?? null,
+      blocking_reasons: blockingReasons,
+      execution_warnings: executionWarnings,
+    };
+  }, []);
+
+  const localTeachingExecutionReadiness = useMemo(() => {
+    if (!guidedTeachingSession) return null;
+    return estimateTeachingExecutionReadiness(guidedTeachingSession);
+  }, [estimateTeachingExecutionReadiness, guidedTeachingSession]);
+
+  const guidedTeachingEffectiveReadiness = useMemo(() => {
+    if (!localTeachingExecutionReadiness && !guidedTeachingExecutionReadiness) return null;
+    if (!guidedTeachingExecutionReadiness) return localTeachingExecutionReadiness;
+    if (!localTeachingExecutionReadiness) return guidedTeachingExecutionReadiness;
+
+    const mergedBlockingReasons = Array.from(
+      new Set([
+        ...(guidedTeachingExecutionReadiness.blocking_reasons ?? []),
+        ...(localTeachingExecutionReadiness.blocking_reasons ?? []),
+      ]),
+    );
+    const mergedExecutionWarnings = Array.from(
+      new Set([
+        ...(guidedTeachingExecutionReadiness.execution_warnings ?? []),
+        ...(localTeachingExecutionReadiness.execution_warnings ?? []),
+      ]),
+    );
+
+    return {
+      ...localTeachingExecutionReadiness,
+      ...guidedTeachingExecutionReadiness,
+      runnable:
+        guidedTeachingExecutionReadiness.runnable !== undefined
+          ? Boolean(guidedTeachingExecutionReadiness.runnable)
+          : Boolean(localTeachingExecutionReadiness.runnable),
+      has_start_url:
+        guidedTeachingExecutionReadiness.has_start_url !== undefined
+          ? Boolean(guidedTeachingExecutionReadiness.has_start_url)
+          : Boolean(localTeachingExecutionReadiness.has_start_url),
+      start_url: guidedTeachingExecutionReadiness.start_url ?? localTeachingExecutionReadiness.start_url ?? null,
+      blocking_reasons: mergedBlockingReasons,
+      execution_warnings: mergedExecutionWarnings,
+    } satisfies TeachingExecutionReadiness;
+  }, [guidedTeachingExecutionReadiness, localTeachingExecutionReadiness]);
 
   const getLatestRelevantStep = useCallback((): WorkflowStep | null => {
     if (!guidedTeachingSession || guidedTeachingSession.steps.length === 0) {
@@ -1105,6 +1211,7 @@ export default function Home() {
 
   const handleEditStep = useCallback((step: WorkflowStep) => {
     setEditingStepId(step.id);
+    setEditingAdvancedDetailsOpen(false);
     setEditingStepState({
       title: step.title,
       employeeExplanation: step.employeeExplanation ?? "",
@@ -1438,8 +1545,10 @@ export default function Home() {
       }
       setGuidedTeachingSession(mapApiTeachingSession(body.teaching_session));
       setGuidedTeachingReviewSummary(null);
+      setGuidedTeachingExecutionReadiness(null);
       setGuidedTeachingWarnings([]);
       setGuidedTeachingApprovalMessage(null);
+      setGuidedTeachingRunNowMessage(null);
       setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
     } catch (error) {
       setGuidedTeachingMessages((current) => [
@@ -1484,6 +1593,73 @@ export default function Home() {
       setGuidedTeachingBusy(false);
     }
   }, [applyGuidedTeachingApiResponse, guidedTeachingBusy, guidedTeachingSession]);
+
+  const runGuidedTeachingWorkflowNow = async () => {
+    if (!guidedTeachingSession || guidedTeachingRunNowBusy) {
+      return;
+    }
+
+    const readiness = guidedTeachingEffectiveReadiness;
+    if (!readiness?.runnable) {
+      const firstReason = (readiness?.blocking_reasons ?? [])[0] ?? "This workflow needs more teaching before it can run.";
+      setGuidedTeachingRunNowMessage(`Can't run yet: ${firstReason}`);
+      return;
+    }
+
+    setGuidedTeachingRunNowBusy(true);
+    setGuidedTeachingRunNowMessage(null);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const slug = workflowSlug(guidedTeachingSession.workflowName);
+      const requestBody: Record<string, unknown> = {
+        mode: "interactive_visible",
+        payload: {},
+      };
+      const preferredWorker =
+        teachingStartupState?.target_machine_uuid || teachingTargetWorkerUuid || targetMachineUuid;
+      if (preferredWorker) {
+        requestBody.target_machine_uuid = preferredWorker;
+      }
+
+      const response = await fetch(`${apiBase}/api/workflows/${slug}/run-taught`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+      const body = (await response.json()) as TaskCreateResponse & {
+        detail?: string | { message?: string };
+        blocking_reasons?: string[];
+      };
+
+      if (!response.ok) {
+        const reason = (body.blocking_reasons ?? [])[0]
+          ?? (typeof body.detail === "string" ? body.detail : body.detail?.message)
+          ?? `Workflow run failed (${response.status})`;
+        setGuidedTeachingRunNowMessage(`Couldn't start run: ${reason}`);
+        return;
+      }
+
+      setResponse(body);
+      setTaskActionFeedback({
+        kind: "success",
+        message: `Started '${guidedTeachingSession.workflowName}'`,
+        timestamp: new Date().toLocaleTimeString(),
+      });
+      setGuidedTeachingRunNowMessage("Run started. Bill is executing this taught workflow now.");
+      await loadDashboardData();
+    } catch (error) {
+      setGuidedTeachingRunNowMessage(
+        `Couldn't start run: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setGuidedTeachingRunNowBusy(false);
+    }
+  };
+
   const billVoice = useBillVoice(getApiBase());
   const commandMic = useBillMic();
   const [commandVoiceEnabled, setCommandVoiceEnabled] = useState<boolean>(true);
@@ -2465,8 +2641,10 @@ export default function Home() {
           setGuidedTeachingSession(mapApiTeachingSession(body.teaching_session));
           setGuidedTeachingInput("");
           setGuidedTeachingReviewSummary(null);
+          setGuidedTeachingExecutionReadiness(null);
           setGuidedTeachingWarnings([]);
           setGuidedTeachingApprovalMessage(null);
+          setGuidedTeachingRunNowMessage(null);
           setGuidedTeachingMessages([
             {
               role: "assistant",
@@ -2513,6 +2691,21 @@ export default function Home() {
       setChatLoading(false);
     }
   }
+
+  const startTeachingFromCommandCenter = useCallback(() => {
+    const suggested = [learningWorkflowName, helperWorkflow, guidedTeachingSession?.workflowName]
+      .map((value) => String(value || "").trim())
+      .find(Boolean) || "";
+    const workflowName = window.prompt("What should this workflow be called?", suggested)?.trim();
+    if (!workflowName) {
+      return;
+    }
+
+    const command = `Let's create a new workflow called ${workflowName}. Teach Bill this workflow step by step.`;
+    setChatInput(command);
+    setGuidedTeachingRunNowMessage(null);
+    void submitBrainCommand(command);
+  }, [guidedTeachingSession?.workflowName, helperWorkflow, learningWorkflowName]);
 
   const cancelTask = async (taskId?: string) => {
     if (!taskId) {
@@ -3610,6 +3803,7 @@ export default function Home() {
                 setHelperWorkflow={setHelperWorkflow}
                 onRunWorkflow={(name) => void runSelectedWorkflow(name)}
                 onQuickAction={(cmd) => { setChatInput(cmd); void submitBrainCommand(cmd); }}
+                onStartTeaching={startTeachingFromCommandCenter}
               />
 
               {/* Recent Activity + Active Tasks row */}
@@ -3887,7 +4081,7 @@ export default function Home() {
                     disabled={guidedTeachingBusy || guidedTeachingSession.status === "review" || guidedTeachingSession.status === "approved"}
                     className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-100 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    End Teaching / Review Workflow
+                    Review What Bill Learned
                   </button>
                 </div>
               </div>
@@ -3901,6 +4095,34 @@ export default function Home() {
                   <p className="mt-2 text-xs text-amber-100/90">
                     Steps: {guidedTeachingReviewSummary?.totalSteps ?? guidedTeachingSession.steps.length} | Confirmed: {guidedTeachingReviewSummary?.confirmedSteps ?? guidedTeachingSession.steps.filter((step) => step.confirmed).length} | Unconfirmed: {guidedTeachingReviewSummary?.unconfirmedSteps ?? guidedTeachingSession.steps.filter((step) => !step.confirmed).length}
                   </p>
+                  <p className="mt-2 text-xs text-amber-100/90">
+                    Run status: {guidedTeachingEffectiveReadiness?.runnable ? "Runnable" : "Needs More Teaching"}
+                  </p>
+                  {guidedTeachingEffectiveReadiness?.start_url ? (
+                    <p className="mt-1 text-xs text-amber-100/90">Starting page: {guidedTeachingEffectiveReadiness.start_url}</p>
+                  ) : (
+                    <p className="mt-1 text-xs text-amber-100/90">Starting page: Not captured yet</p>
+                  )}
+                  {(guidedTeachingEffectiveReadiness?.blocking_reasons ?? []).length > 0 && (
+                    <div className="mt-2 rounded-md border border-rose-400/40 bg-rose-500/10 px-2 py-2 text-xs text-rose-100">
+                      <p className="font-semibold">Needs attention before run:</p>
+                      <ul className="mt-1 list-disc space-y-1 pl-4">
+                        {(guidedTeachingEffectiveReadiness?.blocking_reasons ?? []).map((reason, index) => (
+                          <li key={`blocking-${index}`}>{reason}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {(guidedTeachingEffectiveReadiness?.execution_warnings ?? []).length > 0 && (
+                    <div className="mt-2 rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-2 text-xs text-amber-100">
+                      <p className="font-semibold">Execution warnings:</p>
+                      <ul className="mt-1 list-disc space-y-1 pl-4">
+                        {(guidedTeachingEffectiveReadiness?.execution_warnings ?? []).map((warning, index) => (
+                          <li key={`warning-${index}`}>{warning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   {(guidedTeachingWarnings.includes("Some steps are not confirmed yet. You can approve anyway, but Bill may need more training.") || (guidedTeachingReviewSummary?.unconfirmedSteps ?? 0) > 0) && (
                     <p className="mt-2 rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-1.5 text-xs text-amber-100">
                       Some steps are not confirmed yet. You can approve anyway, but Bill may need more training.
@@ -3936,14 +4158,29 @@ export default function Home() {
                     >
                       Approve Workflow
                     </button>
+                    {(guidedTeachingSession.status === "approved" || guidedTeachingSession.status === "ready") && (
+                      <button
+                        type="button"
+                        onClick={() => void runGuidedTeachingWorkflowNow()}
+                        disabled={guidedTeachingRunNowBusy || !guidedTeachingEffectiveReadiness?.runnable}
+                        className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {guidedTeachingRunNowBusy ? "Starting Run..." : "Run Workflow Now"}
+                      </button>
+                    )}
                   </div>
+                  {guidedTeachingRunNowMessage && (
+                    <p className="mt-2 rounded-md border border-cyan-400/40 bg-cyan-500/10 px-2 py-1.5 text-xs text-cyan-100">
+                      {guidedTeachingRunNowMessage}
+                    </p>
+                  )}
                 </section>
               )}
 
               <div className="mt-4 grid grid-cols-1 gap-3">
                 <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Floating Chat Panel</p>
-                  <p className="mt-1 text-xs text-slate-400">Press ` to talk to Bill</p>
+                  <p className="mt-1 text-xs text-slate-400">Use the button below to speak. Backtick (`) is still available as a shortcut.</p>
                   <p className="mt-1 text-xs text-indigo-200">
                     {!voiceSupported
                       ? "Mic unavailable"
@@ -3993,9 +4230,14 @@ export default function Home() {
                           startListening();
                         }
                       }}
-                      className="rounded-lg border border-indigo-400/40 bg-indigo-500/10 px-3 py-2 text-sm text-indigo-100"
+                      className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                        isListening
+                          ? "border border-rose-400/50 bg-rose-500/20 text-rose-100"
+                          : "border border-indigo-400/40 bg-indigo-500/15 text-indigo-100 hover:bg-indigo-500/25"
+                      }`}
+                      disabled={!voiceSupported}
                     >
-                      {isListening ? "Stop Voice" : "Speak Reply"}
+                      {isListening ? "Stop Listening" : "Speak to Bill"}
                     </button>
                   </div>
                 </section>
@@ -4032,35 +4274,46 @@ export default function Home() {
                           {editingStepId === step.id ? (
                             <div className="mt-2 space-y-2">
                               <textarea
-                                value={editingStepState.billSummary}
-                                onChange={(event) => setEditingStepState((current) => ({ ...current, billSummary: event.target.value }))}
-                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                placeholder="Bill summary"
-                              />
-                              <textarea
                                 value={editingStepState.employeeExplanation}
                                 onChange={(event) => setEditingStepState((current) => ({ ...current, employeeExplanation: event.target.value }))}
                                 className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                placeholder="Employee explanation"
+                                placeholder="What employee did"
                               />
-                              <input
-                                value={editingStepState.decisionRules}
-                                onChange={(event) => setEditingStepState((current) => ({ ...current, decisionRules: event.target.value }))}
+                              <textarea
+                                value={editingStepState.billSummary}
+                                onChange={(event) => setEditingStepState((current) => ({ ...current, billSummary: event.target.value }))}
                                 className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                placeholder="Decision rules (semicolon separated)"
+                                placeholder="What Bill thinks"
                               />
-                              <input
-                                value={editingStepState.exceptions}
-                                onChange={(event) => setEditingStepState((current) => ({ ...current, exceptions: event.target.value }))}
-                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                placeholder="Exceptions (semicolon separated)"
-                              />
-                              <input
-                                value={editingStepState.requiredInputs}
-                                onChange={(event) => setEditingStepState((current) => ({ ...current, requiredInputs: event.target.value }))}
-                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                placeholder="Required inputs (comma separated)"
-                              />
+                              <button
+                                type="button"
+                                onClick={() => setEditingAdvancedDetailsOpen((current) => !current)}
+                                className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
+                              >
+                                {editingAdvancedDetailsOpen ? "Hide Advanced Details" : "Advanced Details"}
+                              </button>
+                              {editingAdvancedDetailsOpen && (
+                                <>
+                                  <input
+                                    value={editingStepState.decisionRules}
+                                    onChange={(event) => setEditingStepState((current) => ({ ...current, decisionRules: event.target.value }))}
+                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                    placeholder="Decision rules (semicolon separated)"
+                                  />
+                                  <input
+                                    value={editingStepState.exceptions}
+                                    onChange={(event) => setEditingStepState((current) => ({ ...current, exceptions: event.target.value }))}
+                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                    placeholder="Exceptions (semicolon separated)"
+                                  />
+                                  <input
+                                    value={editingStepState.requiredInputs}
+                                    onChange={(event) => setEditingStepState((current) => ({ ...current, requiredInputs: event.target.value }))}
+                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
+                                    placeholder="Required inputs (comma separated)"
+                                  />
+                                </>
+                              )}
                             </div>
                           ) : (
                             <>
