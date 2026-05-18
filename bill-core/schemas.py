@@ -203,6 +203,7 @@ class BrowserAction(BaseModel):
 class TeachingSessionActionRequest(BaseModel):
     action: BrowserAction
     step_id: str | None = None
+    page_context: dict | None = None         # raw PageContextSnapshot from browser
 
 
 class WorkflowStep(BaseModel):
@@ -230,6 +231,7 @@ class TeachingSession(BaseModel):
     workflow_summary: str | None = None
     status: Literal["intro", "teaching", "review", "approved"] = "intro"
     steps: list[WorkflowStep] = Field(default_factory=list)
+    page_context_snapshot: dict | None = None  # last captured PageContextSnapshot
 
 
 class TeachingSessionMessageRequest(BaseModel):
@@ -240,6 +242,9 @@ class TeachingSessionMessageRequest(BaseModel):
 class TeachingSessionMessageResponse(BaseModel):
     reply: str
     teaching_session: TeachingSession
+    copilot_notice: str | None = None        # "I saw you …"
+    copilot_interpretation: str | None = None  # "I think this …"
+    copilot_question: str | None = None      # "Bill's question"
 
 
 class TeachingReasoningRequest(BaseModel):
@@ -285,6 +290,7 @@ class TeachingSessionReviewResponse(BaseModel):
     review_summary: TeachingSessionReviewSummary
     warnings: list[str] = Field(default_factory=list)
     draft_result: dict[str, Any] | None = None
+    execution_readiness: dict[str, Any] | None = None
 
 
 class BrainCommandResponse(BaseModel):
@@ -478,6 +484,18 @@ class WorkflowLearningCreateRequest(BaseModel):
     goal: str | None = None
 
 
+class WorkflowExecutionReadiness(BaseModel):
+    executable: bool = False
+    runnable: bool = False
+    has_start_url: bool = False
+    start_url: str | None = None
+    executable_action_count: int = 0
+    manual_action_count: int = 0
+    redacted_input_count: int = 0
+    blocking_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class WorkflowLearningDraftRecord(BaseModel):
     draft_id: str
     tenant_id: str | None = None
@@ -508,6 +526,7 @@ class WorkflowLearningDraftRecord(BaseModel):
     workflow_annotations: list[dict[str, Any]] = Field(default_factory=list)
     training_memory: list[dict[str, Any]] = Field(default_factory=list)
     navigation_rules: list[dict[str, Any]] = Field(default_factory=list)
+    execution_readiness: WorkflowExecutionReadiness = Field(default_factory=WorkflowExecutionReadiness)
     # Teaching loop state
     teaching_complete: bool = False
     teaching_pending_step: int | None = None

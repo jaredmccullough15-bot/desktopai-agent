@@ -22,8 +22,22 @@ from uuid import uuid4
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from pydantic import BaseModel as _BaseModel
 
 from auth import enforce_request_auth, validate_auth_configuration
+from structured_logging import slog, slog_error, slog_warning
+
+try:
+    from teaching_copilot_service import (
+        PageContextSnapshot,
+        InterruptionTracker,
+        interpret_action,
+        resolve_natural_reference,
+        handle_live_command,
+    )
+    _COPILOT_AVAILABLE = True
+except ImportError:
+    _COPILOT_AVAILABLE = False
 
 from error_explainer import (
     classify_error,
@@ -201,6 +215,118 @@ async def auth_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
+# Teaching Session Step Correction Endpoints
+# ---------------------------------------------------------------------------
+
+class TeachingStepEditRequest(_BaseModel):
+    title: str | None = None
+    employee_explanation: str | None = None
+    bill_summary: str | None = None
+    decision_rules: list[str] | None = None
+    exceptions: list[str] | None = None
+    required_inputs: list[str] | None = None
+    confirmed: bool | None = None
+    observed_actions: list[dict] | None = None
+
+
+@app.patch("/api/teaching/session/{session_id}/steps/{step_id}")
+def edit_teaching_step(session_id: str, step_id: str, payload: TeachingStepEditRequest = Body(...)):
+    session = next((s for s in workflow_learning_drafts if s.get("session_id") == session_id), None)
+    if not session:
+        # Try _teaching_startup_sessions
+        rec = _teaching_startup_sessions.get(session_id)
+        if rec:
+            ts = rec.get("teaching_session") or {}
+            steps = ts.get("steps", [])
+            step = next((s for s in steps if str(s.get("id")) == str(step_id)), None)
+            if not step:
+                raise HTTPException(status_code=404, detail="Step not found")
+            if payload.title is not None: step["title"] = payload.title
+            if payload.employee_explanation is not None: step["employee_explanation"] = payload.employee_explanation
+            if payload.bill_summary is not None: step["bill_summary"] = payload.bill_summary
+            if payload.decision_rules is not None: step["decision_rules"] = payload.decision_rules
+            if payload.exceptions is not None: step["exceptions"] = payload.exceptions
+            if payload.required_inputs is not None: step["required_inputs"] = payload.required_inputs
+            if payload.confirmed is not None: step["confirmed"] = payload.confirmed
+            if payload.observed_actions is not None: step["observed_actions"] = payload.observed_actions
+            step["edited"] = True
+            ts["steps"] = steps
+            rec["teaching_session"] = ts
+            _teaching_startup_sessions[session_id] = rec
+            return {"status": "ok", "teaching_session": ts}
+        raise HTTPException(status_code=404, detail="Session not found")
+    steps = session.get("steps", [])
+    step = next((s for s in steps if str(s.get("id")) == str(step_id)), None)
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+    if payload.title is not None: step["title"] = payload.title
+    if payload.employee_explanation is not None: step["employeeExplanation"] = payload.employee_explanation
+    if payload.bill_summary is not None: step["billSummary"] = payload.bill_summary
+    if payload.decision_rules is not None: step["decisionRules"] = payload.decision_rules
+    if payload.exceptions is not None: step["exceptions"] = payload.exceptions
+    if payload.required_inputs is not None: step["requiredInputs"] = payload.required_inputs
+    if payload.confirmed is not None: step["confirmed"] = payload.confirmed
+    if payload.observed_actions is not None: step["observedActions"] = payload.observed_actions
+    step["edited"] = True
+    _save_workflow_learning_drafts()
+    return {"status": "ok", "teaching_session": session}
+
+
+@app.delete("/api/teaching/session/{session_id}/steps/{step_id}")
+def delete_teaching_step(session_id: str, step_id: str):
+    rec = _teaching_startup_sessions.get(session_id)
+    if rec:
+        ts = rec.get("teaching_session") or {}
+        steps = ts.get("steps", [])
+        step = next((s for s in steps if str(s.get("id")) == str(step_id)), None)
+        if not step:
+            raise HTTPException(status_code=404, detail="Step not found")
+        step["ignored"] = True
+        ts["steps"] = steps
+        rec["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = rec
+        return {"status": "ok", "teaching_session": ts}
+    session = next((s for s in workflow_learning_drafts if s.get("session_id") == session_id), None)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    steps = session.get("steps", [])
+    step = next((s for s in steps if str(s.get("id")) == str(step_id)), None)
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+    step["ignored"] = True
+    _save_workflow_learning_drafts()
+    return {"status": "ok", "teaching_session": session}
+
+
+@app.post("/api/teaching/session/{session_id}/steps/{step_id}/redo")
+def redo_teaching_step(session_id: str, step_id: str):
+    rec = _teaching_startup_sessions.get(session_id)
+    if rec:
+        ts = rec.get("teaching_session") or {}
+        steps = ts.get("steps", [])
+        step = next((s for s in steps if str(s.get("id")) == str(step_id)), None)
+        if not step:
+            raise HTTPException(status_code=404, detail="Step not found")
+        step["superseded"] = True
+        rec["redoing_step_id"] = step_id
+        ts["steps"] = steps
+        rec["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = rec
+        return {"status": "ok", "teaching_session": ts}
+    session = next((s for s in workflow_learning_drafts if s.get("session_id") == session_id), None)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    steps = session.get("steps", [])
+    step = next((s for s in steps if str(s.get("id")) == str(step_id)), None)
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+    step["superseded"] = True
+    session["redoing_step_id"] = step_id
+    _save_workflow_learning_drafts()
+    return {"status": "ok", "teaching_session": session}
+
+
+# ---------------------------------------------------------------------------
 # Startup validation (reliability check — no business logic changes)
 # ---------------------------------------------------------------------------
 _BILL_CORE_ROOT = Path(__file__).resolve().parent
@@ -287,6 +413,16 @@ DEFAULT_TEACH_SESSION_WORKER_API_FALLBACK = "https://api.bill-core.com"
 # In-memory store for active teaching startup sessions (keyed by session_id).
 # Persists for the lifetime of the process; reset on server restart.
 _teaching_startup_sessions: dict[str, dict] = {}
+# Per-session Co-Pilot interruption trackers
+_copilot_trackers: dict[str, "InterruptionTracker"] = {}
+
+
+def _get_copilot_tracker(session_id: str) -> "InterruptionTracker | None":
+    if not _COPILOT_AVAILABLE:
+        return None
+    if session_id not in _copilot_trackers:
+        _copilot_trackers[session_id] = InterruptionTracker()
+    return _copilot_trackers[session_id]
 
 
 def _looks_like_proxy_api_base(value: str) -> bool:
@@ -1052,6 +1188,13 @@ def _create_task_record(normalized_payload: dict) -> TaskCreateResponse:
     _append_task_log(task, f"Task created with type={normalized_payload.get('task_type', 'unknown')}")
     save_task_db(task)
     logger.info("Task created: id=%s task_type=%s", task_id, normalized_payload.get("task_type", "unknown"))
+    slog(
+        "task_created",
+        task_id=task_id,
+        route="/api/tasks",
+        message="Task queued",
+        task_type=normalized_payload.get("task_type", "unknown"),
+    )
     return TaskCreateResponse(id=task_id, status="queued")
 
 
@@ -1069,6 +1212,45 @@ def health() -> dict:
     if _BUILD_MANIFEST.get("git_commit"):
         response["git_commit"] = _BUILD_MANIFEST["git_commit"]
     return response
+
+
+@app.get("/health/deep")
+def health_deep() -> dict:
+    """Protected deep-health check — requires dashboard auth (via middleware).
+
+    Returns task queue counts, registered worker count, DB reachability,
+    and configuration flags useful for operational monitoring.
+    """
+    # DB reachability probe — lightweight SELECT 1
+    db_reachable = False
+    try:
+        from db import SessionLocal
+        with SessionLocal() as _db_session:
+            from sqlalchemy import text as _sql_text
+            _db_session.execute(_sql_text("SELECT 1"))
+        db_reachable = True
+    except Exception:
+        pass
+
+    task_snapshot = list(tasks)
+
+    pending_count = sum(1 for t in task_snapshot if t.get("status") == "queued")
+    running_count = sum(1 for t in task_snapshot if t.get("status") in {"assigned", "running"})
+
+    with _workers_lock:
+        online_worker_count = len(registered_workers)
+
+    from auth import is_auth_enabled
+    return {
+        "status": "ok",
+        "database_reachable": db_reachable,
+        "task_store_reachable": True,
+        "pending_task_count": pending_count,
+        "running_task_count": running_count,
+        "online_worker_count": online_worker_count,
+        "auth_enabled": is_auth_enabled(),
+        "build_version": app.version or None,
+    }
 
 
 @app.get("/version")
@@ -1113,6 +1295,15 @@ def register_worker(payload: WorkerRegisterRequest) -> WorkerRegisterResponse:
         payload.worker_version,
         payload.execution_mode,
     )
+    slog(
+        "worker_registered",
+        worker_id=payload.machine_uuid,
+        route="/worker/register",
+        message="Worker registered" if not existing else "Worker re-registered",
+        machine_name=payload.machine_name,
+        worker_version=payload.worker_version,
+        action="updated" if existing else "created",
+    )
     update_instruction = _build_worker_update_instruction(
         current_version=(payload.worker_version or "0.0.0"),
         machine_uuid=payload.machine_uuid,
@@ -1152,6 +1343,13 @@ def worker_heartbeat(payload: WorkerHeartbeatRequest) -> dict[str, str]:
                 payload.machine_name,
                 payload.machine_uuid,
                 payload.status,
+            )
+            slog_warning(
+                "worker_heartbeat_rejected",
+                worker_id=payload.machine_uuid,
+                route="/worker/heartbeat",
+                message="Heartbeat rejected: worker not registered",
+                machine_name=payload.machine_name,
             )
             raise HTTPException(status_code=400, detail="Worker not registered")
 
@@ -3344,12 +3542,25 @@ def _first_taught_navigation_url(action_plan: list[dict[str, Any]]) -> str | Non
 
 @app.post("/api/workflows/{workflow_id}/run-taught", response_model=TaskCreateResponse)
 def run_taught_workflow(workflow_id: str, payload: ProcedureRunRequest) -> TaskCreateResponse:
+    slog(
+        "run_taught_requested",
+        route="/api/workflows/{workflow_id}/run-taught",
+        message="run-taught workflow requested",
+        workflow_id=workflow_id,
+    )
     draft = _resolve_approved_workflow_draft(workflow_id)
     if draft is None:
         raise HTTPException(status_code=404, detail="Approved workflow draft not found")
 
     readiness = validate_taught_workflow_executable(draft)
     if not readiness.get("runnable"):
+        slog_warning(
+            "run_taught_blocked",
+            route="/api/workflows/{workflow_id}/run-taught",
+            message="run-taught blocked: workflow not runnable",
+            workflow_id=workflow_id,
+            blocking_reasons=list(readiness.get("blocking_reasons") or []),
+        )
         raise HTTPException(
             status_code=422,
             detail={
@@ -5153,6 +5364,14 @@ def create_workflow_learning_draft(payload: WorkflowLearningCreateRequest) -> Wo
         f"Created workflow learning draft {draft.get('draft_id')} for {draft.get('workflow_name')}",
         details={"draft_id": draft.get("draft_id"), "workflow_name": draft.get("workflow_name"), "path": draft.get("learning_path")},
         tags=["workflow_learning", "draft"],
+    )
+    slog(
+        "teaching_session_started",
+        route="/api/brain/workflow-learning/drafts",
+        message="Workflow learning draft created",
+        workflow_name=draft.get("workflow_name"),
+        draft_id=draft.get("draft_id"),
+        learning_path=draft.get("learning_path"),
     )
     return WorkflowLearningDraftRecord(**draft)
 
@@ -7057,6 +7276,10 @@ _TEACHING_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
         r"\b(go to|open|navigate to|pull up|load|launch|head to|visit)\b",
         r"\bclick\s+(pending uploads|upload dashboard|dashboard|tab|menu)\b",
     ),
+    "click": (
+        r"\bclick\s+(?:the\s+)?(?:[a-z0-9 _-]+?\s+)?(?:button|link|tab|menu item|icon)\b",
+        r"\bclick\s+(?:the\s+)?[a-z0-9 _-]{2,80}\b",
+    ),
     "authentication": (
         r"\b(log\s*into|log\s*in|sign\s*into|sign\s*in|use\s+sso|sso\b|authenticate)\b",
     ),
@@ -7082,6 +7305,7 @@ _TEACHING_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
 
 _INTENT_PRIORITY: tuple[str, ...] = (
     "navigation",
+    "click",
     "authentication",
     "search",
     "submission",
@@ -7097,6 +7321,84 @@ _TEACHING_ACK_VARIANTS: tuple[str, ...] = (
     "Looks good.",
     "I think this step is clear.",
 )
+
+_CLICK_COLOR_WORDS: tuple[str, ...] = (
+    "blue",
+    "green",
+    "red",
+    "gray",
+    "grey",
+    "black",
+    "white",
+    "yellow",
+    "orange",
+    "purple",
+    "primary",
+    "secondary",
+)
+
+
+def _extract_selector_from_text(message: str) -> str | None:
+    text = str(message or "")
+    selector_patterns = (
+        r"\bselector\s*[:=]\s*([#\.\[\]a-zA-Z0-9_\-:'\(\)\"\s>+~*=]+)",
+        r"\bcss\s*[:=]\s*([#\.\[\]a-zA-Z0-9_\-:'\(\)\"\s>+~*=]+)",
+    )
+    for pattern in selector_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            value = match.group(1).strip().strip("\"'")
+            if value:
+                return value
+    return None
+
+
+def _normalize_click_label(raw: str) -> str:
+    label = re.sub(r"\s+", " ", str(raw or "").strip()).strip(".?!,;:\"'")
+    if not label:
+        return ""
+
+    tokens = [token for token in label.split(" ") if token]
+    while tokens and tokens[0].lower() in {"the", "a", "an", "this", "that"}:
+        tokens.pop(0)
+    while tokens and tokens[0].lower() in _CLICK_COLOR_WORDS:
+        tokens.pop(0)
+    while tokens and tokens[-1].lower() in {"button", "link", "tab", "icon", "menu", "item"}:
+        tokens.pop()
+
+    normalized = " ".join(tokens).strip()
+    if not normalized:
+        return ""
+    return re.sub(r"\s+", " ", normalized)
+
+
+def _extract_click_label(message: str) -> str | None:
+    text = str(message or "").strip()
+    if not text:
+        return None
+
+    match = re.search(
+        r"\bclick\s+(?:the\s+)?(.+?)(?:\s+(?:using|with)\s+selector\b|\s+selector\s*[:=]|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    candidate = _normalize_click_label(match.group(1))
+    return candidate or None
+
+
+def _selector_fallback_for_click_label(label: str) -> str | None:
+    normalized = _normalize_click_label(label)
+    if not normalized:
+        return None
+    escaped = normalized.replace("\"", r"\"")
+    return (
+        f'button:has-text("{escaped}")||'
+        f'[role="button"]:has-text("{escaped}")||'
+        f'input[type="submit"][value*="{escaped}"]'
+    )
 
 
 def _normalize_extracted_url(raw_url: str) -> str | None:
@@ -7261,6 +7563,8 @@ def _compose_teaching_followup_question(primary_intent: str | None, message: str
         return "Where should Bill save the exported report?"
     if primary_intent == "waiting":
         return "What visual cue tells Bill the page is ready?"
+    if primary_intent == "click":
+        return "If this button moves or changes style, what backup selector should Bill try?"
     if primary_intent == "navigation" and not has_url:
         if "dashboard" in lower:
             return "What URL should Bill open for that dashboard?"
@@ -7270,9 +7574,13 @@ def _compose_teaching_followup_question(primary_intent: str | None, message: str
     return None
 
 
-def _teaching_confidence(primary_intent: str | None, message: str, has_url: bool) -> float:
+def _teaching_confidence(primary_intent: str | None, message: str, has_url: bool, has_selector: bool = False) -> float:
     if has_url and primary_intent == "navigation":
         return 0.96
+    if primary_intent == "click" and has_selector:
+        return 0.9
+    if primary_intent == "click":
+        return 0.78
     if primary_intent in {"navigation", "authentication", "search", "waiting"}:
         return 0.82
     if primary_intent in {"submission", "decision_skip", "recovery", "reporting"}:
@@ -7303,6 +7611,22 @@ def _build_intent_observed_actions(primary_intent: str | None, message: str, url
                 "timestamp": datetime.utcnow().isoformat(),
             }
         ]
+    if primary_intent == "click":
+        label = _extract_click_label(message) or "target"
+        selector = _extract_selector_from_text(message)
+        if not selector:
+            selector = _selector_fallback_for_click_label(label)
+        return [
+            {
+                "id": str(uuid4()),
+                "type": "click",
+                "label": _normalize_click_label(label) or "target",
+                "url": None,
+                "selector": selector,
+                "value_redacted": None,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        ]
     return []
 
 
@@ -7316,7 +7640,8 @@ def _analyze_teaching_message(message: str, existing_steps: list[dict]) -> dict[
     title = _infer_step_title_from_text(message, existing_steps)
     bill_summary = _bill_summary_from_text(message, step_order)
     observed_actions = _build_intent_observed_actions(primary_intent, message, urls)
-    confidence = _teaching_confidence(primary_intent, message, has_url)
+    has_selector = bool(_extract_selector_from_text(message))
+    confidence = _teaching_confidence(primary_intent, message, has_url, has_selector=has_selector)
     followup = _compose_teaching_followup_question(primary_intent, message, has_url, step_order)
 
     exceptions: list[str] = []
@@ -7420,9 +7745,12 @@ def _infer_step_title_from_text(message: str, existing_steps: list[dict]) -> str
     search_m = _re.search(r"\b(?:search|find|lookup)\s+(?:for\s+)?(.+?)(?:\s+and\b|\s*$)", text, _re.IGNORECASE)
     if search_m:
         return f"Search for {search_m.group(1).strip().rstrip('.')}"
-    click_m = _re.search(r"\bclick\s+(?:the\s+)?(.+?)(?:\s+and\b|\s+button\b|\s*$)", text, _re.IGNORECASE)
+    click_m = _re.search(r"\bclick\s+(?:the\s+)?(.+?)(?:\s+(?:using|with)\s+selector\b|\s+selector\s*[:=]|\s+and\b|\s+button\b|\s*$)", text, _re.IGNORECASE)
     if click_m:
-        return f"Click {click_m.group(1).strip().rstrip('.')}"
+        click_label = _normalize_click_label(click_m.group(1))
+        if click_label:
+            return f"Click {click_label}"
+        return "Click target control"
     submit_m = _re.search(r"\b(submit|fill|enter|type)\s+(?:the\s+)?(.+?)(?:\s+and\b|\s*$)", text, _re.IGNORECASE)
     if submit_m:
         verb = submit_m.group(1).capitalize()
@@ -7455,8 +7783,11 @@ def _bill_summary_from_text(message: str, step_order: int) -> str:
         return "You wait until the page is fully ready before continuing."
     if "skip" in lower and "if" in lower:
         return "You apply a skip rule based on the condition you described."
-    if any(w in lower for w in ("click",)):
-        return "I saw you complete an action on the page."
+    if "click" in lower:
+        click_label = _extract_click_label(message)
+        if click_label:
+            return f"Bill learned: click the {click_label} button."
+        return "Bill learned: click the target control."
     return f"I captured Step {step_order}."
 
 
@@ -7692,6 +8023,15 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         "steps": [],
     }
     message = (body.message or "").strip()
+    copilot_notice: str | None = None
+    copilot_interpretation: str | None = None
+    copilot_question: str | None = None
+    page_ctx = None
+    if _COPILOT_AVAILABLE and ts.get("page_context_snapshot"):
+        try:
+            page_ctx = PageContextSnapshot.from_raw(ts.get("page_context_snapshot") or {})
+        except Exception:
+            page_ctx = None
     steps: list[dict] = list(ts.get("steps") or [])
     current_status = ts.get("status", "intro")
     if current_status == "intro" or not ts.get("workflow_summary"):
@@ -7699,24 +8039,76 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         ts["status"] = "teaching"
         record["teaching_session"] = ts
         _teaching_startup_sessions[session_id] = record
-        return TeachingSessionMessageResponse(reply="Got it. Where do we start?", teaching_session=TeachingSession.model_validate(ts))
+        return TeachingSessionMessageResponse(
+            reply="Got it. Where do we start?",
+            teaching_session=TeachingSession.model_validate(ts),
+            copilot_notice=copilot_notice,
+            copilot_interpretation=copilot_interpretation,
+            copilot_question=copilot_question,
+        )
     if steps and _is_decision_rule(message):
         steps[-1].setdefault("decision_rules", []).append(message)
         ts["steps"] = steps
         record["teaching_session"] = ts
         _teaching_startup_sessions[session_id] = record
-        return TeachingSessionMessageResponse(reply="Got it. I'll apply that rule for this step.", teaching_session=TeachingSession.model_validate(ts))
+        return TeachingSessionMessageResponse(
+            reply="Got it. I'll apply that rule for this step.",
+            teaching_session=TeachingSession.model_validate(ts),
+            copilot_notice=copilot_notice,
+            copilot_interpretation=copilot_interpretation,
+            copilot_question=copilot_question,
+        )
     if steps and _is_exception_rule(message):
         steps[-1].setdefault("exceptions", []).append(message)
         ts["steps"] = steps
         record["teaching_session"] = ts
         _teaching_startup_sessions[session_id] = record
-        return TeachingSessionMessageResponse(reply="Noted. I'll handle that exception.", teaching_session=TeachingSession.model_validate(ts))
+        return TeachingSessionMessageResponse(
+            reply="Noted. I'll handle that exception.",
+            teaching_session=TeachingSession.model_validate(ts),
+            copilot_notice=copilot_notice,
+            copilot_interpretation=copilot_interpretation,
+            copilot_question=copilot_question,
+        )
     if _is_vague_message(message):
         ts["steps"] = steps
         record["teaching_session"] = ts
         _teaching_startup_sessions[session_id] = record
-        return TeachingSessionMessageResponse(reply="I need a little more detail. What action should Bill perform or watch for?", teaching_session=TeachingSession.model_validate(ts))
+        return TeachingSessionMessageResponse(
+            reply="I need a little more detail. What action should Bill perform or watch for?",
+            teaching_session=TeachingSession.model_validate(ts),
+            copilot_notice=copilot_notice,
+            copilot_interpretation=copilot_interpretation,
+            copilot_question=copilot_question,
+        )
+
+    # Natural reference resolution (e.g. "click that button")
+    if _COPILOT_AVAILABLE:
+        try:
+            recent_action = None
+            if steps and steps[-1].get("observed_actions"):
+                last_actions = steps[-1].get("observed_actions") or []
+                if last_actions:
+                    recent_action = last_actions[-1]
+            ref = resolve_natural_reference(message, page_ctx, recent_action)
+            if ref.clarification_needed and ref.clarification_prompt:
+                return TeachingSessionMessageResponse(
+                    reply=ref.clarification_prompt,
+                    teaching_session=TeachingSession.model_validate(ts),
+                    copilot_notice="I want to make sure I click the right thing.",
+                    copilot_interpretation="I found multiple possible targets.",
+                    copilot_question=ref.clarification_prompt,
+                )
+            if ref.resolved:
+                message = re.sub(
+                    r"\b(that button|this button|click that|click it|that field|this field|that input|this input|that box|this box|that popup|that modal|this popup|the popup|that dialog)\b",
+                    ref.resolved,
+                    message,
+                    flags=re.IGNORECASE,
+                )
+        except Exception:
+            pass
+
     analysis = _analyze_teaching_message(message, steps)
     step_order = int(analysis["step_order"])
     title = str(analysis["title"])
@@ -7757,7 +8149,47 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         focused_question = followup_question or "What should Bill use as the deciding signal for this step?"
         reply = f"{ack_prefix} {bill_summary} {focused_question}"
 
-    return TeachingSessionMessageResponse(reply=reply, teaching_session=TeachingSession.model_validate(ts))
+    if inferred_action == "click":
+        click_label = "target control"
+        if observed_actions:
+            click_label = str(observed_actions[0].get("label") or click_label).strip() or click_label
+        if click_label != "target control":
+            bill_summary = f"Bill learned: click the {click_label} button."
+            new_step["bill_summary"] = bill_summary
+        if _COPILOT_AVAILABLE:
+            recent_action = None
+            if steps and steps[-1].get("observed_actions"):
+                last_actions = steps[-1].get("observed_actions") or []
+                if last_actions:
+                    recent_action = last_actions[-1]
+            decision = handle_live_command(message, page_ctx, recent_action)
+            if decision.strategy == "step_created":
+                if observed_actions:
+                    observed_actions[0]["selector"] = decision.selector
+                new_step["title"] = decision.step_label or new_step["title"]
+                reply = decision.reply
+            elif decision.strategy == "execute":
+                reply = decision.reply
+            else:
+                reply = decision.reply
+            copilot_notice = f"I saw a click instruction for {click_label}."
+            copilot_interpretation = "I treated this as a click step in your workflow."
+            if decision.strategy == "observe":
+                copilot_question = f"Please click {click_label} now so I can record it accurately."
+        else:
+            reply = (
+                f"{ack_prefix} {bill_summary} "
+                f"Please click it yourself and Bill will watch. "
+                f"Go ahead and click the {click_label} button now. I'll watch and record it."
+            )
+
+    return TeachingSessionMessageResponse(
+        reply=reply,
+        teaching_session=TeachingSession.model_validate(ts),
+        copilot_notice=copilot_notice,
+        copilot_interpretation=copilot_interpretation,
+        copilot_question=copilot_question,
+    )
 
 
 @app.post("/api/teaching/session/{session_id}/steps/{step_id}/confirm", response_model=TeachingSessionMessageResponse)
@@ -7957,10 +8389,87 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
         steps.append(temp_step)
         target_step = temp_step
     target_step.setdefault("observed_actions", []).append(action_dict)
+
+    # --- Teaching Co-Pilot: interpret action and update page context ---
+    copilot_notice: str | None = None
+    copilot_interpretation: str | None = None
+    copilot_question: str | None = None
+    reply_text = "Action captured."
+
+    if _COPILOT_AVAILABLE:
+        # Update page context snapshot if provided
+        page_ctx: "PageContextSnapshot | None" = None
+        if body.page_context:
+            try:
+                page_ctx = PageContextSnapshot.from_raw(body.page_context)
+                ts["page_context_snapshot"] = page_ctx.to_dict()
+            except Exception:
+                pass
+
+        # Interpret the action
+        try:
+            interp = interpret_action(action_dict, page_ctx)
+            copilot_notice = interp.noticed
+            copilot_interpretation = interp.interpretation
+
+            tracker = _get_copilot_tracker(session_id)
+            if tracker and tracker.should_interrupt(action_dict, interp, page_ctx):
+                copilot_question = interp.question
+                reply_text = interp.noticed
+            else:
+                reply_text = interp.noticed
+        except Exception:
+            pass
+
     ts["steps"] = steps
     record["teaching_session"] = ts
     _teaching_startup_sessions[session_id] = record
-    return TeachingSessionMessageResponse(reply="Action captured.", teaching_session=TeachingSession.model_validate(ts))
+    return TeachingSessionMessageResponse(
+        reply=reply_text,
+        teaching_session=TeachingSession.model_validate(ts),
+        copilot_notice=copilot_notice,
+        copilot_interpretation=copilot_interpretation,
+        copilot_question=copilot_question,
+    )
+
+
+@app.post("/api/teaching/session/{session_id}/page-context", response_model=TeachingSessionMessageResponse)
+def teaching_session_page_context(session_id: str, body: dict = Body(default={})) -> TeachingSessionMessageResponse:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    if not ts:
+        raise HTTPException(status_code=404, detail="No teaching session in record")
+
+    copilot_notice: str | None = None
+    copilot_interpretation: str | None = None
+    copilot_question: str | None = None
+    reply = "Context captured."
+
+    if _COPILOT_AVAILABLE:
+        try:
+            page_ctx = PageContextSnapshot.from_raw(body)
+            ts["page_context_snapshot"] = page_ctx.to_dict()
+            copilot_notice = f"I noticed you're on {page_ctx.title or page_ctx.url or 'this page'}."
+            if page_ctx.modal_present:
+                copilot_interpretation = "I detected a popup/modal on screen."
+                copilot_question = "What should Bill do when this popup appears?"
+            else:
+                copilot_interpretation = "I'll use this page context to resolve references like 'that button' and 'this field'."
+            reply = "Page context captured."
+        except Exception:
+            reply = "Context captured."
+
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    return TeachingSessionMessageResponse(
+        reply=reply,
+        teaching_session=TeachingSession.model_validate(ts),
+        copilot_notice=copilot_notice,
+        copilot_interpretation=copilot_interpretation,
+        copilot_question=copilot_question,
+    )
 
 
 @app.post("/api/bill/chat")
@@ -10106,6 +10615,13 @@ def get_next_task(machine_uuid: str):
                 _append_task_log(task, f"Task assigned to machine_uuid={machine_uuid}")
             save_task_db(task)
             logger.info("Task assigned: id=%s machine_uuid=%s", task["id"], machine_uuid)
+            slog(
+                "task_assigned",
+                task_id=task["id"],
+                worker_id=machine_uuid,
+                route="/worker/tasks/next",
+                message="Task assigned to worker",
+            )
             return TaskRecord(**task)
 
     return None
@@ -10131,6 +10647,13 @@ def complete_task(task_id: str, payload: TaskCompleteRequest) -> dict[str, str]:
             if origin_id:
                 clear_recovery_state(origin_id)
             logger.info("Task completed: id=%s machine_uuid=%s", task_id, payload.machine_uuid)
+            slog(
+                "task_completed",
+                task_id=task_id,
+                worker_id=payload.machine_uuid,
+                route="/worker/tasks/{task_id}/complete",
+                message="Task completed successfully",
+            )
             return {"status": "completed"}
 
     raise HTTPException(status_code=404, detail="Task not found")
@@ -10366,6 +10889,14 @@ def fail_task(task_id: str, payload: TaskFailRequest) -> dict[str, Any]:
             task_id,
             payload.machine_uuid,
             payload.error,
+        )
+        slog_error(
+            "task_failed",
+            task_id=task_id,
+            worker_id=payload.machine_uuid,
+            route="/worker/tasks/{task_id}/fail",
+            message="Task failed",
+            error=str(payload.error or "")[:400],
         )
         return {
             "status": "failed",

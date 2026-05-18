@@ -175,6 +175,20 @@ type TeachingSession = {
   workflowSummary?: string;
   status: "intro" | "teaching" | "review" | "approved" | "ready" | "needs_more_teaching";
   steps: WorkflowStep[];
+  pageContextSnapshot?: {
+    url?: string;
+    title?: string;
+    buttons?: string[];
+    inputs?: Array<{ label?: string; placeholder?: string; type?: string }>;
+    links?: string[];
+    headings?: string[];
+    active_element?: { type?: string; label?: string } | null;
+    recent_click_label?: string | null;
+    recent_type_field?: string | null;
+    modal_present?: boolean;
+    modal_title?: string | null;
+    captured_at?: number;
+  } | null;
 };
 
 type GuidedStepEditState = {
@@ -188,11 +202,28 @@ type GuidedStepEditState = {
 
 type TeachingSessionApiResponse = {
   reply: string;
+  copilot_notice?: string | null;
+  copilot_interpretation?: string | null;
+  copilot_question?: string | null;
   teaching_session: {
     session_id: string;
     workflow_name: string;
     workflow_summary?: string | null;
     status: "intro" | "teaching" | "review" | "approved";
+    page_context_snapshot?: {
+      url?: string;
+      title?: string;
+      buttons?: string[];
+      inputs?: Array<{ label?: string; placeholder?: string; type?: string }>;
+      links?: string[];
+      headings?: string[];
+      active_element?: { type?: string; label?: string } | null;
+      recent_click_label?: string | null;
+      recent_type_field?: string | null;
+      modal_present?: boolean;
+      modal_title?: string | null;
+      captured_at?: number;
+    } | null;
     steps?: Array<{
       id: string;
       order: number;
@@ -696,6 +727,9 @@ export default function Home() {
   const [teachingOverlaySpeechSupported, setTeachingOverlaySpeechSupported] = useState(false);
   const [guidedTeachingSession, setGuidedTeachingSession] = useState<TeachingSession | null>(null);
   const [guidedTeachingMessages, setGuidedTeachingMessages] = useState<ChatEntry[]>([]);
+  const [guidedTeachingCopilotNotice, setGuidedTeachingCopilotNotice] = useState<string | null>(null);
+  const [guidedTeachingCopilotInterpretation, setGuidedTeachingCopilotInterpretation] = useState<string | null>(null);
+  const [guidedTeachingCopilotQuestion, setGuidedTeachingCopilotQuestion] = useState<string | null>(null);
   const [guidedTeachingInput, setGuidedTeachingInput] = useState("");
   const [guidedTeachingBusy, setGuidedTeachingBusy] = useState(false);
   const [guidedTeachingTargetStepId, setGuidedTeachingTargetStepId] = useState<string | null>(null);
@@ -979,6 +1013,22 @@ export default function Home() {
       workflowName: input.workflow_name,
       workflowSummary: input.workflow_summary ?? undefined,
       status: input.status,
+      pageContextSnapshot: input.page_context_snapshot
+        ? {
+            url: input.page_context_snapshot.url,
+            title: input.page_context_snapshot.title,
+            buttons: input.page_context_snapshot.buttons,
+            inputs: input.page_context_snapshot.inputs,
+            links: input.page_context_snapshot.links,
+            headings: input.page_context_snapshot.headings,
+            active_element: input.page_context_snapshot.active_element,
+            recent_click_label: input.page_context_snapshot.recent_click_label,
+            recent_type_field: input.page_context_snapshot.recent_type_field,
+            modal_present: input.page_context_snapshot.modal_present,
+            modal_title: input.page_context_snapshot.modal_title,
+            captured_at: input.page_context_snapshot.captured_at,
+          }
+        : null,
       steps: (input.steps ?? []).map((step) => ({
         id: step.id,
         order: step.order,
@@ -1011,6 +1061,9 @@ export default function Home() {
   const applyGuidedTeachingApiResponse = useCallback(
     (body: TeachingSessionApiResponse) => {
       setGuidedTeachingSession(mapApiTeachingSession(body.teaching_session));
+      setGuidedTeachingCopilotNotice(body.copilot_notice ?? null);
+      setGuidedTeachingCopilotInterpretation(body.copilot_interpretation ?? null);
+      setGuidedTeachingCopilotQuestion(body.copilot_question ?? null);
       setGuidedTeachingWarnings(body.warnings ?? []);
       setGuidedTeachingExecutionReadiness(body.execution_readiness ?? null);
       if (body.review_summary) {
@@ -1429,6 +1482,9 @@ export default function Home() {
 
       const mapped = mapApiTeachingSession(body.teaching_session);
       setGuidedTeachingFromSession(mapped);
+      setGuidedTeachingCopilotNotice(body.copilot_notice ?? null);
+      setGuidedTeachingCopilotInterpretation(body.copilot_interpretation ?? null);
+      setGuidedTeachingCopilotQuestion(body.copilot_question ?? null);
       setGuidedTeachingApprovalMessage(null);
       setGuidedTeachingTargetStepId(null);
       setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
@@ -4178,6 +4234,24 @@ export default function Home() {
               )}
 
               <div className="mt-4 grid grid-cols-1 gap-3">
+                <section className="rounded-xl border border-cyan-800/60 bg-cyan-950/30 p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-cyan-300">Teaching Co-Pilot</p>
+                  <div className="mt-2 space-y-2 text-sm">
+                    <div className="rounded-md border border-cyan-700/40 bg-slate-950/40 px-2 py-2">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200/80">What Bill just noticed</p>
+                      <p className="mt-1 text-cyan-50">{guidedTeachingCopilotNotice || "Waiting for the next observed action."}</p>
+                    </div>
+                    <div className="rounded-md border border-emerald-700/40 bg-slate-950/40 px-2 py-2">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-emerald-200/80">What Bill thinks this means</p>
+                      <p className="mt-1 text-emerald-50">{guidedTeachingCopilotInterpretation || "No interpretation yet."}</p>
+                    </div>
+                    <div className="rounded-md border border-amber-700/40 bg-slate-950/40 px-2 py-2">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-amber-200/80">Bill's question</p>
+                      <p className="mt-1 text-amber-50">{guidedTeachingCopilotQuestion || "No question right now."}</p>
+                    </div>
+                  </div>
+                </section>
+
                 <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Floating Chat Panel</p>
                   <p className="mt-1 text-xs text-slate-400">Use the button below to speak. Backtick (`) is still available as a shortcut.</p>

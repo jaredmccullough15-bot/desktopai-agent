@@ -689,6 +689,91 @@ class TestTeachingConversationStepCapture:
         assert action["type"] == "navigate"
         assert action["url"] == "https://google.com"
 
+    def test_click_sign_in_message_creates_click_step_with_label_fallback(self, client):
+        sid = self._seed_session()
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "This workflow submits renewal applications for existing clients."},
+        )
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "Click the Sign In button"},
+        )
+
+        assert res.status_code == 200
+        body = res.json()
+        step = body["teaching_session"]["steps"][0]
+        assert step["title"] == "Click Sign In"
+        assert step["bill_summary"] == "Bill learned: click the Sign In button."
+        assert step["observed_actions"]
+        action = step["observed_actions"][0]
+        assert action["type"] == "click"
+        assert action["label"] == "Sign In"
+        assert action["selector"]
+        assert "has-text" in action["selector"]
+        assert 0.7 <= float(step["bill_confidence"]) < 0.9
+        assert (
+            "Go ahead and click the Sign In button now. I'll watch and record it." in body["reply"]
+            or "Go ahead and click Sign In now. I'll watch and record it." in body["reply"]
+        )
+
+    def test_click_blue_sign_in_message_creates_click_step(self, client):
+        sid = self._seed_session()
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "This workflow submits renewal applications for existing clients."},
+        )
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "Click the blue Sign In button"},
+        )
+
+        assert res.status_code == 200
+        action = res.json()["teaching_session"]["steps"][0]["observed_actions"][0]
+        assert action["type"] == "click"
+        assert action["label"] == "Sign In"
+
+    def test_click_message_with_provided_selector_stores_selector(self, client):
+        sid = self._seed_session()
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "This workflow submits renewal applications for existing clients."},
+        )
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "Click the Sign In button selector: #sign-in-button"},
+        )
+
+        assert res.status_code == 200
+        step = res.json()["teaching_session"]["steps"][0]
+        action = step["observed_actions"][0]
+        assert action["type"] == "click"
+        assert action["label"] == "Sign In"
+        assert action["selector"] == "#sign-in-button"
+        assert float(step["bill_confidence"]) >= 0.9
+
+    def test_click_step_appears_in_review_with_observed_action(self, client):
+        sid = self._seed_session()
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "This workflow submits renewal applications for existing clients."},
+        )
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "Click the Sign In button"},
+        )
+
+        review_res = client.post(f"/api/teaching/session/{sid}/review")
+        assert review_res.status_code == 200
+        review_steps = review_res.json()["review_summary"]["steps"]
+        assert len(review_steps) == 1
+        assert review_steps[0]["title"] == "Click Sign In"
+        assert review_steps[0]["observed_actions"]
+        assert review_steps[0]["observed_actions"][0]["type"] == "click"
+
 
 class TestTeachingLanguageSophistication:
     @pytest.mark.parametrize(
@@ -1197,6 +1282,45 @@ class TestTeachingReviewApproveContinue:
         assert captured_payloads[0]["action_plan"][0]["action"] in {"navigate", "open_url"}
         assert captured_payloads[0]["action_plan"][0]["url"] == "https://go.trackvia.com/#/signin"
 
+    def test_approve_click_step_includes_click_action_in_saved_draft(self, client):
+        import main as m
+
+        m.workflow_learning_drafts.clear()
+        sid = self._seed_session([
+            {
+                "id": "step-click",
+                "order": 1,
+                "title": "Click Sign In",
+                "employee_explanation": "Click the Sign In button",
+                "bill_summary": "Bill learned: click the Sign In button.",
+                "decision_rules": [],
+                "exceptions": [],
+                "required_inputs": [],
+                "confirmed": True,
+                "observed_actions": [
+                    {
+                        "id": "a-click",
+                        "type": "click",
+                        "label": "Sign In",
+                        "selector": "button:has-text(\"Sign In\")",
+                        "url": None,
+                        "value_redacted": None,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                ],
+            }
+        ])
+
+        approve_res = client.post(f"/api/teaching/session/{sid}/approve")
+        assert approve_res.status_code == 200
+        draft_id = approve_res.json()["draft_result"]["draft_id"]
+        draft = next((item for item in m.workflow_learning_drafts if str(item.get("draft_id")) == str(draft_id)), None)
+        assert draft is not None
+        steps = draft.get("steps") or []
+        assert steps
+        assert steps[0]["action"] == "click_selector"
+        assert steps[0]["selector"] == "button:has-text(\"Sign In\")"
+
     def test_continue_sets_teaching_status(self, client):
         sid = self._seed_session([
             {
@@ -1217,6 +1341,206 @@ class TestTeachingReviewApproveContinue:
         res = client.post(f"/api/teaching/session/{sid}/continue")
         assert res.status_code == 200
         assert res.json()["teaching_session"]["status"] == "teaching"
+
+
+class TestTeachingCopilotPhase1:
+    def _seed_session(self, workflow_summary: str | None = "Existing summary"):
+        import main as m
+        sid = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+        m._teaching_startup_sessions[sid] = {
+            "session_id": sid,
+            "task_id": "task-copilot-1",
+            "workflow_name": "Submission",
+            "target_machine_uuid": "worker-1",
+            "status": "active",
+            "message": "Teaching browser opened.",
+            "overlay_enabled": True,
+            "voice_prompt_text": "Teach me.",
+            "created_at": now,
+            "updated_at": now,
+            "teaching_session": {
+                "session_id": sid,
+                "workflow_name": "Submission",
+                "workflow_summary": workflow_summary,
+                "status": "teaching",
+                "steps": [],
+            },
+        }
+        return sid
+
+    def test_page_context_snapshot_redacts_sensitive_inputs(self, client):
+        sid = self._seed_session()
+        res = client.post(
+            f"/api/teaching/session/{sid}/page-context",
+            json={
+                "url": "https://go.trackvia.com/#/signin",
+                "title": "Sign In",
+                "buttons": ["Sign In", "Forgot Password"],
+                "inputs": [
+                    {"label": "Email", "placeholder": "you@example.com", "type": "email"},
+                    {"label": "Password", "placeholder": "Enter password", "type": "password"},
+                ],
+                "active_element": {"type": "input", "label": "Password"},
+                "recent_type_field": "Email",
+            },
+        )
+        assert res.status_code == 200
+        snap = res.json()["teaching_session"]["page_context_snapshot"]
+        assert snap["inputs"][0]["label"] == "[redacted]"
+        assert snap["inputs"][1]["label"] == "[redacted]"
+        assert snap["active_element"]["label"] == "[redacted]"
+        assert snap["recent_type_field"] == "[redacted]"
+
+    def test_sign_in_click_creates_meaningful_summary(self, client):
+        sid = self._seed_session()
+        res = client.post(
+            f"/api/teaching/session/{sid}/actions",
+            json={
+                "action": {
+                    "id": "a-1",
+                    "type": "click",
+                    "label": "Sign In",
+                    "selector": "button:has-text(\"Sign In\")",
+                    "url": None,
+                    "value_redacted": None,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+            },
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert "I saw you click Sign In" in (body.get("copilot_notice") or "")
+        assert "login form" in (body.get("copilot_interpretation") or "").lower()
+
+    def test_login_click_triggers_useful_question(self, client):
+        sid = self._seed_session()
+        res = client.post(
+            f"/api/teaching/session/{sid}/actions",
+            json={
+                "action": {
+                    "id": "a-2",
+                    "type": "click",
+                    "label": "Sign In",
+                    "selector": "#signin",
+                    "url": None,
+                    "value_redacted": None,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+            },
+        )
+        assert res.status_code == 200
+        question = (res.json().get("copilot_question") or "").lower()
+        assert "always required" in question or "logged in" in question
+
+    def test_repeated_clicks_do_not_spam_questions(self, client):
+        sid = self._seed_session()
+        payload = {
+            "action": {
+                "id": "a-3",
+                "type": "click",
+                "label": "Sign In",
+                "selector": "#signin",
+                "url": None,
+                "value_redacted": None,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        }
+        first = client.post(f"/api/teaching/session/{sid}/actions", json=payload)
+        second = client.post(f"/api/teaching/session/{sid}/actions", json=payload)
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json().get("copilot_question")
+        assert second.json().get("copilot_question") in (None, "")
+
+    def test_click_that_button_resolves_to_recent_sign_in(self, client):
+        import main as m
+        sid = self._seed_session()
+        record = m._teaching_startup_sessions[sid]
+        record["teaching_session"]["page_context_snapshot"] = {
+            "url": "https://go.trackvia.com/#/signin",
+            "title": "Sign In",
+            "buttons": ["Sign In"],
+            "inputs": [],
+            "links": [],
+            "headings": ["Welcome"],
+            "active_element": None,
+            "recent_click_label": "Sign In",
+            "recent_type_field": None,
+            "modal_present": False,
+            "modal_title": None,
+        }
+        m._teaching_startup_sessions[sid] = record
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "click that button"},
+        )
+        assert res.status_code == 200
+        steps = res.json()["teaching_session"]["steps"]
+        assert steps
+        assert "sign in" in steps[-1]["title"].lower()
+
+    def test_ambiguous_reference_asks_clarification(self, client):
+        import main as m
+        sid = self._seed_session()
+        record = m._teaching_startup_sessions[sid]
+        record["teaching_session"]["page_context_snapshot"] = {
+            "url": "https://go.trackvia.com/#/signin",
+            "title": "Sign In",
+            "buttons": ["Sign In", "Forgot Password"],
+            "inputs": [],
+            "links": ["Forgot Password"],
+            "headings": [],
+            "active_element": None,
+            "recent_click_label": None,
+            "recent_type_field": None,
+            "modal_present": False,
+            "modal_title": None,
+        }
+        m._teaching_startup_sessions[sid] = record
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "click that button"},
+        )
+        assert res.status_code == 200
+        reply = res.json()["reply"].lower()
+        assert "which button do you mean" in reply
+        assert "sign in" in reply and "forgot password" in reply
+
+    def test_click_sign_in_creates_step_or_manual_prompt(self, client):
+        sid = self._seed_session()
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "Click Sign In"},
+        )
+        assert res.status_code == 200
+        reply = res.json()["reply"]
+        assert (
+            "recorded a click on Sign In as an executable step" in reply
+            or "Go ahead and click Sign In now. I'll watch and record it." in reply
+            or "Go ahead and click the Sign In button now. I'll watch and record it." in reply
+        )
+
+    def test_no_technical_selectors_shown_to_employee(self, client):
+        sid = self._seed_session()
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "Click the Sign In button selector: #sign-in-button"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        combined = " ".join(
+            [
+                body.get("reply") or "",
+                body.get("copilot_notice") or "",
+                body.get("copilot_interpretation") or "",
+                body.get("copilot_question") or "",
+            ]
+        ).lower()
+        assert "#sign-in-button" not in combined
+        assert "button:has-text" not in combined
 
 
 if __name__ == "__main__":
