@@ -13,6 +13,7 @@ Covers:
 """
 
 import re
+import json
 import uuid
 import importlib.util
 from datetime import datetime
@@ -1696,6 +1697,52 @@ class TestTeachingCopilotPhase1:
         assert len(history) == 5
         assert history[0].get("title") == "Page 2"
         assert history[-1].get("title") == "Page 6"
+
+    def test_context_endpoint_persists_snapshot_in_debug_and_status(self, client):
+        import main as m
+
+        sid = self._seed_session()
+        res = client.post(
+            f"/api/teaching/session/{sid}/context",
+            json={
+                "url": "https://go.trackvia.com/#/signin",
+                "title": "TrackVia Sign In",
+                "visible_buttons": [
+                    {"text": "Sign In", "aria_label": "", "role": "button", "selector_hint": "button:has-text(\"Sign In\")"},
+                ],
+                "visible_inputs": [
+                    {"label": "Email", "placeholder": "you@example.com", "type": "email", "name": "email"},
+                    {"label": "Password", "placeholder": "Password", "type": "password", "name": "password"},
+                ],
+                "visible_links": [{"text": "Forgot Password", "href": "/reset"}],
+                "reason": "navigation",
+            },
+        )
+        assert res.status_code == 200
+
+        debug_res = client.get(f"/api/teaching/session/{sid}/debug")
+        assert debug_res.status_code == 200
+        debug_body = debug_res.json()
+        assert debug_body["has_page_context_snapshot"] is True
+        assert debug_body["page_context_button_count"] > 0
+        assert debug_body["page_context_input_count"] > 0
+        assert debug_body["page_context_history_count"] == 1
+
+        status_res = client.get(f"/api/teaching/session/{sid}/status")
+        assert status_res.status_code == 200
+        status_body = status_res.json()
+        snap = (status_body.get("teaching_session") or {}).get("page_context_snapshot") or {}
+        assert snap.get("title") == "TrackVia Sign In"
+        assert snap.get("visible_inputs")
+        assert snap["visible_inputs"][0].get("label") == "[redacted]"
+        assert snap["visible_inputs"][1].get("label") == "[redacted]"
+        dumped = json.dumps(status_body).lower()
+        assert "you@example.com" not in dumped
+        assert "trackvia sign in" in dumped
+
+        stored = m._teaching_startup_sessions[sid]["teaching_session"]
+        assert stored.get("page_context_snapshot")
+        assert len(stored.get("page_context_history") or []) == 1
 
     def test_click_that_button_uses_latest_visible_button_context(self, client):
         import main as m

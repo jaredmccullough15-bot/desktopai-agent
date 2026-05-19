@@ -3,6 +3,7 @@ import importlib.util
 import logging
 import os
 import json
+import time
 
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -425,21 +426,209 @@ def _get_copilot_tracker(session_id: str) -> "InterruptionTracker | None":
     return _copilot_trackers[session_id]
 
 
-def _store_page_context_snapshot(ts: dict, raw_context: dict) -> "PageContextSnapshot | None":
-    if not _COPILOT_AVAILABLE:
+def _get_page_context_snapshot_record(record: dict) -> dict:
+    snapshot = record.get("page_context_snapshot")
+    if isinstance(snapshot, dict) and snapshot:
+        return snapshot
+    teaching_session = record.get("teaching_session") or {}
+    snapshot = teaching_session.get("page_context_snapshot")
+    if isinstance(snapshot, dict) and snapshot:
+        return snapshot
+    return {}
+
+
+def _normalize_page_context_snapshot(raw_context: dict) -> dict | None:
+    if not isinstance(raw_context, dict):
         return None
     try:
         page_ctx = PageContextSnapshot.from_raw(raw_context or {})
     except Exception:
+        page_ctx = None
+
+    if page_ctx is not None:
+        return page_ctx.to_dict()
+
+    raw_buttons = raw_context.get("visible_buttons") or raw_context.get("buttons") or []
+    raw_inputs = raw_context.get("visible_inputs") or raw_context.get("inputs") or []
+    raw_links = raw_context.get("visible_links") or raw_context.get("links") or []
+    raw_headings = raw_context.get("visible_headings") or raw_context.get("headings") or []
+
+    def _clip(value: Any, limit: int = 120) -> str:
+        text = str(value or "").strip()
+        return text[:limit]
+
+    def _looks_sensitive(text: str) -> bool:
+        lowered = text.lower()
+        return any(token in lowered for token in ("password", "passwd", "mfa", "otp", "pin", "ssn", "social", "token", "secret", "auth", "dob", "phone", "email", "credit", "card", "cvv"))
+
+    def _parse_captured_at(value: Any) -> float:
+        if value is None:
+            return time.time()
+        try:
+            return float(value)
+        except Exception:
+            pass
+        try:
+            text = str(value).strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            return datetime.fromisoformat(text).timestamp()
+        except Exception:
+            return time.time()
+
+    def _coerce_mapping_list(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        items: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, dict):
+                items.append(dict(item))
+            else:
+                items.append({"text": _clip(item, 120)})
+        return items
+
+    buttons: list[dict[str, Any]] = []
+    for btn_dict in _coerce_mapping_list(raw_buttons)[:20]:
+        text = _clip(btn_dict.get("text") or btn_dict.get("label") or "")
+        if _looks_sensitive(text):
+            text = "[redacted]"
+        buttons.append(
+            {
+                "text": text,
+                "aria_label": _clip(btn_dict.get("aria_label") or ""),
+                "role": _clip(btn_dict.get("role") or "button"),
+                "selector_hint": _clip(btn_dict.get("selector_hint") or "") or None,
+            }
+        )
+
+    inputs: list[dict[str, Any]] = []
+    for inp_dict in _coerce_mapping_list(raw_inputs)[:20]:
+        label = _clip(inp_dict.get("label") or "")
+        placeholder = _clip(inp_dict.get("placeholder") or "")
+        input_type = _clip(inp_dict.get("type") or "text")
+        name = _clip(inp_dict.get("name") or "")
+        selector_hint = _clip(inp_dict.get("selector_hint") or "") or None
+        explicit_sensitive = bool(inp_dict.get("sensitive"))
+        sensitive = explicit_sensitive or _looks_sensitive(f"{label} {placeholder} {name} {input_type}")
+        if sensitive:
+            inputs.append(
+                {
+                    "label": "[redacted]",
+                    "placeholder": "[redacted]",
+                    "type": input_type,
+                    "name": "[redacted]",
+                    "selector_hint": None,
+                    "sensitive": True,
+                }
+            )
+        else:
+            inputs.append(
+                {
+                    "label": label,
+                    "placeholder": placeholder,
+                    "type": input_type,
+                    "name": name,
+                    "selector_hint": selector_hint,
+                    "sensitive": False,
+                }
+            )
+
+    links: list[dict[str, Any]] = []
+    for link_dict in _coerce_mapping_list(raw_links)[:20]:
+        text = _clip(link_dict.get("text") or "")
+        if _looks_sensitive(text):
+            text = "[redacted]"
+        links.append({"text": text, "href": _clip(link_dict.get("href") or "")})
+
+    headings: list[dict[str, Any]] = []
+    for heading_dict in _coerce_mapping_list(raw_headings)[:10]:
+        text = _clip(heading_dict.get("text") or "")
+        if _looks_sensitive(text):
+            text = "[redacted]"
+        headings.append({"text": text, "level": heading_dict.get("level")})
+
+    active_element = raw_context.get("active_element")
+    if active_element:
+        active_element = {
+            "type": _clip((active_element or {}).get("type") or ""),
+            "label": _clip((active_element or {}).get("label") or ""),
+        }
+        if _looks_sensitive(active_element.get("label") or ""):
+            active_element["label"] = "[redacted]"
+
+    recent_clicked_element = raw_context.get("recent_clicked_element")
+    if recent_clicked_element:
+        recent_clicked_element = {
+            "text": _clip((recent_clicked_element or {}).get("text") or (recent_clicked_element or {}).get("label") or ""),
+            "role": _clip((recent_clicked_element or {}).get("role") or ""),
+        }
+        if _looks_sensitive(recent_clicked_element.get("text") or ""):
+            recent_clicked_element["text"] = "[redacted]"
+
+    recent_type_field = _clip(raw_context.get("recent_type_field") or raw_context.get("recent_typed_field") or "") or None
+    if recent_type_field and _looks_sensitive(recent_type_field):
+        recent_type_field = "[redacted]"
+
+    modal_summary = raw_context.get("modal_summary")
+    if modal_summary:
+        modal_summary = {
+            "present": bool((modal_summary or {}).get("present", True)),
+            "title": _clip((modal_summary or {}).get("title") or ""),
+            "text": _clip((modal_summary or {}).get("text") or ""),
+        }
+        if _looks_sensitive(str(modal_summary.get("title") or "")):
+            modal_summary["title"] = "[redacted]"
+        if _looks_sensitive(str(modal_summary.get("text") or "")):
+            modal_summary["text"] = "[redacted]"
+
+    modal_present = bool(raw_context.get("modal_present"))
+    if modal_summary:
+        modal_present = bool(modal_summary.get("present", modal_present))
+
+    modal_title = _clip(raw_context.get("modal_title") or (modal_summary or {}).get("title") or "") or None
+    return {
+        "url": _clip(raw_context.get("url") or ""),
+        "title": _clip(raw_context.get("title") or ""),
+        "visible_buttons": buttons,
+        "visible_inputs": inputs,
+        "visible_links": links,
+        "visible_headings": headings,
+        "buttons": [b.get("text") or "" for b in buttons if b.get("text")],
+        "inputs": [{"label": i.get("label"), "placeholder": i.get("placeholder"), "type": i.get("type")} for i in inputs],
+        "links": [l.get("text") or "" for l in links if l.get("text")],
+        "headings": [h.get("text") or "" for h in headings if h.get("text")],
+        "active_element": active_element,
+        "recent_click_label": _clip(raw_context.get("recent_click_label") or (recent_clicked_element or {}).get("text") or "") or None,
+        "recent_type_field": recent_type_field,
+        "recent_clicked_element": recent_clicked_element,
+        "recent_typed_field": recent_type_field,
+        "modal_present": modal_present,
+        "modal_title": modal_title,
+        "modal_summary": modal_summary,
+        "page_changed": bool(raw_context.get("page_changed")),
+        "captured_at": _parse_captured_at(raw_context.get("captured_at")),
+    }
+
+
+def _store_page_context_snapshot(ts: dict, raw_context: dict, record: dict | None = None) -> "PageContextSnapshot | None":
+    snapshot_dict = _normalize_page_context_snapshot(raw_context or {})
+    if snapshot_dict is None:
         return None
 
-    snapshot_dict = page_ctx.to_dict()
     ts["page_context_snapshot"] = snapshot_dict
 
     history = list(ts.get("page_context_history") or [])
     history.append(snapshot_dict)
     ts["page_context_history"] = history[-5:]
-    return page_ctx
+    if isinstance(record, dict):
+        record["page_context_snapshot"] = snapshot_dict
+        record["page_context_history"] = list(ts["page_context_history"])
+    if _COPILOT_AVAILABLE:
+        try:
+            return PageContextSnapshot.from_raw(snapshot_dict)
+        except Exception:
+            return None
+    return None
 
 
 def _looks_like_proxy_api_base(value: str) -> bool:
@@ -8487,7 +8676,7 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
         # Update page context snapshot if provided
         page_ctx: "PageContextSnapshot | None" = None
         if body.page_context:
-            page_ctx = _store_page_context_snapshot(ts, body.page_context)
+            page_ctx = _store_page_context_snapshot(ts, body.page_context, record=record)
         elif ts.get("page_context_snapshot"):
             try:
                 page_ctx = PageContextSnapshot.from_raw(ts.get("page_context_snapshot") or {})
@@ -8539,11 +8728,9 @@ def teaching_session_page_context(session_id: str, body: dict = Body(default={})
     copilot_question: str | None = None
     reply = "Context captured."
 
-    if _COPILOT_AVAILABLE:
-        page_ctx = _store_page_context_snapshot(ts, body)
+    page_ctx = _store_page_context_snapshot(ts, body, record=record)
+    if _COPILOT_AVAILABLE and page_ctx is not None:
         try:
-            if page_ctx is None:
-                raise ValueError("context parse failed")
             copilot_notice = f"I noticed you're on {page_ctx.title or page_ctx.url or 'this page'}."
             if page_ctx.modal_present:
                 copilot_interpretation = "I detected a popup/modal on screen."
@@ -8586,8 +8773,8 @@ def get_teaching_session_debug(session_id: str) -> dict:
     ts = record.get("teaching_session") or {}
     steps = list(ts.get("steps") or [])
     observed_actions_count = sum(len(s.get("observed_actions") or []) for s in steps)
-    ctx = ts.get("page_context_snapshot") or {}
-    ctx_history = list(ts.get("page_context_history") or [])
+    ctx = _get_page_context_snapshot_record(record)
+    ctx_history = list(record.get("page_context_history") or ts.get("page_context_history") or [])
     return {
         "session_id": session_id,
         "status": record.get("status"),
