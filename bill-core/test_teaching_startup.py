@@ -1415,6 +1415,112 @@ class TestTeachingCopilotPhase1:
         assert "I saw you click Sign In" in (body.get("copilot_notice") or "")
         assert "login form" in (body.get("copilot_interpretation") or "").lower()
 
+    def test_login_sequence_visible_in_status_poll_with_redaction(self, client):
+        sid = self._seed_session()
+
+        context_res = client.post(
+            f"/api/teaching/session/{sid}/context",
+            json={
+                "url": "https://go.trackvia.com/#/signin",
+                "title": "TrackVia Sign In",
+                "visible_buttons": [{"text": "Sign In", "role": "button"}],
+                "visible_inputs": [
+                    {"label": "Email", "placeholder": "you@example.com", "type": "email", "name": "email"},
+                    {"label": "Password", "placeholder": "Password", "type": "password", "name": "password"},
+                ],
+                "reason": "navigation",
+            },
+        )
+        assert context_res.status_code == 200
+
+        sequence = [
+            {
+                "id": "nav-1",
+                "type": "navigate",
+                "label": "TrackVia Sign In",
+                "selector": None,
+                "url": "https://go.trackvia.com/#/signin",
+                "value_redacted": None,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+            {
+                "id": "type-1",
+                "type": "type",
+                "label": "Email",
+                "selector": "input[name='email']",
+                "url": "https://go.trackvia.com/#/signin",
+                "value_redacted": "[redacted]",
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+            {
+                "id": "type-2",
+                "type": "type",
+                "label": "Password",
+                "selector": "input[name='password']",
+                "url": "https://go.trackvia.com/#/signin",
+                "value_redacted": "[redacted]",
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+            {
+                "id": "click-1",
+                "type": "click",
+                "label": "Sign In",
+                "selector": "button:has-text(\"Sign In\")",
+                "url": "https://go.trackvia.com/#/signin",
+                "value_redacted": None,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+            {
+                "id": "submit-1",
+                "type": "submit",
+                "label": "Sign In form",
+                "selector": "form#signin",
+                "url": "https://go.trackvia.com/#/signin",
+                "value_redacted": None,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        ]
+
+        click_response = None
+        for action in sequence:
+            res = client.post(f"/api/teaching/session/{sid}/actions", json={"action": action})
+            assert res.status_code == 200
+            if action["type"] == "click":
+                click_response = res
+
+        assert click_response is not None
+        click_body = click_response.json()
+        assert "I saw you click Sign In" in (click_body.get("copilot_notice") or "")
+
+        status_res = client.get(f"/api/teaching/session/{sid}/status")
+        assert status_res.status_code == 200
+        status_body = status_res.json()
+        teaching_session = status_body.get("teaching_session") or {}
+        steps = teaching_session.get("steps") or []
+        assert steps
+
+        actions = steps[-1].get("observed_actions") or []
+        types = [a.get("type") for a in actions]
+        assert "navigate" in types
+        assert "type" in types
+        assert "click" in types
+        assert "submit" in types
+
+        click_actions = [a for a in actions if a.get("type") == "click"]
+        assert any((a.get("label") or "").lower() == "sign in" for a in click_actions)
+
+        type_actions = [a for a in actions if a.get("type") == "type"]
+        assert type_actions
+        for a in type_actions:
+            # No raw selector leaks for sensitive typed fields.
+            assert a.get("selector") in (None, "")
+            assert a.get("value_redacted") == "[redacted]"
+
+        # Make sure no raw credential-like values leak through action labels.
+        leaked_labels = " ".join(str(a.get("label") or "") for a in actions).lower()
+        assert "input[name='password']" not in leaked_labels
+        assert "you@example.com" not in leaked_labels
+
     def test_login_click_triggers_useful_question(self, client):
         sid = self._seed_session()
         res = client.post(

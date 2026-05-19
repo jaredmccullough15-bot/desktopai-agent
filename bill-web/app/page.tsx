@@ -139,6 +139,10 @@ type TeachingStartupState = {
   message?: string;
   overlay_enabled?: boolean;
   voice_prompt_text?: string;
+  teaching_session?: TeachingSessionApiResponse["teaching_session"] | null;
+  copilot_notice?: string | null;
+  copilot_interpretation?: string | null;
+  copilot_question?: string | null;
 };
 
 type BrowserAction = {
@@ -931,7 +935,19 @@ export default function Home() {
             });
           }
           setTeachingStartupState(data);
-          if (data.status === "active" || data.status === "failed") {
+          if (data.teaching_session) {
+            setGuidedTeachingFromSession(mapApiTeachingSession(data.teaching_session));
+          }
+          if (data.copilot_notice !== undefined) {
+            setGuidedTeachingCopilotNotice(data.copilot_notice ?? null);
+          }
+          if (data.copilot_interpretation !== undefined) {
+            setGuidedTeachingCopilotInterpretation(data.copilot_interpretation ?? null);
+          }
+          if (data.copilot_question !== undefined) {
+            setGuidedTeachingCopilotQuestion(data.copilot_question ?? null);
+          }
+          if (data.status === "failed") {
             stopTeachingStartupPoll();
           }
         } catch {

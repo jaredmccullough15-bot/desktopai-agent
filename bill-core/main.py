@@ -189,7 +189,7 @@ for origin in (default_allow_origins + env_allow_origins):
 
 allow_origin_regex = (
     os.getenv("BILL_CORE_CORS_ALLOW_ORIGIN_REGEX")
-    or r"^https?://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}|[a-z0-9-]+\.trycloudflare\.com|[a-z0-9-]+\.amplifyapp\.com)(:\d+)?$"
+    or r"^https?://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}|[a-z0-9-]+\.amplifyapp\.com)(:\d+)?$"
 )
 
 app.add_middleware(
@@ -459,13 +459,13 @@ def _check_teaching_api_base_health(url: str) -> tuple[bool, str]:
     try:
         import requests as _requests
         resp = _requests.get(health_url, timeout=5)
-        # Cloudflare Tunnel hard-error (HTTP 530 or recognisable HTML body)
+        # Edge gateway hard-error (commonly seen from Cloudflare or similar proxies)
         if resp.status_code == 530:
-            return False, f"CLOUDFLARE_TUNNEL_ERROR (HTTP 530)"
+            return False, f"EDGE_GATEWAY_ERROR (HTTP 530)"
         if "Cloudflare Tunnel error" in resp.text or (
             "cloudflare" in resp.text.lower() and "error" in resp.text.lower()
         ):
-            return False, f"CLOUDFLARE_TUNNEL_ERROR (HTML body)"
+            return False, f"EDGE_GATEWAY_ERROR (Cloudflare-style HTML body)"
         if not resp.ok:
             return False, f"HTTP {resp.status_code}"
         try:
@@ -486,8 +486,8 @@ def _resolve_teach_session_worker_api_base(requested_api_base: str) -> str:
     Try:
     1. Requested API base (if provided and valid HTTP URL)
     2. Environment variables: BILL_CORE_WORKER_API_BASE, BILL_CORE_URL, JARVIS_CORE_URL, BILL_CORE_PUBLIC_URL
-    3. Primary default (Cloudflare tunnel) with health check
-    4. Fallback default (AWS Beanstalk) with health check
+    3. Production default (AWS Beanstalk) with health check
+    4. Legacy fallback default (api.bill-core.com) with health check
     5. Primary default (no fallback available)
     """
     requested = (requested_api_base or "").strip().rstrip("/")
@@ -503,8 +503,8 @@ def _resolve_teach_session_worker_api_base(requested_api_base: str) -> str:
 
     # Health check: try primary, then fallback
     candidates = [
-        (DEFAULT_TEACH_SESSION_WORKER_API_BASE, "primary"),
-        (DEFAULT_TEACH_SESSION_WORKER_API_FALLBACK, "fallback"),
+        (DEFAULT_TEACH_SESSION_WORKER_API_BASE, "production-default"),
+        (DEFAULT_TEACH_SESSION_WORKER_API_FALLBACK, "legacy-fallback"),
     ]
     
     for url, label in candidates:
@@ -520,7 +520,7 @@ def _resolve_teach_session_worker_api_base(requested_api_base: str) -> str:
     # All candidates exhausted; fall back to primary without health check
     logger.warning(
         f"[teaching-api-base] No healthy endpoint found. "
-        f"Defaulting to primary {DEFAULT_TEACH_SESSION_WORKER_API_BASE} "
+        f"Defaulting to production default {DEFAULT_TEACH_SESSION_WORKER_API_BASE} "
         f"(worker will surface errors at callback time)"
     )
     return DEFAULT_TEACH_SESSION_WORKER_API_BASE
@@ -6053,7 +6053,12 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
         raise HTTPException(status_code=404, detail="Workflow draft not found")
 
     requested_api_base = str(payload.api_base or "").strip()
-    local_api_base = (requested_api_base or "http://127.0.0.1:8010").rstrip("/")
+    # Local subprocess path is for local development/testing on the same host.
+    local_api_base = (
+        requested_api_base
+        or (os.getenv("BILL_CORE_LOCAL_DEV_API_BASE") or "").strip()
+        or "http://127.0.0.1:8010"
+    ).rstrip("/")
     worker_api_base = _resolve_teach_session_worker_api_base(requested_api_base)
     target_machine_uuid = str(payload.target_machine_uuid or "").strip()
 
@@ -7985,6 +7990,7 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
 
 def _build_teaching_startup_state(session_id: str) -> TeachingStartupState:
     record = _teaching_startup_sessions[session_id]
+    teaching_session = record.get("teaching_session")
     return TeachingStartupState(
         session_id=session_id,
         task_id=record.get("task_id"),
@@ -7995,6 +8001,10 @@ def _build_teaching_startup_state(session_id: str) -> TeachingStartupState:
         message=record.get("message", ""),
         overlay_enabled=record.get("overlay_enabled", True),
         voice_prompt_text=record.get("voice_prompt_text", ""),
+        teaching_session=TeachingSession.model_validate(teaching_session) if isinstance(teaching_session, dict) else None,
+        copilot_notice=record.get("latest_copilot_notice"),
+        copilot_interpretation=record.get("latest_copilot_interpretation"),
+        copilot_question=record.get("latest_copilot_question"),
     )
 
 
@@ -8377,7 +8387,29 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
         raise HTTPException(status_code=404, detail="No teaching session in record")
     steps: list[dict] = list(ts.get("steps") or [])
     action_dict = body.action.model_dump()
-    _SENSITIVE_LABELS = ("password", "mfa", "pin", "ssn", "social", "token", "secret", "otp", "code")
+    logger.info(
+        "TEACH_CAPTURE_EVENT session_id_present=%s draft_id_present=%s event_type=%s url=%s label=%s",
+        bool(session_id),
+        bool(record.get("draft_id")),
+        action_dict.get("type") or "",
+        action_dict.get("url") or "",
+        (action_dict.get("label") or "")[:120],
+    )
+    _SENSITIVE_LABELS = (
+        "password",
+        "mfa",
+        "pin",
+        "ssn",
+        "social",
+        "token",
+        "secret",
+        "otp",
+        "code",
+        "email",
+        "phone",
+        "dob",
+        "birth",
+    )
     label = (action_dict.get("label") or "").lower()
     if body.action.type == "type":
         action_dict["value_redacted"] = "[redacted]"
@@ -8441,6 +8473,9 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
 
     ts["steps"] = steps
     record["teaching_session"] = ts
+    record["latest_copilot_notice"] = copilot_notice
+    record["latest_copilot_interpretation"] = copilot_interpretation
+    record["latest_copilot_question"] = copilot_question
     _teaching_startup_sessions[session_id] = record
     return TeachingSessionMessageResponse(
         reply=reply_text,
@@ -8481,7 +8516,19 @@ def teaching_session_page_context(session_id: str, body: dict = Body(default={})
         except Exception:
             reply = "Context captured."
 
+    logger.info(
+        "TEACH_CAPTURE_EVENT session_id_present=%s draft_id_present=%s event_type=%s url=%s label=%s",
+        bool(session_id),
+        bool(record.get("draft_id")),
+        "context",
+        str((body or {}).get("url") or ""),
+        str((body or {}).get("reason") or "")[:120],
+    )
+
     record["teaching_session"] = ts
+    record["latest_copilot_notice"] = copilot_notice
+    record["latest_copilot_interpretation"] = copilot_interpretation
+    record["latest_copilot_question"] = copilot_question
     _teaching_startup_sessions[session_id] = record
     return TeachingSessionMessageResponse(
         reply=reply,

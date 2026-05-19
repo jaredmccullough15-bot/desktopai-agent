@@ -181,6 +181,10 @@ class TeachingStartupState(BaseModel):
     message: str = ""
     overlay_enabled: bool = True
     voice_prompt_text: str = "Teaching mode is starting. Once the browser opens, tell me what this workflow does."
+    teaching_session: "TeachingSession | None" = None
+    copilot_notice: str | None = None
+    copilot_interpretation: str | None = None
+    copilot_question: str | None = None
 
 
 class TeachingStartupStatusRequest(BaseModel):

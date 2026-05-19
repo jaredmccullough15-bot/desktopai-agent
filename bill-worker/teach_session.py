@@ -15,7 +15,7 @@ active workflow learning draft via:
 Usage:
     python teach_session.py \
         --draft-id <DRAFT_ID> \
-        [--api-base http://127.0.0.1:8010] \
+        [--api-base http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com] \
         [--start-url https://example.com]
 
 Requirements (install into the same venv as bill-core):
@@ -58,9 +58,25 @@ except ImportError:
     sys.exit(1)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DEFAULT_API_BASE = "http://127.0.0.1:8010"
+DEFAULT_API_BASE = (
+    os.getenv("BILL_CORE_URL")
+    or os.getenv("JARVIS_CORE_URL")
+    or "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com"
+).rstrip("/")
 APPEND_TIMEOUT = 8  # HTTP timeout seconds
 EVENT_DEBOUNCE = 0.25  # Ignore exact-duplicate event types within this many seconds
+
+
+def _teaching_capture_headers(worker_shared_secret: str | None = None) -> dict[str, str]:
+    secret = (
+        worker_shared_secret
+        or os.getenv("BILL_WORKER_SHARED_SECRET")
+        or os.getenv("WORKER_SHARED_SECRET")
+        or ""
+    ).strip()
+    if not secret:
+        return {}
+    return {"X-Bill-Worker-Key": secret}
 
 # ── Browser-side listener (injected via add_init_script on every page load) ───
 _LISTENER_JS = r"""
@@ -144,9 +160,14 @@ _LISTENER_JS = r"""
         var el = findInteractive(raw) || raw;
         var info = getInfo(el);
 
-        // Skip pure input fields (captured on blur instead)
+        // Skip text-like inputs (captured on focusout/change instead), but keep
+        // submit/button controls so login clicks are not lost.
         var t = info.tag;
-        if (t === 'input' || t === 'textarea' || t === 'select') return;
+        if (t === 'textarea' || t === 'select') return;
+        if (t === 'input') {
+            var it = String(info.input_type || '').toLowerCase();
+            if (it !== 'submit' && it !== 'button' && it !== 'checkbox' && it !== 'radio') return;
+        }
 
         emit({
             event_type: 'click',
@@ -158,13 +179,12 @@ _LISTENER_JS = r"""
     }, true);
 
     /* ── Text input (on blur = final value) ─────────────── */
-    document.addEventListener('blur', function (e) {
+    document.addEventListener('focusout', function (e) {
         var el = e.target;
         if (!el) return;
         var t = String(el.tagName || '').toLowerCase();
         if (t !== 'input' && t !== 'textarea') return;
         if (!el.value) return;
-        if (String(el.getAttribute('type') || '').toLowerCase() === 'password') return;
         var info = getInfo(el);
         emit({
             event_type: 'type_text',
@@ -176,23 +196,65 @@ _LISTENER_JS = r"""
         });
     }, true);
 
-    /* ── Select / dropdown ──────────────────────────────── */
+    // Some UIs and autofill flows update values without a blur that bubbles
+    // reliably through app layers; capture change as a fallback.
     document.addEventListener('change', function (e) {
         var el = e.target;
-        if (!el || String(el.tagName || '').toLowerCase() !== 'select') return;
+        if (!el) return;
+        var t = String(el.tagName || '').toLowerCase();
+        if (t !== 'input' && t !== 'textarea' && t !== 'select') return;
         var info = getInfo(el);
-        var selectedText = (el.options && el.selectedIndex >= 0)
-            ? el.options[el.selectedIndex].text : '';
+        if (t === 'select') {
+            var selectedText = (el.options && el.selectedIndex >= 0)
+                ? el.options[el.selectedIndex].text : '';
+            emit({
+                event_type:  'select_option',
+                selector:    buildSelector(info),
+                value:       el.value,
+                option_text: selectedText,
+                element:     info,
+                url:         window.location.href,
+                ts:          Date.now(),
+            });
+            return;
+        }
+        if (!el.value) return;
         emit({
-            event_type:  'select_option',
-            selector:    buildSelector(info),
-            value:       el.value,
-            option_text: selectedText,
-            element:     info,
-            url:         window.location.href,
-            ts:          Date.now(),
+            event_type: 'type_text',
+            selector:   buildSelector(info),
+            value:      el.value,
+            element:    info,
+            url:        window.location.href,
+            ts:         Date.now(),
         });
     }, true);
+
+    /* ── Form submit ───────────────────────────────────── */
+    document.addEventListener('submit', function (e) {
+        var el = e.target;
+        var info = getInfo(el);
+        emit({
+            event_type: 'submit',
+            selector: buildSelector(info),
+            element: info,
+            url: window.location.href,
+            ts: Date.now(),
+        });
+    }, true);
+
+    function emitNavigation(reason) {
+        emit({
+            event_type: 'navigate',
+            selector: null,
+            element: { tag: 'document', text: reason || 'navigation' },
+            url: window.location.href,
+            ts: Date.now(),
+        });
+    }
+
+    window.addEventListener('hashchange', function () { emitNavigation('hashchange'); }, true);
+    window.addEventListener('popstate', function () { emitNavigation('popstate'); }, true);
+    window.addEventListener('pageshow', function () { emitNavigation('pageshow'); }, true);
 
     function ensureQuestionPanel() {
         if (window.__billObservationPanel) { return window.__billObservationPanel; }
@@ -629,18 +691,298 @@ def _event_to_browser_action(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _post_teaching_action(api_base: str, session_id: str, action_payload: dict[str, Any]) -> bool:
+def _post_teaching_action(
+    api_base: str,
+    session_id: str,
+    draft_id: str,
+    action_payload: dict[str, Any],
+    auth_headers: dict[str, str] | None = None,
+) -> bool:
     if not session_id:
+        print(
+            "TEACH_CAPTURE_POST_FAILED session_id_present=false "
+            f"draft_id_present={bool(draft_id)} event_type={action_payload.get('type') or ''} "
+            f"url={action_payload.get('url') or ''} label={str(action_payload.get('label') or '')[:120]} "
+            "status_code=0",
+            file=sys.stderr,
+        )
         return False
     endpoint = f"{api_base.rstrip('/')}/api/teaching/session/{session_id}/actions"
+    print(
+        "TEACH_CAPTURE_POST_ATTEMPT "
+        f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
+        f"event_type={action_payload.get('type') or ''} url={action_payload.get('url') or ''} "
+        f"label={str(action_payload.get('label') or '')[:120]} endpoint={endpoint}",
+    )
     try:
-        resp = requests.post(endpoint, json={"action": action_payload}, timeout=APPEND_TIMEOUT)
+        resp = requests.post(
+            endpoint,
+            json={"action": action_payload},
+            headers=(auth_headers or None),
+            timeout=APPEND_TIMEOUT,
+        )
         if resp.status_code == 200:
+            print(
+                "TEACH_CAPTURE_POST_SUCCESS "
+                f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
+                f"event_type={action_payload.get('type') or ''} url={action_payload.get('url') or ''} "
+                f"label={str(action_payload.get('label') or '')[:120]} status_code={resp.status_code}",
+            )
             return True
+        print(
+            "TEACH_CAPTURE_POST_FAILED "
+            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
+            f"event_type={action_payload.get('type') or ''} url={action_payload.get('url') or ''} "
+            f"label={str(action_payload.get('label') or '')[:120]} status_code={resp.status_code}",
+            file=sys.stderr,
+        )
         print(f"  [teach] Action capture failed ({resp.status_code}): {resp.text[:120]}", file=sys.stderr)
     except Exception as exc:
+        print(
+            "TEACH_CAPTURE_POST_FAILED "
+            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
+            f"event_type={action_payload.get('type') or ''} url={action_payload.get('url') or ''} "
+            f"label={str(action_payload.get('label') or '')[:120]} status_code=0 error={exc}",
+            file=sys.stderr,
+        )
         print(f"  [teach] Action capture HTTP error: {exc}", file=sys.stderr)
     return False
+
+
+def _post_teaching_context(
+    api_base: str,
+    session_id: str,
+    draft_id: str,
+    context_payload: dict[str, Any],
+    auth_headers: dict[str, str] | None = None,
+) -> tuple[bool, str | None]:
+    if not session_id:
+        print(
+            "TEACH_CAPTURE_POST_FAILED session_id_present=false "
+            f"draft_id_present={bool(draft_id)} event_type=context "
+            f"url={context_payload.get('url') or ''} label={str(context_payload.get('reason') or '')[:120]} "
+            "status_code=0",
+            file=sys.stderr,
+        )
+        return False, "missing session_id"
+    endpoint = f"{api_base.rstrip('/')}/api/teaching/session/{session_id}/context"
+    print(
+        "TEACH_CAPTURE_POST_ATTEMPT "
+        f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
+        f"event_type=context url={context_payload.get('url') or ''} "
+        f"label={str(context_payload.get('reason') or '')[:120]} endpoint={endpoint}",
+    )
+    try:
+        resp = requests.post(
+            endpoint,
+            json=context_payload,
+            headers=(auth_headers or None),
+            timeout=APPEND_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            print(
+                "TEACH_CAPTURE_POST_SUCCESS "
+                f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
+                f"event_type=context url={context_payload.get('url') or ''} "
+                f"label={str(context_payload.get('reason') or '')[:120]} status_code={resp.status_code}",
+            )
+            return True, None
+        print(
+            "TEACH_CAPTURE_POST_FAILED "
+            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
+            f"event_type=context url={context_payload.get('url') or ''} "
+            f"label={str(context_payload.get('reason') or '')[:120]} status_code={resp.status_code}",
+            file=sys.stderr,
+        )
+        return False, f"HTTP {resp.status_code}: {resp.text[:120]}"
+    except Exception as exc:
+        print(
+            "TEACH_CAPTURE_POST_FAILED "
+            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
+            f"event_type=context url={context_payload.get('url') or ''} "
+            f"label={str(context_payload.get('reason') or '')[:120]} status_code=0 error={exc}",
+            file=sys.stderr,
+        )
+        return False, str(exc)
+
+
+def _clip_text(value: Any, max_len: int = 120) -> str:
+    text = str(value or "").strip()
+    if len(text) > max_len:
+        return text[:max_len]
+    return text
+
+
+def _detect_sensitive_field(label: str, placeholder: str, name: str, input_type: str) -> bool:
+    lowered = f"{label} {placeholder} {name} {input_type}".lower()
+    terms = (
+        "password",
+        "mfa",
+        "otp",
+        "code",
+        "token",
+        "secret",
+        "ssn",
+        "social",
+        "dob",
+        "birth",
+        "phone",
+        "email",
+    )
+    return any(term in lowered for term in terms)
+
+
+def _build_page_context_snapshot(page: Any, reason: str, recent_clicked: dict | None, recent_typed_field: str | None, page_changed: bool) -> dict[str, Any] | None:
+    try:
+        raw = page.evaluate(
+            """
+            () => {
+                function clip(s, n=120) {
+                    const t = String(s || '').replace(/\\s+/g, ' ').trim();
+                    return t.length > n ? t.slice(0, n) : t;
+                }
+                function visible(el) {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (!r || r.width <= 0 || r.height <= 0) return false;
+                    const st = window.getComputedStyle(el);
+                    return st && st.visibility !== 'hidden' && st.display !== 'none';
+                }
+                function selectorHint(el) {
+                    if (!el) return null;
+                    if (el.id) return '#' + String(el.id).replace(/[^\\w-]/g, '_');
+                    const name = el.getAttribute('name');
+                    if (name) return `${el.tagName.toLowerCase()}[name="${clip(name, 50)}"]`;
+                    const aria = el.getAttribute('aria-label');
+                    if (aria) return `${el.tagName.toLowerCase()}[aria-label="${clip(aria, 50)}"]`;
+                    return el.tagName.toLowerCase();
+                }
+
+                const buttons = [];
+                for (const el of Array.from(document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]'))) {
+                    if (!visible(el)) continue;
+                    if (buttons.length >= 20) break;
+                    buttons.push({
+                        text: clip(el.innerText || el.textContent || el.value || ''),
+                        aria_label: clip(el.getAttribute('aria-label') || ''),
+                        role: clip(el.getAttribute('role') || (el.tagName || '').toLowerCase()),
+                        selector_hint: selectorHint(el),
+                    });
+                }
+
+                const inputs = [];
+                for (const el of Array.from(document.querySelectorAll('input, textarea, select'))) {
+                    if (!visible(el)) continue;
+                    if (inputs.length >= 20) break;
+                    const inputType = String(el.getAttribute('type') || (el.tagName || '').toLowerCase()).toLowerCase();
+                    let labelText = '';
+                    const id = el.id;
+                    if (id) {
+                        const label = document.querySelector(`label[for="${id}"]`);
+                        if (label) labelText = clip(label.innerText || label.textContent || '');
+                    }
+                    if (!labelText) {
+                        const parentLabel = el.closest('label');
+                        if (parentLabel) labelText = clip(parentLabel.innerText || parentLabel.textContent || '');
+                    }
+                    inputs.push({
+                        label: labelText,
+                        placeholder: clip(el.getAttribute('placeholder') || ''),
+                        type: clip(inputType),
+                        name: clip(el.getAttribute('name') || ''),
+                        selector_hint: selectorHint(el),
+                    });
+                }
+
+                const links = [];
+                for (const el of Array.from(document.querySelectorAll('a[href]'))) {
+                    if (!visible(el)) continue;
+                    if (links.length >= 20) break;
+                    links.push({
+                        text: clip(el.innerText || el.textContent || ''),
+                        href: clip(el.getAttribute('href') || ''),
+                    });
+                }
+
+                const headings = [];
+                for (const el of Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'))) {
+                    if (!visible(el)) continue;
+                    if (headings.length >= 10) break;
+                    const level = Number(String(el.tagName || '').replace('H', '')) || null;
+                    headings.push({ text: clip(el.innerText || el.textContent || ''), level });
+                }
+
+                const active = document.activeElement;
+                const activeEl = active && active !== document.body ? {
+                    type: clip((active.tagName || '').toLowerCase()),
+                    label: clip(active.getAttribute('aria-label') || active.getAttribute('name') || active.getAttribute('placeholder') || active.innerText || active.textContent || ''),
+                } : null;
+
+                let modalEl = document.querySelector('[role="dialog"], [aria-modal="true"], .modal, .popup');
+                if (modalEl && !visible(modalEl)) modalEl = null;
+                const modalSummary = modalEl ? {
+                    present: true,
+                    title: clip(modalEl.getAttribute('aria-label') || (modalEl.querySelector('h1,h2,h3')?.textContent) || ''),
+                    text: clip(modalEl.textContent || ''),
+                } : { present: false, title: '', text: '' };
+
+                return {
+                    url: window.location.href,
+                    title: clip(document.title || ''),
+                    visible_buttons: buttons,
+                    visible_inputs: inputs,
+                    visible_links: links,
+                    visible_headings: headings,
+                    active_element: activeEl,
+                    modal_summary: modalSummary,
+                    modal_present: !!modalSummary.present,
+                    modal_title: modalSummary.title || null,
+                };
+            }
+            """
+        )
+    except Exception:
+        return None
+
+    if not isinstance(raw, dict):
+        return None
+
+    visible_inputs = []
+    for inp in list(raw.get("visible_inputs") or [])[:20]:
+        label = _clip_text(inp.get("label") or "")
+        placeholder = _clip_text(inp.get("placeholder") or "")
+        input_type = _clip_text(inp.get("type") or "text")
+        name = _clip_text(inp.get("name") or "")
+        sensitive = _detect_sensitive_field(label, placeholder, name, input_type)
+        visible_inputs.append(
+            {
+                "label": "[redacted]" if sensitive else label,
+                "placeholder": "[redacted]" if sensitive else placeholder,
+                "type": input_type,
+                "name": "[redacted]" if sensitive else name,
+                "selector_hint": None if sensitive else _clip_text(inp.get("selector_hint") or "") or None,
+                "sensitive": sensitive,
+            }
+        )
+
+    snapshot = {
+        "url": _clip_text(raw.get("url") or ""),
+        "title": _clip_text(raw.get("title") or ""),
+        "visible_buttons": list(raw.get("visible_buttons") or [])[:20],
+        "visible_inputs": visible_inputs,
+        "visible_links": list(raw.get("visible_links") or [])[:20],
+        "visible_headings": list(raw.get("visible_headings") or [])[:10],
+        "active_element": raw.get("active_element") or None,
+        "recent_clicked_element": recent_clicked or None,
+        "recent_typed_field": _clip_text(recent_typed_field or "") or None,
+        "modal_summary": raw.get("modal_summary") or {"present": False, "title": "", "text": ""},
+        "modal_present": bool(raw.get("modal_present")),
+        "modal_title": _clip_text(raw.get("modal_title") or "") or None,
+        "page_changed": bool(page_changed),
+        "reason": _clip_text(reason, 40),
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return snapshot
 
 
 def _load_observation_settings(api_base: str) -> dict[str, Any]:
@@ -731,6 +1073,7 @@ def run_session(
     chrome_user_data_dir: str | None = None,
     profile_directory: str = "Default",
     remote_debugging_port: int = 9222,
+    worker_shared_secret: str | None = None,
     on_browser_ready: "Callable[[], None] | None" = None,
 ) -> dict[str, Any]:
     sep = "=" * 62
@@ -749,6 +1092,8 @@ def run_session(
 
     last_event_ts: dict[str, float] = {}
     last_url: list[str] = [""]
+    recent_clicked_element: dict | None = None
+    recent_typed_field: str | None = None
     step_num: list[int] = [0]
     step_lock = threading.Lock()
     user_data_dir = Path(chrome_user_data_dir or (Path.home() / "AppData" / "Local" / "BillCore" / "ChromeProfiles" / "BillTeaching")).resolve()
@@ -759,6 +1104,7 @@ def run_session(
     )
     browser_launch_succeeded = False
     observation_settings = _load_observation_settings(api_base)
+    capture_auth_headers = _teaching_capture_headers(worker_shared_secret)
 
     # ── Background thread drains HTTP posts so Playwright's event
     #    loop is never blocked by a slow/failed HTTP request. ──────
@@ -778,7 +1124,29 @@ def run_session(
                     ui_queue.put({"type": "apply_settings", "settings": result})
                     print(f"  [obs ] {result.get('status', 'saved')} -> prompt {item.get('data', {}).get('prompt_id', '?')}")
             elif kind == "teaching_action":
-                _post_teaching_action(api_base, str(session_id or ""), dict(item.get("data") or {}))
+                _post_teaching_action(
+                    api_base,
+                    str(session_id or ""),
+                    draft_id,
+                    dict(item.get("data") or {}),
+                    auth_headers=capture_auth_headers,
+                )
+            elif kind == "context":
+                ok, err = _post_teaching_context(
+                    api_base,
+                    str(session_id or ""),
+                    draft_id,
+                    dict(item.get("data") or {}),
+                    auth_headers=capture_auth_headers,
+                )
+                if not ok:
+                    ui_queue.put(
+                        {
+                            "type": "context_warning",
+                            "message": "Bill may not have the latest page view. Continue, or repeat the action.",
+                            "detail": err or "unknown error",
+                        }
+                    )
             else:
                 step = dict(item.get("data") or {})
                 result = _post_step(api_base, draft_id, step)
@@ -809,7 +1177,32 @@ def run_session(
             return
         post_queue.put({"kind": "teaching_action", "data": action_payload})
 
+    def _enqueue_context(context_payload: dict[str, Any]) -> None:
+        if not session_id:
+            return
+        post_queue.put({"kind": "context", "data": context_payload})
+
+    def _current_primary_page() -> Any:
+        for existing in context.pages:
+            if not existing.is_closed():
+                return existing
+        return page
+
+    def _capture_context(reason: str, page_changed: bool = False) -> None:
+        target_page = _current_primary_page()
+        snapshot = _build_page_context_snapshot(
+            target_page,
+            reason=reason,
+            recent_clicked=recent_clicked_element,
+            recent_typed_field=recent_typed_field,
+            page_changed=page_changed,
+        )
+        if snapshot is None:
+            return
+        _enqueue_context(snapshot)
+
     def record(event: dict[str, Any]) -> None:
+        nonlocal recent_clicked_element, recent_typed_field
         et = event.get("event_type", "")
         if et == "_attached":
             print(f"  [listen] Attached on {event.get('url', '?')}")
@@ -833,8 +1226,36 @@ def run_session(
         if now - last_event_ts.get(et, 0.0) < EVENT_DEBOUNCE:
             return
         last_event_ts[et] = now
+        element = event.get("element") or {}
+        safe_label = _clip_text(
+            element.get("text")
+            or element.get("aria_label")
+            or element.get("name")
+            or event.get("selector")
+            or "",
+            max_len=120,
+        )
+        print(
+            "TEACH_CAPTURE_EVENT "
+            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
+            f"event_type={et} url={event.get('url') or ''} label={safe_label}"
+        )
+        if et == "click":
+            recent_clicked_element = {
+                "text": _clip_text(element.get("text") or element.get("aria_label") or element.get("name") or ""),
+                "role": _clip_text(element.get("role") or element.get("tag") or ""),
+            }
+        elif et in {"type_text", "select_option"}:
+            recent_typed_field = _clip_text(
+                element.get("aria_label")
+                or element.get("name")
+                or element.get("placeholder")
+                or ""
+            )
         _enqueue_teaching_action(_event_to_browser_action(event))
         _enqueue_step(_event_to_step(event))
+        if et in {"click", "type_text", "select_option", "submit"}:
+            _capture_context(reason=et, page_changed=False)
 
     def on_navigate(url: str) -> None:
         if url == last_url[0]:
@@ -846,6 +1267,7 @@ def run_session(
         nav_event = {"event_type": "navigate", "url": url, "element": {}}
         _enqueue_teaching_action(_event_to_browser_action(nav_event))
         _enqueue_step(_event_to_step(nav_event))
+        _capture_context(reason="navigation", page_changed=True)
 
     def attach_page(p: Any) -> None:
         p.on("framenavigated", lambda frame: on_navigate(frame.url) if frame == p.main_frame else None)
@@ -923,6 +1345,19 @@ def run_session(
                 settings = dict(update.get("settings") or observation_settings)
                 observation_settings.update(settings)
                 _show_prompt_on_pages(prompt, observation_settings)
+            elif update_type == "context_warning":
+                message = str(update.get("message") or "")
+                detail = str(update.get("detail") or "")
+                try:
+                    for p in context.pages:
+                        if p.is_closed():
+                            continue
+                        p.evaluate(
+                            "(payload) => { const status = document.querySelector('#bill-observation-status'); if (status) { status.textContent = payload.message; status.style.color = '#fca5a5'; status.title = payload.detail || ''; } }",
+                            {"message": message, "detail": detail},
+                        )
+                except Exception:
+                    pass
 
     with sync_playwright() as pw:
         print(f"  [teach] final Chrome launch command: {launch_command}")
@@ -978,8 +1413,11 @@ def run_session(
         if start_url:
             try:
                 page.goto(start_url, wait_until="domcontentloaded", timeout=30_000)
+                _capture_context(reason="page_load", page_changed=True)
             except Exception as exc:
                 print(f"  [teach] Could not load start URL: {exc}", file=sys.stderr)
+        else:
+            _capture_context(reason="page_load", page_changed=True)
 
         try:
             while browser.is_connected():
@@ -1019,8 +1457,14 @@ def main() -> None:
         description="Bill Teach Mode — Playwright observation browser"
     )
     parser.add_argument("--draft-id", required=True, help="Workflow learning draft ID")
-    parser.add_argument("--api-base", default=DEFAULT_API_BASE, help="Bill Core API base URL")
+    parser.add_argument(
+        "--api-base",
+        default=DEFAULT_API_BASE,
+        help="Bill Core API base URL (production defaults to Beanstalk; use localhost only for local dev)",
+    )
     parser.add_argument("--start-url", default=None, help="Optional URL to open when the browser launches")
+    parser.add_argument("--session-id", default=None, help="Teaching session id for /api/teaching/session callbacks")
+    parser.add_argument("--worker-shared-secret", default=None, help="X-Bill-Worker-Key value for worker-auth callbacks")
     parser.add_argument("--chrome-user-data-dir", default=None, help="Chrome --user-data-dir path")
     parser.add_argument("--profile-directory", default="Default", help="Chrome --profile-directory value")
     parser.add_argument("--remote-debugging-port", type=int, default=9222, help="Chrome remote debugging port")
@@ -1029,9 +1473,11 @@ def main() -> None:
         args.draft_id,
         args.api_base,
         args.start_url,
+        session_id=args.session_id,
         chrome_user_data_dir=args.chrome_user_data_dir,
         profile_directory=args.profile_directory,
         remote_debugging_port=args.remote_debugging_port,
+        worker_shared_secret=args.worker_shared_secret,
     )
 
 

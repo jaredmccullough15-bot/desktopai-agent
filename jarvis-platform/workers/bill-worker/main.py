@@ -9,6 +9,7 @@ import random
 import uuid
 import hashlib
 import traceback
+import platform
 from importlib import metadata as importlib_metadata
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -443,6 +444,9 @@ def _log_startup_environment(runtime_settings: dict[str, Any] | None = None) -> 
     log_info(f"Startup CWD: {Path.cwd()}")
     log_info(f"Python/exe path: {sys.executable}")
     log_info(f"Frozen executable: {getattr(sys, 'frozen', False)}")
+    log_info(f"Python version: {sys.version.split()[0]}")
+    log_info(f"Platform: {platform.platform()}")
+    log_info(f"PyInstaller _MEIPASS: {getattr(sys, '_MEIPASS', '(not set)')}")
     log_info(f"Config path: {CONFIG_PATH}")
     log_info(f"Config exists: {CONFIG_PATH.exists()}")
     log_info(f"Legacy config path: {LEGACY_CONFIG_PATH}")
@@ -460,6 +464,8 @@ def _log_startup_environment(runtime_settings: dict[str, Any] | None = None) -> 
         log_info(f"visible_mode value: {runtime_settings.get('visible_mode')}")
         log_info(f"core_url value: {runtime_settings.get('core_url')}")
         log_info(f"worker_name value: {runtime_settings.get('worker_name')}")
+        log_info(f"worker_secret_present: {runtime_settings.get('worker_secret_present')}")
+        log_info(f"worker_secret_source: {runtime_settings.get('worker_secret_source')}")
 
 
 def _write_fatal_startup_log(error: Exception, traceback_text: str) -> Path | None:
@@ -475,6 +481,7 @@ def _write_fatal_startup_log(error: Exception, traceback_text: str) -> Path | No
                 handle.write(f"Python/exe path: {sys.executable}\n")
                 handle.write(f"Config path: {CONFIG_PATH}\n")
                 handle.write(f"Config exists: {CONFIG_PATH.exists()}\n")
+                handle.write(f"worker_secret_present: {bool(WORKER_SHARED_SECRET)}\n")
                 handle.write(f"visible_mode value: {DEFAULT_WORKER_MODE}\n")
                 handle.write(f"core_url value: {API_BASE}\n")
                 handle.write(f"worker_name value: {MACHINE_DISPLAY_NAME_OVERRIDE or socket.gethostname()}\n")
@@ -488,6 +495,54 @@ def _write_fatal_startup_log(error: Exception, traceback_text: str) -> Path | No
         except Exception:
             continue
     return None
+
+
+def _write_startup_error_log(error: Exception, traceback_text: str) -> Path | None:
+    candidates = [APP_ROOT / "startup_error.log", LOGS_DIR / "startup_error.log"]
+    for log_path in candidates:
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write("\n")
+                handle.write(f"===== {datetime.now().isoformat()} =====\n")
+                handle.write(f"Startup failure: {error!r}\n")
+                handle.write(f"App root: {APP_ROOT}\n")
+                handle.write(f"Startup CWD: {Path.cwd()}\n")
+                handle.write(f"Python/exe path: {sys.executable}\n")
+                handle.write(f"Frozen executable: {getattr(sys, 'frozen', False)}\n")
+                handle.write(f"Python version: {sys.version.split()[0]}\n")
+                handle.write(f"Platform: {platform.platform()}\n")
+                handle.write(f"PyInstaller _MEIPASS: {getattr(sys, '_MEIPASS', '(not set)')}\n")
+                handle.write(f"Config path searched: {CONFIG_PATH}\n")
+                handle.write(f"Config loaded: {CONFIG_PATH.exists()}\n")
+                handle.write(f"Core URL: {API_BASE}\n")
+                handle.write(f"worker_secret_present: {bool(WORKER_SHARED_SECRET)}\n")
+                chrome_path = _detect_chrome_path_for_startup()
+                handle.write(f"Chrome path detected: {chrome_path if chrome_path else 'none'}\n")
+                handle.write(f"Playwright available: {_playwright_status_for_startup()}\n")
+                handle.write(traceback_text)
+                if not traceback_text.endswith("\n"):
+                    handle.write("\n")
+            return log_path
+        except Exception:
+            continue
+    return None
+
+
+def _show_startup_error_message_box() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "Bill Worker failed to start. See logs/startup_error.log.",
+            "Bill Worker Startup Error",
+            0x10,
+        )
+    except Exception:
+        return
 
 
 @dataclass
@@ -893,14 +948,9 @@ def apply_runtime_config() -> dict[str, Any]:
 
     WORKER_UI_ENABLED = True
 
-    WORKER_SHARED_SECRET = str(
-        _get_setting(
-            config,
-            "worker_shared_secret",
-            ["BILL_CORE_WORKER_SHARED_SECRET"],
-            "",
-        )
-    ).strip()
+    WORKER_SHARED_SECRET, worker_secret_source = _resolve_worker_shared_secret(config)
+    if not WORKER_SHARED_SECRET:
+        log_warn("Worker shared secret missing. Set BILL_CORE_WORKER_SHARED_SECRET or worker_shared_secret in config.json.")
 
     screenshots_dir = _resolve_dir(str(SCREENSHOTS_DIR), SCREENSHOTS_DIR, APP_ROOT)
     downloads_dir = _resolve_dir(str(DOWNLOADS_DIR), DOWNLOADS_DIR, APP_ROOT)
@@ -936,7 +986,8 @@ def apply_runtime_config() -> dict[str, Any]:
     os.environ["JARVIS_WORKER_BROWSER_PROFILE_POLICY"] = BROWSER_PROFILE_POLICY
     os.environ["BILL_WORKER_BOOKMARKS_JSON"] = json.dumps(BILL_BOOKMARKS)
     os.environ["JARVIS_WORKER_BOOKMARKS_JSON"] = json.dumps(BILL_BOOKMARKS)
-    os.environ["BILL_CORE_WORKER_SHARED_SECRET"] = WORKER_SHARED_SECRET
+    if WORKER_SHARED_SECRET:
+        os.environ["BILL_CORE_WORKER_SHARED_SECRET"] = WORKER_SHARED_SECRET
 
     return {
         "core_url": API_BASE,
@@ -957,6 +1008,8 @@ def apply_runtime_config() -> dict[str, Any]:
         "chrome_profile_directory": CHROME_PROFILE_DIRECTORY,
         "remote_debugging_port": REMOTE_DEBUGGING_PORT,
         "browser_profile_policy": BROWSER_PROFILE_POLICY,
+        "worker_secret_present": bool(WORKER_SHARED_SECRET),
+        "worker_secret_source": worker_secret_source,
     }
 
 
@@ -993,6 +1046,24 @@ def load_secrets() -> dict[str, str]:
         return {}
 
     return {str(key): str(value) for key, value in data.items()}
+
+
+def _resolve_worker_shared_secret(config: dict[str, Any]) -> tuple[str, str]:
+    env_value = str(os.getenv("BILL_CORE_WORKER_SHARED_SECRET") or "").strip()
+    if env_value:
+        return env_value, "env:BILL_CORE_WORKER_SHARED_SECRET"
+
+    config_value = str(config.get("worker_shared_secret") or "").strip()
+    if config_value:
+        return config_value, "config:worker_shared_secret"
+
+    secrets = load_secrets()
+    for key in ["BILL_CORE_WORKER_SHARED_SECRET", "worker_shared_secret"]:
+        secret_value = str(secrets.get(key) or "").strip()
+        if secret_value:
+            return secret_value, f"secrets.local.json:{key}"
+
+    return "", "missing"
 
 
 def resolve_secret_value(secret_name: str, secrets: dict[str, str]) -> str:
@@ -1828,6 +1899,7 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
             chrome_user_data_dir=str(chrome_user_data_dir),
             profile_directory=chrome_profile_directory,
             remote_debugging_port=remote_debugging_port,
+            worker_shared_secret=WORKER_SHARED_SECRET,
             on_browser_ready=_on_browser_ready,
         )
         browser_launch_succeeded = bool((session_result or {}).get("browser_launch_succeeded"))
@@ -2459,11 +2531,7 @@ def process_task(machine_uuid: str, task: dict, state: dict[str, Any], runtime_s
 
 
 def start_local_status_panel(machine_name: str, machine_uuid_getter: callable, runtime_state: RuntimeState) -> None:
-    # Embedded Tk status panel disabled for thread-safety: background task polling threads
-    # cannot safely manipulate Tk objects from a different thread, causing Tcl_AsyncDelete
-    # errors when the worker is polling during shutdown.
-    print("[worker-ui] Embedded Tk status panel disabled for thread-safety; use browser-based dashboards.")
-    return
+    print("[worker-ui] Launching embedded Tk status panel.")
 
     try:
         import tkinter as tk
@@ -3020,6 +3088,12 @@ if __name__ == "__main__":
         fatal_log_path = _write_fatal_startup_log(error, traceback_text)
         if fatal_log_path is not None:
             print(f"[worker] Fatal startup log written to: {fatal_log_path}", file=sys.stderr)
+
+        startup_error_log_path = _write_startup_error_log(error, traceback_text)
+        if startup_error_log_path is not None:
+            print(f"[worker] Startup error log written to: {startup_error_log_path}", file=sys.stderr)
+
+        _show_startup_error_message_box()
 
         if _is_windows_interactive_session():
             try:
