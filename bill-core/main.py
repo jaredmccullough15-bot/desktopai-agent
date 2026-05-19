@@ -6061,6 +6061,7 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
     ).rstrip("/")
     worker_api_base = _resolve_teach_session_worker_api_base(requested_api_base)
     target_machine_uuid = str(payload.target_machine_uuid or "").strip()
+    workflow_name = str(draft.get("workflow_name") or "Workflow")
 
     if payload.start_url.strip():
         start_url = payload.start_url.strip()
@@ -6069,10 +6070,37 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
     else:
         start_url = ""
 
+    # Pre-generate a stable session_id so both the session record and the task
+    # payload share the same id before the worker connects.
+    teach_session_id = str(uuid4())
+
+    _teaching_startup_sessions[teach_session_id] = {
+        "session_id": teach_session_id,
+        "task_id": None,
+        "draft_id": draft_id,
+        "workflow_name": workflow_name,
+        "target_machine_uuid": target_machine_uuid or None,
+        "status": "browser_opening",
+        "message": "",
+        "overlay_enabled": True,
+        "voice_prompt_text": f"Teaching mode is starting for {workflow_name}. Once the browser opens, walk me through the workflow.",
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+        "teaching_session": {
+            "session_id": teach_session_id,
+            "workflow_name": workflow_name,
+            "workflow_summary": None,
+            "status": "intro",
+            "steps": [],
+        },
+    }
+    logger.info("TEACH_SESSION_STARTED session_id=%s draft_id=%s auth=no", teach_session_id, draft_id)
+
     # ── Route to worker machine ──────────────────────────────────────────────
     if target_machine_uuid:
         with _workers_lock:
             if target_machine_uuid not in registered_workers:
+                del _teaching_startup_sessions[teach_session_id]
                 raise HTTPException(status_code=400, detail=f"Worker {target_machine_uuid} is not registered")
 
         task_payload: dict[str, Any] = {
@@ -6081,23 +6109,26 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
             "api_base": worker_api_base,
             "start_url": start_url,
             "target_machine_uuid": target_machine_uuid,
+            "session_id": teach_session_id,
         }
         logger.info(
-            "teach_session task payload prepared: draft_id=%s target_machine_uuid=%s api_base=%s start_url=%s requested_api_base=%s",
+            "teach_session task payload prepared: draft_id=%s target_machine_uuid=%s api_base=%s start_url=%s requested_api_base=%s session_id=%s",
             draft_id,
             target_machine_uuid,
             task_payload.get("api_base"),
             task_payload.get("start_url"),
             requested_api_base,
+            teach_session_id,
         )
         result = _create_task_record(task_payload)
+        _teaching_startup_sessions[teach_session_id]["task_id"] = result.id
         _record_operational_memory(
             "teach_session_queued",
             f"Teach session task queued for draft {draft_id} on worker {target_machine_uuid}",
-            details={"draft_id": draft_id, "task_id": result.id, "machine_uuid": target_machine_uuid},
+            details={"draft_id": draft_id, "task_id": result.id, "machine_uuid": target_machine_uuid, "session_id": teach_session_id},
             tags=["workflow_learning", "teach_session"],
         )
-        return {"status": "queued", "task_id": result.id, "draft_id": draft_id, "target_machine_uuid": target_machine_uuid}
+        return {"status": "queued", "task_id": result.id, "draft_id": draft_id, "session_id": teach_session_id, "target_machine_uuid": target_machine_uuid}
 
     # ── Legacy: spawn locally on the server ─────────────────────────────────
     script_path = os.path.join(
@@ -6122,7 +6153,7 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
             ),
         )
 
-    cmd = [sys.executable, script_path, "--draft-id", draft_id, "--api-base", local_api_base]
+    cmd = [sys.executable, script_path, "--draft-id", draft_id, "--api-base", local_api_base, "--session-id", teach_session_id]
     if start_url:
         cmd.extend(["--start-url", start_url])
     logger.info(
@@ -6159,7 +6190,14 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
             details={"draft_id": draft_id, "pid": proc.pid, "log_file": log_file_path},
             tags=["workflow_learning", "teach_session"],
         )
-        return {"status": "started", "pid": proc.pid, "draft_id": draft_id, "log_file": log_file_path}
+        _teaching_startup_sessions[teach_session_id]["task_id"] = f"local-pid-{proc.pid}"
+        _record_operational_memory(
+            "teach_session_started",
+            f"Playwright teach session started for draft {draft_id} (PID {proc.pid})",
+            details={"draft_id": draft_id, "pid": proc.pid, "log_file": log_file_path, "session_id": teach_session_id},
+            tags=["workflow_learning", "teach_session"],
+        )
+        return {"status": "started", "pid": proc.pid, "draft_id": draft_id, "session_id": teach_session_id, "log_file": log_file_path}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to launch teach session: {exc}") from exc
 

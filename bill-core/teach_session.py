@@ -15,7 +15,7 @@ active workflow learning draft via:
 Usage:
     python teach_session.py \
         --draft-id <DRAFT_ID> \
-        [--api-base http://127.0.0.1:8010] \
+        [--api-base http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com] \
         [--start-url https://example.com]
 
 Requirements (install into the same venv as bill-core):
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import sys
 import threading
@@ -54,7 +55,11 @@ except ImportError:
     sys.exit(1)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DEFAULT_API_BASE = "http://127.0.0.1:8010"
+DEFAULT_API_BASE = (
+    os.getenv("BILL_CORE_URL")
+    or os.getenv("JARVIS_CORE_URL")
+    or "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com"
+).rstrip("/")
 APPEND_TIMEOUT = 8  # HTTP timeout seconds
 EVENT_DEBOUNCE = 0.25  # Ignore exact-duplicate event types within this many seconds
 
@@ -646,7 +651,7 @@ def _extract_observation_prompt(result: dict[str, Any] | None) -> tuple[dict[str
 
 # ── Session runner ────────────────────────────────────────────────────────────
 
-def run_session(draft_id: str, api_base: str, start_url: str | None = None) -> None:
+def run_session(draft_id: str, api_base: str, start_url: str | None = None, session_id: str | None = None) -> None:
     sep = "=" * 62
     print(f"\n{sep}")
     print(f"  Bill Teach Mode — Observation Session")
@@ -878,10 +883,15 @@ def main() -> None:
         description="Bill Teach Mode — Playwright observation browser"
     )
     parser.add_argument("--draft-id", required=True, help="Workflow learning draft ID")
-    parser.add_argument("--api-base", default=DEFAULT_API_BASE, help="Bill Core API base URL")
+    parser.add_argument(
+        "--api-base",
+        default=DEFAULT_API_BASE,
+        help="Bill Core API base URL (production defaults to Beanstalk; use localhost only for local dev)",
+    )
     parser.add_argument("--start-url", default=None, help="Optional URL to open when the browser launches")
+    parser.add_argument("--session-id", default=None, help="Optional teaching session ID")
     args = parser.parse_args()
-    run_session(args.draft_id, args.api_base, args.start_url)
+    run_session(args.draft_id, args.api_base, args.start_url, args.session_id)
 
 
 if __name__ == "__main__":
