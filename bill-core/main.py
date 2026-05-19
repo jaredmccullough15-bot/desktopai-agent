@@ -8539,6 +8539,37 @@ def teaching_session_page_context(session_id: str, body: dict = Body(default={})
     )
 
 
+@app.get("/api/teaching/session/{session_id}/debug")
+def get_teaching_session_debug(session_id: str) -> dict:
+    """Diagnostic endpoint: returns raw session state for pre-deploy validation."""
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session") or {}
+    steps = list(ts.get("steps") or [])
+    observed_actions_count = sum(len(s.get("observed_actions") or []) for s in steps)
+    ctx = ts.get("page_context_snapshot") or {}
+    ctx_history = list(ts.get("page_context_history") or [])
+    return {
+        "session_id": session_id,
+        "status": record.get("status"),
+        "workflow_name": record.get("workflow_name"),
+        "draft_id": record.get("draft_id"),
+        "task_id": record.get("task_id"),
+        "has_page_context_snapshot": bool(ctx),
+        "page_context_url": ctx.get("url"),
+        "page_context_title": ctx.get("title"),
+        "page_context_button_count": len(ctx.get("visible_buttons") or []),
+        "page_context_input_count": len(ctx.get("visible_inputs") or []),
+        "page_context_history_count": len(ctx_history),
+        "step_count": len(steps),
+        "observed_actions_count": observed_actions_count,
+        "latest_copilot_notice": record.get("latest_copilot_notice"),
+        "latest_copilot_interpretation": record.get("latest_copilot_interpretation"),
+        "latest_copilot_question": record.get("latest_copilot_question"),
+    }
+
+
 @app.post("/api/bill/chat")
 def bill_chat(payload: dict = Body(default={})) -> dict:
     message = str(payload.get("message") or "").strip()
