@@ -15,7 +15,7 @@ active workflow learning draft via:
 Usage:
     python teach_session.py \
         --draft-id <DRAFT_ID> \
-        [--api-base http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com] \
+        [--api-base http://127.0.0.1:8010] \
         [--start-url https://example.com]
 
 Requirements (install into the same venv as bill-core):
@@ -58,25 +58,12 @@ except ImportError:
     sys.exit(1)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DEFAULT_API_BASE = (
-    os.getenv("BILL_CORE_URL")
-    or os.getenv("JARVIS_CORE_URL")
-    or "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com"
-).rstrip("/")
+DEFAULT_API_BASE = "http://127.0.0.1:8010"
 APPEND_TIMEOUT = 8  # HTTP timeout seconds
 EVENT_DEBOUNCE = 0.25  # Ignore exact-duplicate event types within this many seconds
 
-
-def _teaching_capture_headers(worker_shared_secret: str | None = None) -> dict[str, str]:
-    secret = (
-        worker_shared_secret
-        or os.getenv("BILL_WORKER_SHARED_SECRET")
-        or os.getenv("WORKER_SHARED_SECRET")
-        or ""
-    ).strip()
-    if not secret:
-        return {}
-    return {"X-Bill-Worker-Key": secret}
+TEACH_SESSION_VERSION = "2.1.0"
+print(f"TEACH_SESSION_VERSION context_capture_phase2=true version={TEACH_SESSION_VERSION}", flush=True)
 
 # ── Browser-side listener (injected via add_init_script on every page load) ───
 _LISTENER_JS = r"""
@@ -160,14 +147,9 @@ _LISTENER_JS = r"""
         var el = findInteractive(raw) || raw;
         var info = getInfo(el);
 
-        // Skip text-like inputs (captured on focusout/change instead), but keep
-        // submit/button controls so login clicks are not lost.
+        // Skip pure input fields (captured on blur instead)
         var t = info.tag;
-        if (t === 'textarea' || t === 'select') return;
-        if (t === 'input') {
-            var it = String(info.input_type || '').toLowerCase();
-            if (it !== 'submit' && it !== 'button' && it !== 'checkbox' && it !== 'radio') return;
-        }
+        if (t === 'input' || t === 'textarea' || t === 'select') return;
 
         emit({
             event_type: 'click',
@@ -179,12 +161,13 @@ _LISTENER_JS = r"""
     }, true);
 
     /* ── Text input (on blur = final value) ─────────────── */
-    document.addEventListener('focusout', function (e) {
+    document.addEventListener('blur', function (e) {
         var el = e.target;
         if (!el) return;
         var t = String(el.tagName || '').toLowerCase();
         if (t !== 'input' && t !== 'textarea') return;
         if (!el.value) return;
+        if (String(el.getAttribute('type') || '').toLowerCase() === 'password') return;
         var info = getInfo(el);
         emit({
             event_type: 'type_text',
@@ -196,36 +179,21 @@ _LISTENER_JS = r"""
         });
     }, true);
 
-    // Some UIs and autofill flows update values without a blur that bubbles
-    // reliably through app layers; capture change as a fallback.
+    /* ── Select / dropdown ──────────────────────────────── */
     document.addEventListener('change', function (e) {
         var el = e.target;
-        if (!el) return;
-        var t = String(el.tagName || '').toLowerCase();
-        if (t !== 'input' && t !== 'textarea' && t !== 'select') return;
+        if (!el || String(el.tagName || '').toLowerCase() !== 'select') return;
         var info = getInfo(el);
-        if (t === 'select') {
-            var selectedText = (el.options && el.selectedIndex >= 0)
-                ? el.options[el.selectedIndex].text : '';
-            emit({
-                event_type:  'select_option',
-                selector:    buildSelector(info),
-                value:       el.value,
-                option_text: selectedText,
-                element:     info,
-                url:         window.location.href,
-                ts:          Date.now(),
-            });
-            return;
-        }
-        if (!el.value) return;
+        var selectedText = (el.options && el.selectedIndex >= 0)
+            ? el.options[el.selectedIndex].text : '';
         emit({
-            event_type: 'type_text',
-            selector:   buildSelector(info),
-            value:      el.value,
-            element:    info,
-            url:        window.location.href,
-            ts:         Date.now(),
+            event_type:  'select_option',
+            selector:    buildSelector(info),
+            value:       el.value,
+            option_text: selectedText,
+            element:     info,
+            url:         window.location.href,
+            ts:          Date.now(),
         });
     }, true);
 
@@ -241,20 +209,6 @@ _LISTENER_JS = r"""
             ts: Date.now(),
         });
     }, true);
-
-    function emitNavigation(reason) {
-        emit({
-            event_type: 'navigate',
-            selector: null,
-            element: { tag: 'document', text: reason || 'navigation' },
-            url: window.location.href,
-            ts: Date.now(),
-        });
-    }
-
-    window.addEventListener('hashchange', function () { emitNavigation('hashchange'); }, true);
-    window.addEventListener('popstate', function () { emitNavigation('popstate'); }, true);
-    window.addEventListener('pageshow', function () { emitNavigation('pageshow'); }, true);
 
     function ensureQuestionPanel() {
         if (window.__billObservationPanel) { return window.__billObservationPanel; }
@@ -545,6 +499,7 @@ _LISTENER_JS = r"""
     }
 
     emit({event_type: '_attached', url: window.location.href});
+    console.log('BILL_TEACH_CAPTURE_READY url=' + window.location.href);
 }());
 """
 
@@ -691,118 +646,52 @@ def _event_to_browser_action(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _post_teaching_action(
-    api_base: str,
-    session_id: str,
-    draft_id: str,
-    action_payload: dict[str, Any],
-    auth_headers: dict[str, str] | None = None,
-) -> bool:
+def _teaching_capture_headers(worker_shared_secret: str = "") -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if worker_shared_secret:
+        headers["X-Bill-Worker-Key"] = worker_shared_secret
+    return headers
+
+
+def _post_teaching_action(api_base: str, session_id: str, action_payload: dict[str, Any], worker_shared_secret: str = "") -> bool:
     if not session_id:
-        print(
-            "TEACH_CAPTURE_POST_FAILED session_id_present=false "
-            f"draft_id_present={bool(draft_id)} event_type={action_payload.get('type') or ''} "
-            f"url={action_payload.get('url') or ''} label={str(action_payload.get('label') or '')[:120]} "
-            "status_code=0",
-            file=sys.stderr,
-        )
+        print("  TEACH_CAPTURE_POST_FAILED reason=missing_session_id", flush=True)
         return False
     endpoint = f"{api_base.rstrip('/')}/api/teaching/session/{session_id}/actions"
-    print(
-        "TEACH_CAPTURE_POST_ATTEMPT "
-        f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
-        f"event_type={action_payload.get('type') or ''} url={action_payload.get('url') or ''} "
-        f"label={str(action_payload.get('label') or '')[:120]} endpoint={endpoint}",
-    )
+    headers = _teaching_capture_headers(worker_shared_secret)
+    action_type = action_payload.get('type', '?')
+    action_label = str(action_payload.get('label') or action_payload.get('url') or '')[:60]
+    print(f"  TEACH_CAPTURE_POST_ATTEMPT endpoint={endpoint} type={action_type} label={action_label}", flush=True)
     try:
-        resp = requests.post(
-            endpoint,
-            json={"action": action_payload},
-            headers=(auth_headers or None),
-            timeout=APPEND_TIMEOUT,
-        )
+        resp = requests.post(endpoint, json={"action": action_payload}, headers=headers, timeout=APPEND_TIMEOUT)
         if resp.status_code == 200:
-            print(
-                "TEACH_CAPTURE_POST_SUCCESS "
-                f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
-                f"event_type={action_payload.get('type') or ''} url={action_payload.get('url') or ''} "
-                f"label={str(action_payload.get('label') or '')[:120]} status_code={resp.status_code}",
-            )
+            print(f"  TEACH_CAPTURE_POST_SUCCESS endpoint={endpoint} type={action_type}", flush=True)
             return True
-        print(
-            "TEACH_CAPTURE_POST_FAILED "
-            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
-            f"event_type={action_payload.get('type') or ''} url={action_payload.get('url') or ''} "
-            f"label={str(action_payload.get('label') or '')[:120]} status_code={resp.status_code}",
-            file=sys.stderr,
-        )
-        print(f"  [teach] Action capture failed ({resp.status_code}): {resp.text[:120]}", file=sys.stderr)
+        print(f"  TEACH_CAPTURE_POST_FAILED status={resp.status_code} body={resp.text[:120]}", flush=True)
     except Exception as exc:
-        print(
-            "TEACH_CAPTURE_POST_FAILED "
-            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
-            f"event_type={action_payload.get('type') or ''} url={action_payload.get('url') or ''} "
-            f"label={str(action_payload.get('label') or '')[:120]} status_code=0 error={exc}",
-            file=sys.stderr,
-        )
-        print(f"  [teach] Action capture HTTP error: {exc}", file=sys.stderr)
+        print(f"  TEACH_CAPTURE_POST_FAILED error={exc}", flush=True)
     return False
 
 
-def _post_teaching_context(
-    api_base: str,
-    session_id: str,
-    draft_id: str,
-    context_payload: dict[str, Any],
-    auth_headers: dict[str, str] | None = None,
-) -> tuple[bool, str | None]:
+def _post_teaching_context(api_base: str, session_id: str, context_payload: dict[str, Any], worker_shared_secret: str = "") -> tuple[bool, str | None]:
     if not session_id:
-        print(
-            "TEACH_CAPTURE_POST_FAILED session_id_present=false "
-            f"draft_id_present={bool(draft_id)} event_type=context "
-            f"url={context_payload.get('url') or ''} label={str(context_payload.get('reason') or '')[:120]} "
-            "status_code=0",
-            file=sys.stderr,
-        )
+        print("  TEACH_CAPTURE_POST_FAILED reason=missing_session_id endpoint=context", flush=True)
         return False, "missing session_id"
     endpoint = f"{api_base.rstrip('/')}/api/teaching/session/{session_id}/context"
-    print(
-        "TEACH_CAPTURE_POST_ATTEMPT "
-        f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
-        f"event_type=context url={context_payload.get('url') or ''} "
-        f"label={str(context_payload.get('reason') or '')[:120]} endpoint={endpoint}",
-    )
+    headers = _teaching_capture_headers(worker_shared_secret)
+    reason = str(context_payload.get('reason') or '')[:40]
+    url = str(context_payload.get('url') or '')[:80]
+    print(f"  TEACH_CAPTURE_POST_ATTEMPT endpoint={endpoint} reason={reason} url={url}", flush=True)
     try:
-        resp = requests.post(
-            endpoint,
-            json=context_payload,
-            headers=(auth_headers or None),
-            timeout=APPEND_TIMEOUT,
-        )
+        resp = requests.post(endpoint, json=context_payload, headers=headers, timeout=APPEND_TIMEOUT)
         if resp.status_code == 200:
-            print(
-                "TEACH_CAPTURE_POST_SUCCESS "
-                f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
-                f"event_type=context url={context_payload.get('url') or ''} "
-                f"label={str(context_payload.get('reason') or '')[:120]} status_code={resp.status_code}",
-            )
+            print(f"  TEACH_CAPTURE_POST_SUCCESS endpoint={endpoint} reason={reason}", flush=True)
             return True, None
-        print(
-            "TEACH_CAPTURE_POST_FAILED "
-            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
-            f"event_type=context url={context_payload.get('url') or ''} "
-            f"label={str(context_payload.get('reason') or '')[:120]} status_code={resp.status_code}",
-            file=sys.stderr,
-        )
-        return False, f"HTTP {resp.status_code}: {resp.text[:120]}"
+        err = f"HTTP {resp.status_code}: {resp.text[:120]}"
+        print(f"  TEACH_CAPTURE_POST_FAILED status={resp.status_code} body={resp.text[:80]}", flush=True)
+        return False, err
     except Exception as exc:
-        print(
-            "TEACH_CAPTURE_POST_FAILED "
-            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
-            f"event_type=context url={context_payload.get('url') or ''} "
-            f"label={str(context_payload.get('reason') or '')[:120]} status_code=0 error={exc}",
-            file=sys.stderr,
-        )
+        print(f"  TEACH_CAPTURE_POST_FAILED error={exc}", flush=True)
         return False, str(exc)
 
 
@@ -965,6 +854,7 @@ def _build_page_context_snapshot(page: Any, reason: str, recent_clicked: dict | 
             }
         )
 
+    print(f"  TEACH_CONTEXT_SNAPSHOT_BUILT url={_clip_text(raw.get('url') or '', 60)} reason={_clip_text(reason, 30)}", flush=True)
     snapshot = {
         "url": _clip_text(raw.get("url") or ""),
         "title": _clip_text(raw.get("title") or ""),
@@ -1073,7 +963,7 @@ def run_session(
     chrome_user_data_dir: str | None = None,
     profile_directory: str = "Default",
     remote_debugging_port: int = 9222,
-    worker_shared_secret: str | None = None,
+    worker_shared_secret: str = "",
     on_browser_ready: "Callable[[], None] | None" = None,
 ) -> dict[str, Any]:
     sep = "=" * 62
@@ -1089,6 +979,7 @@ def run_session(
     print(f"  Clicks, text entry, and navigation are captured automatically.")
     print(f"  Password fields are never recorded.")
     print(f"  Close the browser window when finished.\n")
+    print(f"TEACH_SESSION_STARTED session_id={session_id or 'MISSING'} draft_id={draft_id} workflow_api={api_base} auth={'yes' if worker_shared_secret else 'no'}", flush=True)
 
     last_event_ts: dict[str, float] = {}
     last_url: list[str] = [""]
@@ -1104,7 +995,6 @@ def run_session(
     )
     browser_launch_succeeded = False
     observation_settings = _load_observation_settings(api_base)
-    capture_auth_headers = _teaching_capture_headers(worker_shared_secret)
 
     # ── Background thread drains HTTP posts so Playwright's event
     #    loop is never blocked by a slow/failed HTTP request. ──────
@@ -1124,21 +1014,9 @@ def run_session(
                     ui_queue.put({"type": "apply_settings", "settings": result})
                     print(f"  [obs ] {result.get('status', 'saved')} -> prompt {item.get('data', {}).get('prompt_id', '?')}")
             elif kind == "teaching_action":
-                _post_teaching_action(
-                    api_base,
-                    str(session_id or ""),
-                    draft_id,
-                    dict(item.get("data") or {}),
-                    auth_headers=capture_auth_headers,
-                )
+                _post_teaching_action(api_base, str(session_id or ""), dict(item.get("data") or {}), worker_shared_secret)
             elif kind == "context":
-                ok, err = _post_teaching_context(
-                    api_base,
-                    str(session_id or ""),
-                    draft_id,
-                    dict(item.get("data") or {}),
-                    auth_headers=capture_auth_headers,
-                )
+                ok, err = _post_teaching_context(api_base, str(session_id or ""), dict(item.get("data") or {}), worker_shared_secret)
                 if not ok:
                     ui_queue.put(
                         {
@@ -1227,19 +1105,8 @@ def run_session(
             return
         last_event_ts[et] = now
         element = event.get("element") or {}
-        safe_label = _clip_text(
-            element.get("text")
-            or element.get("aria_label")
-            or element.get("name")
-            or event.get("selector")
-            or "",
-            max_len=120,
-        )
-        print(
-            "TEACH_CAPTURE_EVENT "
-            f"session_id_present={bool(session_id)} draft_id_present={bool(draft_id)} "
-            f"event_type={et} url={event.get('url') or ''} label={safe_label}"
-        )
+        lbl = _label(element)
+        print(f"  TEACH_CAPTURE_EVENT type={et} label={lbl[:60]} url={str(event.get('url') or '')[:60]}", flush=True)
         if et == "click":
             recent_clicked_element = {
                 "text": _clip_text(element.get("text") or element.get("aria_label") or element.get("name") or ""),
@@ -1270,7 +1137,19 @@ def run_session(
         _capture_context(reason="navigation", page_changed=True)
 
     def attach_page(p: Any) -> None:
-        p.on("framenavigated", lambda frame: on_navigate(frame.url) if frame == p.main_frame else None)
+        def _on_framenavigated(frame: Any) -> None:
+            if frame != p.main_frame:
+                return
+            on_navigate(frame.url)
+            # Re-inject listener after navigation so hash-route SPAs get listeners
+            # even if add_init_script hasn't fired yet for this navigation.
+            try:
+                frame.evaluate(_LISTENER_JS)
+                print(f"  TEACH_CAPTURE_INJECTION_INSTALLED url={frame.url} reason=framenavigated", flush=True)
+            except Exception:
+                pass
+
+        p.on("framenavigated", _on_framenavigated)
 
     def _drain_frames() -> None:
         """Poll every frame in every open page and drain their window.__billEvents.
@@ -1390,6 +1269,16 @@ def run_session(
         context.add_init_script(f"window.__billTeachApiBase = {json.dumps(api_base.rstrip('/'))};")
         context.add_init_script(_LISTENER_JS)
 
+        # ── Explicitly inject JS listener on pages already open at connect time.
+        # add_init_script only fires on FUTURE navigations; existing pages are skipped.
+        for _existing_page in list(context.pages):
+            if not _existing_page.is_closed():
+                try:
+                    _existing_page.evaluate(_LISTENER_JS)
+                    print(f"  TEACH_CAPTURE_INJECTION_INSTALLED url={_existing_page.url}", flush=True)
+                except Exception as _inj_exc:
+                    print(f"  [teach] existing page injection error: {_inj_exc}", file=sys.stderr)
+
         page = context.pages[0] if context.pages else context.new_page()
         browser_launch_succeeded = True
         print("  [teach] browser launch succeeded: True")
@@ -1404,6 +1293,13 @@ def run_session(
         def on_new_page(new_page: Any) -> None:
             """Attach listeners to pages opened by the workflow (new tabs etc.)."""
             try:
+                # Also explicitly inject JS on new pages in case add_init_script
+                # hasn't fired yet for this page.
+                try:
+                    new_page.evaluate(_LISTENER_JS)
+                    print(f"  TEACH_CAPTURE_INJECTION_INSTALLED url={new_page.url}", flush=True)
+                except Exception:
+                    pass
                 attach_page(new_page)
             except Exception:
                 pass
@@ -1413,6 +1309,12 @@ def run_session(
         if start_url:
             try:
                 page.goto(start_url, wait_until="domcontentloaded", timeout=30_000)
+                # Re-inject after navigation (add_init_script fires on load, but explicit injection ensures it)
+                try:
+                    page.evaluate(_LISTENER_JS)
+                    print(f"  TEACH_CAPTURE_INJECTION_INSTALLED url={page.url} reason=start_url_nav", flush=True)
+                except Exception:
+                    pass
                 _capture_context(reason="page_load", page_changed=True)
             except Exception as exc:
                 print(f"  [teach] Could not load start URL: {exc}", file=sys.stderr)
@@ -1457,14 +1359,9 @@ def main() -> None:
         description="Bill Teach Mode — Playwright observation browser"
     )
     parser.add_argument("--draft-id", required=True, help="Workflow learning draft ID")
-    parser.add_argument(
-        "--api-base",
-        default=DEFAULT_API_BASE,
-        help="Bill Core API base URL (production defaults to Beanstalk; use localhost only for local dev)",
-    )
+    parser.add_argument("--session-id", default=None, help="Optional teaching session ID")
+    parser.add_argument("--api-base", default=DEFAULT_API_BASE, help="Bill Core API base URL")
     parser.add_argument("--start-url", default=None, help="Optional URL to open when the browser launches")
-    parser.add_argument("--session-id", default=None, help="Teaching session id for /api/teaching/session callbacks")
-    parser.add_argument("--worker-shared-secret", default=None, help="X-Bill-Worker-Key value for worker-auth callbacks")
     parser.add_argument("--chrome-user-data-dir", default=None, help="Chrome --user-data-dir path")
     parser.add_argument("--profile-directory", default="Default", help="Chrome --profile-directory value")
     parser.add_argument("--remote-debugging-port", type=int, default=9222, help="Chrome remote debugging port")
@@ -1477,7 +1374,6 @@ def main() -> None:
         chrome_user_data_dir=args.chrome_user_data_dir,
         profile_directory=args.profile_directory,
         remote_debugging_port=args.remote_debugging_port,
-        worker_shared_secret=args.worker_shared_secret,
     )
 
 
