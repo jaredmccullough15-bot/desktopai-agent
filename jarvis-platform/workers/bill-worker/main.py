@@ -1905,6 +1905,19 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
         browser_launch_succeeded = bool((session_result or {}).get("browser_launch_succeeded"))
         log_info(f"[worker] teach_session browser launch succeeded={browser_launch_succeeded}")
 
+        if teach_session_id and bool((session_result or {}).get("tab_mismatch_detected")):
+            mismatch_message = str(
+                (session_result or {}).get("tab_mismatch_message")
+                or "Bill is not attached to the page you are using. Use the browser window Bill opened."
+            )
+            _post_teaching_session_status(
+                api_base=api_base,
+                session_id=teach_session_id,
+                task_id=str(payload.get("task_id") or ""),
+                status="active",
+                message=mismatch_message,
+            )
+
         # ── If browser never became ready, post failure now ───────────────────
         if teach_session_id and not active_callback_sent[0]:
             _post_teaching_session_status(

@@ -34,7 +34,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -72,6 +72,36 @@ _LISTENER_JS = r"""
     // we only ever attach ONE set of listeners even if the script re-runs.
     if (window.__billListenersAttached) { return; }
     window.__billListenersAttached = true;
+    window.__BILL_TEACH_CAPTURE_READY = true;
+
+    function ensureCaptureBadge() {
+        try {
+            if (!document.body) { return; }
+            var badge = document.getElementById('bill-teach-capture-badge');
+            if (!badge) {
+                badge = document.createElement('div');
+                badge.id = 'bill-teach-capture-badge';
+                badge.style.position = 'fixed';
+                badge.style.left = '12px';
+                badge.style.bottom = '12px';
+                badge.style.zIndex = '2147483647';
+                badge.style.padding = '6px 10px';
+                badge.style.borderRadius = '999px';
+                badge.style.background = 'rgba(16,185,129,0.95)';
+                badge.style.color = '#052e1c';
+                badge.style.border = '1px solid rgba(5,150,105,0.65)';
+                badge.style.font = '600 12px Segoe UI, Arial, sans-serif';
+                badge.style.boxShadow = '0 6px 18px rgba(5,150,105,0.35)';
+                badge.textContent = 'Bill is watching this page';
+                document.body.appendChild(badge);
+            }
+            badge.style.display = 'block';
+        } catch (err) {
+            // Non-fatal UI hint only.
+        }
+    }
+
+    ensureCaptureBadge();
 
     // Push events into a per-frame JS queue.  Python drains it via
     // frame.evaluate() on a 200 ms polling loop — no console.log used,
@@ -213,6 +243,7 @@ _LISTENER_JS = r"""
     function ensureQuestionPanel() {
         if (window.__billObservationPanel) { return window.__billObservationPanel; }
         if (!document.body) { return null; }
+        ensureCaptureBadge();
 
         var panel = document.createElement('div');
         panel.id = 'bill-observation-panel';
@@ -646,14 +677,19 @@ def _event_to_browser_action(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _teaching_capture_headers(worker_shared_secret: str = "") -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if worker_shared_secret:
+        headers["X-Bill-Worker-Key"] = worker_shared_secret
+    return headers
+
+
 def _post_teaching_action(api_base: str, session_id: str, action_payload: dict[str, Any], worker_shared_secret: str = "") -> bool:
     if not session_id:
         print("  TEACH_CAPTURE_POST_FAILED reason=missing_session_id", flush=True)
         return False
     endpoint = f"{api_base.rstrip('/')}/api/teaching/session/{session_id}/actions"
-    headers: dict[str, str] = {}
-    if worker_shared_secret:
-        headers["X-Bill-Worker-Key"] = worker_shared_secret
+    headers = _teaching_capture_headers(worker_shared_secret)
     action_type = action_payload.get('type', '?')
     action_label = str(action_payload.get('label') or action_payload.get('url') or '')[:60]
     print(f"  TEACH_CAPTURE_POST_ATTEMPT endpoint={endpoint} type={action_type} label={action_label}", flush=True)
@@ -673,9 +709,7 @@ def _post_teaching_context(api_base: str, session_id: str, context_payload: dict
         print("  TEACH_CAPTURE_POST_FAILED reason=missing_session_id endpoint=context", flush=True)
         return False, "missing session_id"
     endpoint = f"{api_base.rstrip('/')}/api/teaching/session/{session_id}/context"
-    headers: dict[str, str] = {}
-    if worker_shared_secret:
-        headers["X-Bill-Worker-Key"] = worker_shared_secret
+    headers = _teaching_capture_headers(worker_shared_secret)
     reason = str(context_payload.get('reason') or '')[:40]
     url = str(context_payload.get('url') or '')[:80]
     print(f"  TEACH_CAPTURE_POST_ATTEMPT endpoint={endpoint} reason={reason} url={url}", flush=True)
@@ -950,6 +984,52 @@ def _wait_for_debug_chrome(port: int, timeout_seconds: float = 12.0) -> bool:
     return False
 
 
+def _read_debug_endpoint_json(port: int, path: str) -> Any:
+    try:
+        response = requests.get(f"http://127.0.0.1:{port}{path}", timeout=2.0)
+        if not response.ok:
+            return None
+        return response.json()
+    except Exception:
+        return None
+
+
+def _list_debug_pages(port: int) -> list[dict[str, Any]]:
+    payload = _read_debug_endpoint_json(port, "/json/list")
+    if not isinstance(payload, list):
+        return []
+    pages: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").lower() != "page":
+            continue
+        pages.append(item)
+    return pages
+
+
+def _pick_target_page_id(pages: list[dict[str, Any]], preferred_url: str) -> tuple[str | None, str | None]:
+    preferred = (preferred_url or "").strip().lower()
+    if preferred:
+        for item in pages:
+            url = str(item.get("url") or "")
+            if url.lower() == preferred:
+                return str(item.get("id") or "") or None, url
+    if preferred:
+        for item in pages:
+            url = str(item.get("url") or "")
+            if preferred in url.lower():
+                return str(item.get("id") or "") or None, url
+    for item in pages:
+        url = str(item.get("url") or "")
+        if url and not url.startswith(("chrome://", "devtools://", "about:blank")):
+            return str(item.get("id") or "") or None, url
+    if pages:
+        first = pages[0]
+        return str(first.get("id") or "") or None, str(first.get("url") or "") or None
+    return None, None
+
+
 # ── Session runner ────────────────────────────────────────────────────────────
 
 def run_session(
@@ -991,6 +1071,16 @@ def run_session(
         f"--profile-directory={profile_directory} --start-maximized"
     )
     browser_launch_succeeded = False
+    browser_mode = "cdp_attach"
+    browser_controlled = False
+    debug_port_active = False
+    debug_page_count = 0
+    active_url = ""
+    target_page_id: str | None = None
+    capture_ready_last = False
+    tab_mismatch_detected = False
+    tab_mismatch_message = ""
+    start_host = (urlparse(start_url).netloc.lower() if start_url else "")
     observation_settings = _load_observation_settings(api_base)
 
     # ── Background thread drains HTTP posts so Playwright's event
@@ -1076,6 +1166,50 @@ def run_session(
             return
         _enqueue_context(snapshot)
 
+    def _log_capture_ready_check(target_page: Any, reason: str) -> bool:
+        try:
+            ready = bool(target_page.evaluate("() => Boolean(window.__BILL_TEACH_CAPTURE_READY)"))
+            print(
+                f"TEACH_CAPTURE_READY_CHECK ready={'true' if ready else 'false'} "
+                f"url={str(target_page.url or '')[:120]} reason={reason}",
+                flush=True,
+            )
+            return ready
+        except Exception as exc:
+            print(
+                f"TEACH_CAPTURE_READY_CHECK ready=false url={str(getattr(target_page, 'url', '') or '')[:120]} "
+                f"reason={reason} error={exc}",
+                flush=True,
+            )
+            return False
+
+    def _evaluate_tab_attachment(reason: str) -> None:
+        nonlocal tab_mismatch_detected, tab_mismatch_message, active_url
+        if not start_host:
+            return
+        urls: list[str] = []
+        for p in context.pages:
+            if p.is_closed():
+                continue
+            page_url = str(p.url or "")
+            if page_url:
+                urls.append(page_url)
+        if not urls:
+            return
+        active_url = urls[0]
+        host_match = any(urlparse(u).netloc.lower() == start_host for u in urls if u)
+        if host_match:
+            return
+        tab_mismatch_detected = True
+        tab_mismatch_message = (
+            "Bill is not attached to the page you are using. Use the browser window Bill opened."
+        )
+        print(
+            f"TEACH_BROWSER_TAB_MISMATCH expected_host={start_host} "
+            f"seen_urls={' | '.join(urls[:4])} reason={reason}",
+            flush=True,
+        )
+
     def record(event: dict[str, Any]) -> None:
         nonlocal recent_clicked_element, recent_typed_field
         et = event.get("event_type", "")
@@ -1143,6 +1277,7 @@ def run_session(
             try:
                 frame.evaluate(_LISTENER_JS)
                 print(f"  TEACH_CAPTURE_INJECTION_INSTALLED url={frame.url} reason=framenavigated", flush=True)
+                _log_capture_ready_check(p, reason="framenavigated")
             except Exception:
                 pass
 
@@ -1236,6 +1371,9 @@ def run_session(
                     pass
 
     with sync_playwright() as pw:
+        print(f"TEACH_BROWSER_MODE={browser_mode}", flush=True)
+        print("TEACH_BROWSER_CONTROLLED=false", flush=True)
+        print(f"TEACH_BROWSER_DEBUG_PORT={remote_debugging_port}", flush=True)
         print(f"  [teach] final Chrome launch command: {launch_command}")
         try:
             user_data_dir.mkdir(parents=True, exist_ok=True)
@@ -1257,8 +1395,22 @@ def run_session(
             if not _wait_for_debug_chrome(remote_debugging_port):
                 raise RuntimeError(f"Chrome debug endpoint unavailable on 127.0.0.1:{remote_debugging_port}")
 
+            debug_port_active = _is_debug_chrome_ready(remote_debugging_port)
+            debug_version = _read_debug_endpoint_json(remote_debugging_port, "/json/version")
+            debug_list_payload = _read_debug_endpoint_json(remote_debugging_port, "/json/list")
+            debug_pages = _list_debug_pages(remote_debugging_port)
+            debug_page_count = len(debug_pages)
+            target_page_id, debug_target_url = _pick_target_page_id(debug_pages, start_url or "")
+            active_url = str(debug_target_url or "")
+            print(f"TEACH_BROWSER_DEBUG_VERSION_OK={'true' if isinstance(debug_version, dict) else 'false'}", flush=True)
+            print(f"TEACH_BROWSER_DEBUG_LIST_OK={'true' if isinstance(debug_list_payload, list) else 'false'}", flush=True)
+            print(f"TEACH_BROWSER_PAGE_COUNT={debug_page_count}", flush=True)
+            print(f"TEACH_BROWSER_ACTIVE_URL={active_url}", flush=True)
+            print(f"TEACH_BROWSER_TARGET_PAGE_ID={target_page_id or ''}", flush=True)
+
             browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{remote_debugging_port}")
         except Exception as exc:
+            print("TEACH_BROWSER_CONTROLLED=false", flush=True)
             print(f"  [teach] browser launch succeeded: False ({exc})", file=sys.stderr)
             raise RuntimeError(f"Unable to launch Chromium for teach session: {exc}") from exc
 
@@ -1278,6 +1430,18 @@ def run_session(
 
         page = context.pages[0] if context.pages else context.new_page()
         browser_launch_succeeded = True
+        browser_controlled = True
+        debug_page_count = len([p for p in context.pages if not p.is_closed()])
+        active_url = str(page.url or active_url or "")
+        if not target_page_id:
+            current_pages = _list_debug_pages(remote_debugging_port)
+            target_page_id, resolved_url = _pick_target_page_id(current_pages, active_url)
+            if resolved_url:
+                active_url = resolved_url
+        print("TEACH_BROWSER_CONTROLLED=true", flush=True)
+        print(f"TEACH_BROWSER_PAGE_COUNT={debug_page_count}", flush=True)
+        print(f"TEACH_BROWSER_ACTIVE_URL={active_url}", flush=True)
+        print(f"TEACH_BROWSER_TARGET_PAGE_ID={target_page_id or ''}", flush=True)
         print("  [teach] browser launch succeeded: True")
         if on_browser_ready is not None:
             try:
@@ -1285,6 +1449,7 @@ def run_session(
             except Exception as _cb_exc:
                 print(f"  [teach] on_browser_ready callback error (non-fatal): {_cb_exc}", file=sys.stderr)
         attach_page(page)
+        capture_ready_last = _log_capture_ready_check(page, reason="startup")
         _apply_observation_settings_to_pages(observation_settings)
 
         def on_new_page(new_page: Any) -> None:
@@ -1297,6 +1462,7 @@ def run_session(
                     print(f"  TEACH_CAPTURE_INJECTION_INSTALLED url={new_page.url}", flush=True)
                 except Exception:
                     pass
+                _log_capture_ready_check(new_page, reason="new_page")
                 attach_page(new_page)
             except Exception:
                 pass
@@ -1312,16 +1478,21 @@ def run_session(
                     print(f"  TEACH_CAPTURE_INJECTION_INSTALLED url={page.url} reason=start_url_nav", flush=True)
                 except Exception:
                     pass
+                capture_ready_last = _log_capture_ready_check(page, reason="start_url_nav")
+                _evaluate_tab_attachment(reason="start_url_nav")
                 _capture_context(reason="page_load", page_changed=True)
             except Exception as exc:
                 print(f"  [teach] Could not load start URL: {exc}", file=sys.stderr)
         else:
+            capture_ready_last = _log_capture_ready_check(page, reason="initial_page")
+            _evaluate_tab_attachment(reason="initial_page")
             _capture_context(reason="page_load", page_changed=True)
 
         try:
             while browser.is_connected():
                 _drain_frames()
                 _drain_ui_updates()
+                _evaluate_tab_attachment(reason="runtime_poll")
                 time.sleep(0.2)
         except KeyboardInterrupt:
             print("\n  [teach] Interrupted.")
@@ -1346,6 +1517,16 @@ def run_session(
         "final_chrome_launch_command": launch_command,
         "browser_launch_succeeded": browser_launch_succeeded,
         "steps_captured": total,
+        "teach_browser_mode": browser_mode,
+        "teach_browser_controlled": browser_controlled,
+        "teach_browser_debug_port": remote_debugging_port,
+        "teach_browser_remote_debugging_active": debug_port_active,
+        "teach_browser_page_count": debug_page_count,
+        "teach_browser_active_url": active_url,
+        "teach_browser_target_page_id": target_page_id,
+        "capture_listener_ready": capture_ready_last,
+        "tab_mismatch_detected": tab_mismatch_detected,
+        "tab_mismatch_message": tab_mismatch_message,
     }
 
 
@@ -1356,6 +1537,7 @@ def main() -> None:
         description="Bill Teach Mode — Playwright observation browser"
     )
     parser.add_argument("--draft-id", required=True, help="Workflow learning draft ID")
+    parser.add_argument("--session-id", default=None, help="Optional teaching session ID")
     parser.add_argument("--api-base", default=DEFAULT_API_BASE, help="Bill Core API base URL")
     parser.add_argument("--start-url", default=None, help="Optional URL to open when the browser launches")
     parser.add_argument("--chrome-user-data-dir", default=None, help="Chrome --user-data-dir path")
@@ -1366,6 +1548,7 @@ def main() -> None:
         args.draft_id,
         args.api_base,
         args.start_url,
+        session_id=args.session_id,
         chrome_user_data_dir=args.chrome_user_data_dir,
         profile_directory=args.profile_directory,
         remote_debugging_port=args.remote_debugging_port,
