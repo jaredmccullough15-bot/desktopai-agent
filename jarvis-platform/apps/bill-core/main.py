@@ -7861,7 +7861,14 @@ def approve_teaching_session(session_id: str) -> TeachingSessionReviewResponse:
 @app.post("/api/teaching/session/{session_id}/actions", response_model=TeachingSessionMessageResponse)
 def teaching_session_record_action(session_id: str, body: TeachingSessionActionRequest) -> TeachingSessionMessageResponse:
     if session_id not in _teaching_startup_sessions:
-        raise HTTPException(status_code=404, detail="Teaching session not found")
+        logger.error(
+            "event=teaching_capture_session_not_found session_id=%s endpoint=actions",
+            session_id,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail={"detail": "Teaching session not found", "session_id": session_id},
+        )
     record = _teaching_startup_sessions[session_id]
     ts = record.get("teaching_session")
     if not ts:

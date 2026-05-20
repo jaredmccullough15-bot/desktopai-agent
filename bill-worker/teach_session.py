@@ -261,7 +261,8 @@ _LISTENER_JS = r"""
         panel.style.fontFamily = 'Segoe UI, Arial, sans-serif';
         panel.style.display = 'block';
         panel.style.overflow = 'hidden';
-        panel.innerHTML = [
+        try {
+          panel.innerHTML = [
             '<div style="padding:12px 14px;border-bottom:1px solid rgba(148,163,184,0.2);display:flex;justify-content:space-between;align-items:center;gap:8px;">',
             '  <div>',
             '    <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#93c5fd;">Bill Observation</div>',
@@ -293,7 +294,24 @@ _LISTENER_JS = r"""
             '  </div>',
             '  <div id="bill-observation-status" style="font-size:12px;color:#93c5fd;min-height:18px;"></div>',
             '</div>'
-        ].join('');
+          ].join('');
+        } catch (_cspErr) {
+            // Trusted Types or other CSP policy blocked innerHTML assignment.
+            // Emit signal so Python can log TEACH_BADGE_INJECTION_SKIPPED.
+            emit({event_type: '_badge_injection_skipped', reason: 'trusted_types_or_csp', url: window.location.href});
+            // Provide a minimal text-only fallback panel so capture keeps working.
+            panel.textContent = 'Bill is watching';
+            panel.style.padding = '10px 14px';
+            panel.style.fontSize = '13px';
+            document.body.appendChild(panel);
+            window.__billObservationPanel = {
+                showPrompt: function() {},
+                applySettings: function() {},
+                hide: function() { panel.style.display = 'none'; }
+            };
+            return window.__billObservationPanel;
+        }
+        // innerHTML succeeded — proceed with full DOM build.
         document.body.appendChild(panel);
 
         var state = {
@@ -698,6 +716,8 @@ def _post_teaching_action(api_base: str, session_id: str, action_payload: dict[s
         if resp.status_code == 200:
             print(f"  TEACH_CAPTURE_POST_SUCCESS endpoint={endpoint} type={action_type}", flush=True)
             return True
+        if resp.status_code == 404:
+            print(f"  TEACH_CAPTURE_SESSION_NOT_FOUND session_id={session_id} endpoint={endpoint}", flush=True)
         print(f"  TEACH_CAPTURE_POST_FAILED status={resp.status_code} body={resp.text[:120]}", flush=True)
     except Exception as exc:
         print(f"  TEACH_CAPTURE_POST_FAILED error={exc}", flush=True)
@@ -718,6 +738,8 @@ def _post_teaching_context(api_base: str, session_id: str, context_payload: dict
         if resp.status_code == 200:
             print(f"  TEACH_CAPTURE_POST_SUCCESS endpoint={endpoint} reason={reason}", flush=True)
             return True, None
+        if resp.status_code == 404:
+            print(f"  TEACH_CAPTURE_SESSION_NOT_FOUND session_id={session_id} endpoint={endpoint}", flush=True)
         err = f"HTTP {resp.status_code}: {resp.text[:120]}"
         print(f"  TEACH_CAPTURE_POST_FAILED status={resp.status_code} body={resp.text[:80]}", flush=True)
         return False, err
@@ -1057,6 +1079,10 @@ def run_session(
     print(f"  Password fields are never recorded.")
     print(f"  Close the browser window when finished.\n")
     print(f"TEACH_SESSION_STARTED session_id={session_id or 'MISSING'} draft_id={draft_id} workflow_api={api_base} auth={'yes' if worker_shared_secret else 'no'}", flush=True)
+    print(f"TEACH_SESSION_ID_CHAIN run_session_received session_id={session_id or 'MISSING'} draft_id={draft_id} api_base={api_base}", flush=True)
+    if not session_id:
+        print("TEACH_SESSION_ID_CHAIN FATAL session_id=MISSING — capture POSTs will 404; aborting session", flush=True)
+        raise ValueError("teach_session: session_id is required but was not provided")
 
     last_event_ts: dict[str, float] = {}
     last_url: list[str] = [""]
@@ -1215,6 +1241,14 @@ def run_session(
         et = event.get("event_type", "")
         if et == "_attached":
             print(f"  [listen] Attached on {event.get('url', '?')}")
+            print(f"TEACH_CAPTURE_LISTENER_READY true url={str(event.get('url') or '')[:120]}", flush=True)
+            return
+        if et == "_badge_injection_skipped":
+            print(
+                f"TEACH_BADGE_INJECTION_SKIPPED reason={event.get('reason', 'csp')} "
+                f"url={str(event.get('url') or '')[:80]}",
+                flush=True,
+            )
             return
         if et == "observation_answer":
             _enqueue_observation_answer(

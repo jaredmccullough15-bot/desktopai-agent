@@ -1824,6 +1824,9 @@ def _run_teach_session(payload: dict[str, Any], update_step: Any) -> dict[str, A
     draft_id = str(payload.get("draft_id") or "")
     teach_session_id = str(payload.get("session_id") or "")
     requested_api_base = str(payload.get("api_base") or "").strip()
+    log_info(f"TEACH_SESSION_ID_CHAIN worker_task_received draft_id={draft_id} session_id={teach_session_id or 'MISSING'}")
+    if not teach_session_id:
+        log_warn("[worker] TEACH_SESSION_ID_CHAIN FATAL: session_id missing from task payload — capture POSTs will 404")
     api_base = requested_api_base.rstrip("/")
     if not api_base.startswith(("http://", "https://")):
         api_base = str(API_BASE).strip().rstrip("/")
