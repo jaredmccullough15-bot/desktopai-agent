@@ -50,6 +50,7 @@ REQUIRED_DIRS = [
     "app",
     "tenant_templates",
     "conversational",
+    ".platform",  # EB platform nginx/custom hooks
 ]
 
 # Exclusions to keep deployment Linux/EB clean.

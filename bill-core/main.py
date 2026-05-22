@@ -16,7 +16,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qsl, urlencode, unquote, urlparse, urlunparse
 from uuid import uuid4
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -1177,12 +1177,18 @@ def get_active_worker_release() -> dict:
 
 
 @app.post("/api/worker/releases", response_model=WorkerReleaseRecord)
-async def upload_worker_release(
-    version: str = Form(...),
-    release_notes: str = Form(""),
-    channel: str = Form("optional"),
-    package: UploadFile = File(...),
-) -> WorkerReleaseRecord:
+async def upload_worker_release(request: Request) -> WorkerReleaseRecord:
+    # Starlette defaults max_part_size to 1MB; raise it for large worker zip uploads.
+    form = await request.form(max_files=10, max_fields=50, max_part_size=1024 * 1024 * 1024)
+    version = str(form.get("version") or "").strip()
+    release_notes = str(form.get("release_notes") or "")
+    channel = str(form.get("channel") or "optional")
+    package = form.get("package")
+
+    if not version:
+        raise HTTPException(status_code=400, detail="Missing required form field: version")
+    if not isinstance(package, UploadFile):
+        raise HTTPException(status_code=400, detail="Missing required file field: package")
     if not package.filename or not package.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="Package must be a .zip file")
 
@@ -3196,7 +3202,7 @@ def validate_taught_workflow_executable(draft: dict[str, Any]) -> dict[str, Any]
     executable_action_count = 0
     manual_action_count = 0
     redacted_input_count = 0
-    start_url: str | None = None
+    start_url: str | None = _canonicalize_teach_url(str(draft.get("start_url") or "").strip()) or None
 
     if not action_plan:
         blocking_reasons.append("No executable taught actions were captured.")
@@ -3219,7 +3225,7 @@ def validate_taught_workflow_executable(draft: dict[str, Any]) -> dict[str, Any]
             if url:
                 executable_action_count += 1
                 if not start_url:
-                    start_url = url
+                    start_url = _canonicalize_teach_url(url)
             else:
                 blocking_reasons.append(f"Step {index} is navigation but missing URL.")
             continue
@@ -3255,9 +3261,24 @@ def validate_taught_workflow_executable(draft: dict[str, Any]) -> dict[str, Any]
     has_start_url = bool(start_url)
     if not has_start_url:
         blocking_reasons.append("No starting page was captured.")
+        logger.info("TEACH_READY_CHECK_START_URL has_start_url=false")
+    else:
+        logger.info("TEACH_READY_CHECK_START_URL has_start_url=true start_url=%s", start_url)
 
     if executable_action_count == 0:
         blocking_reasons.append("Workflow is manual-only and needs more teaching before it can run.")
+        logger.info(
+            "TEACH_READY_CHECK_MANUAL_ONLY_REASON executable_action_count=0 manual_action_count=%s",
+            manual_action_count,
+        )
+
+    logger.info(
+        "TEACH_READY_CHECK_STEP_COUNT steps=%s executable=%s manual=%s redacted=%s",
+        len(steps),
+        executable_action_count,
+        manual_action_count,
+        redacted_input_count,
+    )
 
     return {
         "executable": executable_action_count > 0,
@@ -5323,11 +5344,13 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
         },
     )
 
+    canonical_step_url = _canonicalize_teach_url(payload.url)
+
     raw_step: dict[str, Any] = {
         "step_order":   next_order,
         "action":       str(payload.action or "manual_step").strip() or "manual_step",
         "selector":     payload.selector,
-        "url":          payload.url,
+        "url":          canonical_step_url,
         "value":        payload.value,
         "option":       payload.option,
         "step_name":    payload.step_name or f"Step {next_order}",
@@ -5397,6 +5420,17 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
 
     updated = dict(draft)
     updated["steps"] = steps
+
+    if str(payload.action or "").strip().lower() in {"open_url", "navigate"} and canonical_step_url:
+        if not str(updated.get("start_url") or "").strip():
+            updated["start_url"] = canonical_step_url
+            updated["observed_start_url"] = str(payload.url or "").strip() or canonical_step_url
+            logger.info(
+                "TEACH_START_URL_CAPTURED draft_id=%s observed_url=%s canonical_url=%s source=append_step",
+                draft_id,
+                str(payload.url or "")[:400],
+                canonical_step_url,
+            )
 
     # Rebuild top-level variables registry
     existing_vars: dict[str, dict] = {
@@ -5597,7 +5631,7 @@ def _next_pending_observation_prompt(draft: dict[str, Any]) -> tuple[dict[str, A
 
 @app.get("/api/teach-sessions/{session_id}/questions/next")
 def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
-    idx, draft = _find_workflow_draft(session_id)
+    idx, draft, resolved_draft_id = _resolve_teach_session_draft(session_id)
     if draft is None or idx is None:
         raise HTTPException(status_code=404, detail="Teach session not found")
 
@@ -5605,6 +5639,7 @@ def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
     steps_recorded = len([s for s in (draft.get("steps") or []) if isinstance(s, dict)])
     return {
         "session_id": session_id,
+        "draft_id": resolved_draft_id,
         "workflow_id": str(draft.get("published_workflow_name") or draft.get("workflow_name") or ""),
         "tenant_id": str(draft.get("tenant_id") or ""),
         "question": prompt,
@@ -5618,6 +5653,9 @@ def get_teach_session_next_question(session_id: str) -> dict[str, Any]:
 
 @app.post("/api/teach-sessions/{session_id}/answers")
 def submit_teach_session_answer(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
+    _, draft, resolved_draft_id = _resolve_teach_session_draft(session_id)
+    if draft is None or not resolved_draft_id:
+        raise HTTPException(status_code=404, detail="Teach session not found")
     request = ObservationQuestionAnswerRequest(
         prompt_id=str(payload.get("prompt_id") or ""),
         step_order=int(payload.get("step_order") or 0),
@@ -5629,12 +5667,15 @@ def submit_teach_session_answer(session_id: str, payload: dict = Body(default={}
         question_frequency=payload.get("question_frequency"),
         system_context=dict(payload.get("system_context") or {}),
     )
-    result = answer_observation_question(session_id, request)
+    result = answer_observation_question(resolved_draft_id, request)
     return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
 
 @app.post("/api/teach-sessions/{session_id}/questions/skip")
 def skip_teach_session_question(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
+    _, draft, resolved_draft_id = _resolve_teach_session_draft(session_id)
+    if draft is None or not resolved_draft_id:
+        raise HTTPException(status_code=404, detail="Teach session not found")
     request = ObservationQuestionAnswerRequest(
         prompt_id=str(payload.get("prompt_id") or ""),
         step_order=int(payload.get("step_order") or 0),
@@ -5646,13 +5687,13 @@ def skip_teach_session_question(session_id: str, payload: dict = Body(default={}
         question_frequency=payload.get("question_frequency"),
         system_context=dict(payload.get("system_context") or {}),
     )
-    result = answer_observation_question(session_id, request)
+    result = answer_observation_question(resolved_draft_id, request)
     return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
 
 @app.post("/api/teach-sessions/{session_id}/questions/pause")
 def pause_teach_session_questions(session_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
-    idx, draft = _find_workflow_draft(session_id)
+    idx, draft, resolved_draft_id = _resolve_teach_session_draft(session_id)
     if draft is None or idx is None:
         raise HTTPException(status_code=404, detail="Teach session not found")
 
@@ -5671,7 +5712,7 @@ def pause_teach_session_questions(session_id: str, payload: dict = Body(default=
             question_frequency=payload.get("question_frequency"),
             system_context=dict(prompt.get("system_context") or {}),
         )
-        result = answer_observation_question(session_id, request)
+        result = answer_observation_question(str(resolved_draft_id or session_id), request)
         return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
     updated = dict(draft)
@@ -5683,6 +5724,7 @@ def pause_teach_session_questions(session_id: str, payload: dict = Body(default=
 
     return {
         "session_id": session_id,
+        "draft_id": resolved_draft_id,
         "status": "resumed" if should_resume else "paused",
         "observation_questions_paused": bool(updated.get("observation_questions_paused", False)),
     }
@@ -5760,6 +5802,29 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
     local_api_base = (requested_api_base or "http://127.0.0.1:8010").rstrip("/")
     worker_api_base = _resolve_teach_session_worker_api_base(requested_api_base)
     target_machine_uuid = str(payload.target_machine_uuid or "").strip()
+    teach_session_id = str(uuid4())
+
+    _teaching_startup_sessions[teach_session_id] = {
+        "session_id": teach_session_id,
+        "task_id": "",
+        "draft_id": draft_id,
+        "workflow_name": str(draft.get("workflow_name") or ""),
+        "target_machine_uuid": target_machine_uuid,
+        "target_machine_name": "",
+        "status": "browser_opening",
+        "message": "",
+        "overlay_enabled": True,
+        "voice_prompt_text": "",
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+        "teaching_session": {
+            "session_id": teach_session_id,
+            "workflow_name": str(draft.get("workflow_name") or ""),
+            "workflow_summary": None,
+            "status": "intro",
+            "steps": [],
+        },
+    }
 
     if payload.start_url.strip():
         start_url = payload.start_url.strip()
@@ -5780,23 +5845,32 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
             "api_base": worker_api_base,
             "start_url": start_url,
             "target_machine_uuid": target_machine_uuid,
+            "session_id": teach_session_id,
         }
         logger.info(
-            "teach_session task payload prepared: draft_id=%s target_machine_uuid=%s api_base=%s start_url=%s requested_api_base=%s",
+            "TEACH_SESSION_ID_CHAIN start_endpoint draft_id=%s session_id=%s target_machine_uuid=%s api_base=%s start_url=%s requested_api_base=%s",
             draft_id,
+            teach_session_id,
             target_machine_uuid,
             task_payload.get("api_base"),
             task_payload.get("start_url"),
             requested_api_base,
         )
         result = _create_task_record(task_payload)
+        _teaching_startup_sessions[teach_session_id]["task_id"] = result.id
         _record_operational_memory(
             "teach_session_queued",
             f"Teach session task queued for draft {draft_id} on worker {target_machine_uuid}",
-            details={"draft_id": draft_id, "task_id": result.id, "machine_uuid": target_machine_uuid},
+            details={"draft_id": draft_id, "task_id": result.id, "machine_uuid": target_machine_uuid, "session_id": teach_session_id},
             tags=["workflow_learning", "teach_session"],
         )
-        return {"status": "queued", "task_id": result.id, "draft_id": draft_id, "target_machine_uuid": target_machine_uuid}
+        return {
+            "status": "queued",
+            "task_id": result.id,
+            "draft_id": draft_id,
+            "target_machine_uuid": target_machine_uuid,
+            "session_id": teach_session_id,
+        }
 
     # ── Legacy: spawn locally on the server ─────────────────────────────────
     script_path = os.path.join(
@@ -5821,7 +5895,16 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
             ),
         )
 
-    cmd = [sys.executable, script_path, "--draft-id", draft_id, "--api-base", local_api_base]
+    cmd = [
+        sys.executable,
+        script_path,
+        "--draft-id",
+        draft_id,
+        "--session-id",
+        teach_session_id,
+        "--api-base",
+        local_api_base,
+    ]
     if start_url:
         cmd.extend(["--start-url", start_url])
     logger.info(
@@ -5852,13 +5935,20 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
             stderr=log_handle,
             **kwargs,
         )
+        _teaching_startup_sessions[teach_session_id]["task_id"] = f"local-pid-{proc.pid}"
         _record_operational_memory(
             "teach_session_started",
             f"Playwright teach session started for draft {draft_id} (PID {proc.pid})",
-            details={"draft_id": draft_id, "pid": proc.pid, "log_file": log_file_path},
+            details={"draft_id": draft_id, "pid": proc.pid, "log_file": log_file_path, "session_id": teach_session_id},
             tags=["workflow_learning", "teach_session"],
         )
-        return {"status": "started", "pid": proc.pid, "draft_id": draft_id, "log_file": log_file_path}
+        return {
+            "status": "started",
+            "pid": proc.pid,
+            "draft_id": draft_id,
+            "session_id": teach_session_id,
+            "log_file": log_file_path,
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to launch teach session: {exc}") from exc
 
@@ -7038,6 +7128,100 @@ _TEACHING_ACK_VARIANTS: tuple[str, ...] = (
     "I think this step is clear.",
 )
 
+_TEACH_TRACKING_QUERY_KEYS = {
+    "fbclid",
+    "gclid",
+    "msclkid",
+    "dclid",
+    "_gl",
+    "mc_cid",
+    "mc_eid",
+}
+
+_TEACH_TRACKING_QUERY_PREFIXES = (
+    "utm_",
+    "_ga",
+)
+
+
+def _canonicalize_teach_url(raw_url: str) -> str:
+    candidate = str(raw_url or "").strip()
+    if not candidate:
+        return ""
+    try:
+        parsed = urlparse(candidate)
+        if not parsed.scheme or not parsed.netloc:
+            return candidate
+        kept_pairs: list[tuple[str, str]] = []
+        removed_keys: list[str] = []
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            lowered = str(key or "").strip().lower()
+            if lowered in _TEACH_TRACKING_QUERY_KEYS or any(lowered.startswith(prefix) for prefix in _TEACH_TRACKING_QUERY_PREFIXES):
+                removed_keys.append(lowered)
+                continue
+            kept_pairs.append((key, value))
+        normalized_query = urlencode(kept_pairs, doseq=True)
+        canonical = urlunparse(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                normalized_query,
+                parsed.fragment,
+            )
+        )
+        if removed_keys:
+            logger.info(
+                "TEACH_START_URL_NORMALIZED observed_url=%s canonical_url=%s removed_keys=%s",
+                candidate,
+                canonical,
+                ",".join(sorted(set(removed_keys))),
+            )
+        return canonical
+    except Exception:
+        return candidate
+
+
+def _fallback_click_selector(label: str) -> str | None:
+    text = str(label or "").strip()
+    if not text:
+        return None
+    safe = " ".join(text.split())
+    if not safe:
+        return None
+    if len(safe) > 80:
+        safe = safe[:80]
+    return f"role=button[name=\"{safe}\" i], text=\"{safe}\""
+
+
+def _derive_domain_from_url(value: str) -> str:
+    try:
+        parsed = urlparse(str(value or "").strip())
+        domain = str(parsed.netloc or "").strip().lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain
+    except Exception:
+        return ""
+
+
+def _resolve_teach_session_draft(session_or_draft_id: str) -> tuple[int | None, dict[str, Any] | None, str | None]:
+    idx, draft = _find_workflow_draft(session_or_draft_id)
+    if draft is not None and idx is not None:
+        return idx, draft, session_or_draft_id
+
+    record = _teaching_startup_sessions.get(session_or_draft_id)
+    if not isinstance(record, dict):
+        return None, None, None
+
+    draft_id = str(record.get("draft_id") or "").strip()
+    if not draft_id:
+        return None, None, None
+
+    idx, draft = _find_workflow_draft(draft_id)
+    return idx, draft, draft_id
+
 
 def _normalize_extracted_url(raw_url: str) -> str | None:
     candidate = str(raw_url or "").strip()
@@ -7064,7 +7248,7 @@ def _normalize_extracted_url(raw_url: str) -> str | None:
     if not parsed.netloc:
         return None
 
-    return candidate
+    return _canonicalize_teach_url(candidate)
 
 
 def extract_urls_from_message(message: str) -> list[str]:
@@ -7145,7 +7329,8 @@ def _build_text_navigation_observed_actions(message: str) -> list[dict[str, Any]
     if not _is_navigation_instruction(message, urls):
         return []
 
-    first_url = urls[0]
+    first_url = _canonicalize_teach_url(urls[0])
+    logger.info("TEACH_STEP_CREATED_NAVIGATE url=%s", first_url)
     return [
         {
             "id": str(uuid4()),
@@ -7229,6 +7414,7 @@ def _select_teaching_ack(step_order: int, confidence: float) -> str:
 
 
 def _build_intent_observed_actions(primary_intent: str | None, message: str, urls: list[str]) -> list[dict[str, Any]]:
+    lower = str(message or "").lower()
     if primary_intent == "navigation":
         return _build_text_navigation_observed_actions(message)
     if primary_intent == "waiting":
@@ -7243,6 +7429,27 @@ def _build_intent_observed_actions(primary_intent: str | None, message: str, url
                 "timestamp": datetime.utcnow().isoformat(),
             }
         ]
+    if "click" in lower or "tap" in lower or "press" in lower:
+        click_match = re.search(
+            r"\b(?:click|tap|press)\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+(?:button|link))?(?:\s+and\b|\s*$)",
+            str(message or "").strip(),
+            flags=re.IGNORECASE,
+        )
+        click_label = str(click_match.group(1) if click_match else "").strip().rstrip(".?!")
+        fallback_selector = _fallback_click_selector(click_label)
+        if click_label or fallback_selector:
+            logger.info("TEACH_STEP_CREATED_CLICK label=%s selector_fallback=%s", click_label[:80], fallback_selector or "")
+            return [
+                {
+                    "id": str(uuid4()),
+                    "type": "click",
+                    "label": click_label or None,
+                    "selector": fallback_selector,
+                    "url": None,
+                    "value_redacted": None,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+            ]
     return []
 
 
@@ -7268,7 +7475,8 @@ def _analyze_teaching_message(message: str, existing_steps: list[dict]) -> dict[
 
     inferred_data: dict[str, Any] = {}
     if urls:
-        inferred_data["url"] = urls[0]
+        inferred_data["url"] = _canonicalize_teach_url(urls[0])
+        inferred_data["observed_url"] = urls[0]
     if primary_intent:
         inferred_data["intent"] = primary_intent
 
@@ -7412,6 +7620,7 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
 
         if not observed_actions:
             if inferred_action == "navigation" and inferred_data.get("url"):
+                canonical_url = _canonicalize_teach_url(str(inferred_data.get("url") or ""))
                 draft_steps.append(
                     {
                         "id": str(uuid4()),
@@ -7419,7 +7628,7 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
                         "name": f"step_{next_order}",
                         "step_name": title,
                         "action": "open_url",
-                        "url": str(inferred_data.get("url") or ""),
+                        "url": canonical_url,
                         "manual_review_required": False,
                         "description": description,
                         "decision_rules": list(s.get("decision_rules") or []),
@@ -7427,6 +7636,7 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
                         "required_inputs": list(s.get("required_inputs") or []),
                     }
                 )
+                logger.info("TEACH_STEP_LINKED_TO_DRAFT type=navigate step_order=%s url=%s", next_order, canonical_url)
             elif inferred_action == "waiting":
                 draft_steps.append(
                     {
@@ -7495,10 +7705,26 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
             }
 
             if action_type == "navigate":
-                step_payload.update({"action": "open_url", "url": str(action.get("url") or "")})
+                canonical_url = _canonicalize_teach_url(str(action.get("url") or ""))
+                step_payload.update({"action": "open_url", "url": canonical_url})
+                logger.info("TEACH_STEP_CREATED_NAVIGATE step_order=%s url=%s", next_order, canonical_url)
             elif action_type in {"click", "submit"}:
+                fallback_selector = _fallback_click_selector(str(action.get("label") or ""))
                 if selector:
                     step_payload.update({"action": "click_selector", "selector": selector, "timeout_ms": 20000})
+                elif fallback_selector:
+                    step_payload.update(
+                        {
+                            "action": "click_selector",
+                            "selector": fallback_selector,
+                            "timeout_ms": 20000,
+                        }
+                    )
+                    logger.info(
+                        "TEACH_STEP_CREATED_CLICK step_order=%s selector_source=label_fallback label=%s",
+                        next_order,
+                        str(action.get("label") or "")[:80],
+                    )
                 else:
                     step_payload.update(
                         {
@@ -7570,6 +7796,12 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
                 )
 
             draft_steps.append(step_payload)
+            logger.info(
+                "TEACH_STEP_LINKED_TO_DRAFT type=%s step_order=%s action=%s",
+                action_type,
+                next_order,
+                str(step_payload.get("action") or ""),
+            )
             next_order += 1
 
     return draft_steps
@@ -7577,6 +7809,16 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
 
 def _build_teaching_startup_state(session_id: str) -> TeachingStartupState:
     record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    parsed_ts: TeachingSession | None = None
+    if isinstance(ts, dict):
+        _clear_invalid_teaching_context_if_needed(ts, session_id=session_id)
+        record["teaching_session"] = ts
+        try:
+            parsed_ts = TeachingSession.model_validate(ts)
+        except Exception:
+            parsed_ts = None
+
     return TeachingStartupState(
         session_id=session_id,
         task_id=record.get("task_id"),
@@ -7587,6 +7829,7 @@ def _build_teaching_startup_state(session_id: str) -> TeachingStartupState:
         message=record.get("message", ""),
         overlay_enabled=record.get("overlay_enabled", True),
         voice_prompt_text=record.get("voice_prompt_text", ""),
+        teaching_session=parsed_ts,
     )
 
 
@@ -7883,6 +8126,26 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
         action_dict["label"] = "[sensitive]"
         action_dict["selector"] = None
         action_dict["value_redacted"] = "[redacted]"
+    if str(action_dict.get("type") or "").strip().lower() == "navigate":
+        observed_url = str(action_dict.get("url") or "").strip()
+        canonical_url = _canonicalize_teach_url(observed_url)
+        action_dict["url"] = canonical_url
+        if canonical_url and not str(ts.get("start_url") or "").strip():
+            ts["start_url"] = canonical_url
+            ts["observed_start_url"] = observed_url or canonical_url
+            logger.info(
+                "TEACH_START_URL_CAPTURED session_id=%s observed_url=%s canonical_url=%s source=action",
+                session_id,
+                observed_url[:400],
+                canonical_url,
+            )
+    if str(action_dict.get("type") or "").strip().lower() in {"click", "submit"}:
+        logger.info(
+            "TEACH_STEP_CREATED_CLICK session_id=%s selector=%s label=%s",
+            session_id,
+            str(action_dict.get("selector") or "")[:120],
+            str(action_dict.get("label") or "")[:120],
+        )
     target_step: dict | None = None
     if body.step_id:
         for s in steps:
@@ -7908,6 +8171,323 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
     record["teaching_session"] = ts
     _teaching_startup_sessions[session_id] = record
     return TeachingSessionMessageResponse(reply="Action captured.", teaching_session=TeachingSession.model_validate(ts))
+
+
+def _normalize_teaching_context_snapshot(body: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(body or {})
+
+    def _is_sensitive_field(item: dict[str, Any]) -> bool:
+        joined = " ".join(
+            [
+                str(item.get("label") or ""),
+                str(item.get("placeholder") or ""),
+                str(item.get("name") or ""),
+                str(item.get("type") or ""),
+            ]
+        ).lower()
+        return any(token in joined for token in ("password", "passcode", "otp", "mfa", "token", "secret", "email"))
+
+    raw_visible_buttons = list(payload.get("visible_buttons") or payload.get("buttons") or [])[:20]
+    raw_visible_inputs = list(payload.get("visible_inputs") or payload.get("inputs") or [])[:20]
+    raw_visible_links = list(payload.get("visible_links") or payload.get("links") or [])[:20]
+    raw_visible_headings = list(payload.get("visible_headings") or payload.get("headings") or [])[:10]
+
+    raw_visible_buttons = [item if isinstance(item, dict) else {"text": str(item or "")} for item in raw_visible_buttons]
+    raw_visible_inputs = [item if isinstance(item, dict) else {"label": str(item or "")} for item in raw_visible_inputs]
+    raw_visible_links = [item if isinstance(item, dict) else {"text": str(item or "")} for item in raw_visible_links]
+    raw_visible_headings = [item if isinstance(item, dict) else {"text": str(item or "")} for item in raw_visible_headings]
+
+    visible_inputs: list[dict[str, Any]] = []
+    for item in raw_visible_inputs:
+        entry = dict(item or {})
+        if _is_sensitive_field(entry):
+            entry["label"] = "[redacted]"
+            entry["placeholder"] = "[redacted]"
+            if "name" in entry:
+                entry["name"] = "[redacted]"
+            if "selector_hint" in entry:
+                entry["selector_hint"] = None
+        visible_inputs.append(entry)
+
+    active_element = payload.get("active_element")
+    if isinstance(active_element, dict):
+        active_element = dict(active_element)
+        if active_element.get("label"):
+            active_element["label"] = "[redacted]"
+
+    recent_typed_field = payload.get("recent_typed_field") or payload.get("recent_type_field")
+    if recent_typed_field:
+        recent_typed_field = "[redacted]"
+
+    buttons_simple = list(payload.get("buttons") or [])
+    if not buttons_simple:
+        buttons_simple = [str(item.get("text") or "").strip() for item in raw_visible_buttons if str(item.get("text") or "").strip()]
+
+    links_simple = list(payload.get("links") or [])
+    if not links_simple:
+        links_simple = [str(item.get("text") or "").strip() for item in raw_visible_links if str(item.get("text") or "").strip()]
+
+    headings_simple = list(payload.get("headings") or [])
+    if not headings_simple:
+        headings_simple = [str(item.get("text") or "").strip() for item in raw_visible_headings if str(item.get("text") or "").strip()]
+
+    snapshot_url = str(payload.get("url") or "")[:2048]
+    snapshot_domain = str(payload.get("domain") or "")[:255] or _derive_domain_from_url(snapshot_url)
+    if snapshot_url:
+        logger.info(
+            "TEACH_BROWSER_SNAPSHOT_URL url=%s",
+            snapshot_url[:400],
+        )
+    if snapshot_domain:
+        logger.info("TEACH_BROWSER_SNAPSHOT_DOMAIN domain=%s", snapshot_domain)
+    logger.info(
+        "TEACH_BROWSER_SNAPSHOT_FIELDS_DETECTED inputs=%s links=%s headings=%s",
+        len(visible_inputs),
+        len(raw_visible_links),
+        len(raw_visible_headings),
+    )
+    logger.info(
+        "TEACH_BROWSER_SNAPSHOT_BUTTONS_DETECTED buttons=%s",
+        len(raw_visible_buttons),
+    )
+
+    return {
+        "url": snapshot_url,
+        "title": str(payload.get("title") or "")[:300],
+        "domain": snapshot_domain,
+        "buttons": buttons_simple[:20],
+        "inputs": visible_inputs,
+        "links": links_simple[:20],
+        "headings": headings_simple[:10],
+        "visible_buttons": raw_visible_buttons,
+        "visible_inputs": visible_inputs,
+        "visible_links": raw_visible_links,
+        "visible_headings": raw_visible_headings,
+        "active_element": active_element,
+        "recent_clicked_element": payload.get("recent_clicked_element"),
+        "recent_typed_field": recent_typed_field,
+        "recent_type_field": recent_typed_field,
+        "modal_summary": payload.get("modal_summary") or {"present": False, "title": "", "text": ""},
+        "modal_present": bool(payload.get("modal_present")),
+        "modal_title": payload.get("modal_title"),
+        "page_changed": bool(payload.get("page_changed")),
+        "reason": str(payload.get("reason") or "")[:80],
+        "captured_at": str(payload.get("captured_at") or datetime.utcnow().isoformat()),
+    }
+
+
+_TEACH_INVALID_CONTEXT_MARKERS = (
+    "omnibox-popup",
+    "top-chrome",
+    "chrome://",
+    "chrome-extension://",
+    "devtools://",
+    "about:",
+    "edge://",
+    "extension://",
+)
+_TEACH_INVALID_CONTEXT_WAITING_MESSAGE = "Bill is waiting for the real webpage tab."
+
+
+def _teaching_context_invalid_reason(snapshot: dict[str, Any] | None) -> str | None:
+    snap = snapshot or {}
+    url_value = str(snap.get("url") or "")
+    title_value = str(snap.get("title") or "")
+    domain_value = str(snap.get("domain") or "")
+    lowered = f"{url_value} {title_value} {domain_value}".lower()
+    for marker in _TEACH_INVALID_CONTEXT_MARKERS:
+        if marker in lowered:
+            return marker
+    return None
+
+
+def _teaching_waiting_snapshot(reason: str = "invalid_target_filtered") -> dict[str, Any]:
+    return {
+        "url": "",
+        "title": _TEACH_INVALID_CONTEXT_WAITING_MESSAGE,
+        "domain": "",
+        "buttons": [],
+        "inputs": [],
+        "links": [],
+        "headings": [],
+        "visible_buttons": [],
+        "visible_inputs": [],
+        "visible_links": [],
+        "visible_headings": [],
+        "active_element": None,
+        "recent_clicked_element": None,
+        "recent_typed_field": None,
+        "recent_type_field": None,
+        "modal_summary": {"present": False, "title": "", "text": ""},
+        "modal_present": False,
+        "modal_title": None,
+        "page_changed": False,
+        "reason": reason,
+        "context_warning": _TEACH_INVALID_CONTEXT_WAITING_MESSAGE,
+        "captured_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _clear_invalid_teaching_context_if_needed(ts: dict[str, Any], session_id: str) -> None:
+    current_snapshot = ts.get("page_context_snapshot")
+    reason = _teaching_context_invalid_reason(current_snapshot)
+    if reason:
+        logger.warning(
+            "TEACH_CONTEXT_INVALID_TARGET_CLEARED session_id=%s marker=%s",
+            session_id,
+            reason,
+        )
+        ts["page_context_snapshot"] = _teaching_waiting_snapshot()
+
+    history = list(ts.get("page_context_history") or [])
+    cleaned_history: list[dict[str, Any]] = []
+    for item in history:
+        if isinstance(item, dict) and _teaching_context_invalid_reason(item):
+            continue
+        if isinstance(item, dict):
+            cleaned_history.append(item)
+    if len(cleaned_history) != len(history):
+        logger.warning(
+            "TEACH_CONTEXT_INVALID_TARGET_CLEARED session_id=%s history_removed=%s",
+            session_id,
+            len(history) - len(cleaned_history),
+        )
+        ts["page_context_history"] = cleaned_history[-5:]
+
+
+@app.post("/api/teaching/session/{session_id}/context", response_model=TeachingSessionMessageResponse)
+@app.post("/api/teaching/session/{session_id}/page-context", response_model=TeachingSessionMessageResponse)
+def teaching_session_record_context(session_id: str, body: dict = Body(default={})) -> TeachingSessionMessageResponse:
+    if session_id not in _teaching_startup_sessions:
+        logger.error(
+            "event=teaching_capture_session_not_found session_id=%s endpoint=context",
+            session_id,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail={"detail": "Teaching session not found", "session_id": session_id},
+        )
+
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    if not ts:
+        raise HTTPException(status_code=404, detail="No teaching session in record")
+
+    try:
+        snapshot = _normalize_teaching_context_snapshot(body if isinstance(body, dict) else {})
+        invalid_marker = _teaching_context_invalid_reason(snapshot)
+        if invalid_marker:
+            logger.warning(
+                "TEACH_CONTEXT_REJECTED_INVALID_TARGET session_id=%s marker=%s url=%s title=%s domain=%s",
+                session_id,
+                invalid_marker,
+                str(snapshot.get("url") or "")[:200],
+                str(snapshot.get("title") or "")[:200],
+                str(snapshot.get("domain") or "")[:200],
+            )
+            ts["page_context_snapshot"] = _teaching_waiting_snapshot()
+            warnings = list(ts.get("warnings") or [])
+            warnings.append("Invalid browser target ignored.")
+            ts["warnings"] = warnings[-10:]
+            _clear_invalid_teaching_context_if_needed(ts, session_id=session_id)
+            reply = "Invalid browser target ignored."
+        else:
+            ts["page_context_snapshot"] = snapshot
+            history = list(ts.get("page_context_history") or [])
+            history.append(snapshot)
+            ts["page_context_history"] = history[-5:]
+
+            observed_url = str(snapshot.get("url") or "").strip()
+            canonical_url = _canonicalize_teach_url(observed_url)
+            if canonical_url and not str(ts.get("start_url") or "").strip():
+                ts["start_url"] = canonical_url
+                ts["observed_start_url"] = observed_url or canonical_url
+                logger.info(
+                    "TEACH_START_URL_CAPTURED session_id=%s observed_url=%s canonical_url=%s source=context",
+                    session_id,
+                    observed_url[:400],
+                    canonical_url,
+                )
+                draft_id = str(record.get("draft_id") or "").strip()
+                if draft_id:
+                    idx, draft = _find_workflow_draft(draft_id)
+                    if draft is not None and idx is not None:
+                        updated = dict(draft)
+                        if not str(updated.get("start_url") or "").strip():
+                            updated["start_url"] = canonical_url
+                            updated["observed_start_url"] = observed_url or canonical_url
+                            updated["updated_at"] = datetime.utcnow().isoformat()
+                            workflow_learning_drafts[idx] = updated
+                            _save_workflow_learning_drafts()
+            reply = "Context captured."
+    except Exception:
+        # Never block capture loop on context parsing/storage edge cases.
+        pass
+    else:
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        return TeachingSessionMessageResponse(reply=reply, teaching_session=TeachingSession.model_validate(ts))
+
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    return TeachingSessionMessageResponse(reply="Context captured.", teaching_session=TeachingSession.model_validate(ts))
+
+
+@app.get("/api/teaching/session/{session_id}/debug")
+def teaching_session_debug(session_id: str) -> dict[str, Any]:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session") or {}
+    if isinstance(ts, dict):
+        _clear_invalid_teaching_context_if_needed(ts, session_id=session_id)
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+    snapshot = ts.get("page_context_snapshot") or {}
+    history = list(ts.get("page_context_history") or [])
+
+    observed_actions_count = 0
+    for step in list(ts.get("steps") or []):
+        if isinstance(step, dict):
+            observed_actions_count += len(list(step.get("observed_actions") or []))
+
+    latest_copilot_fields = {
+        "notice": ts.get("copilot_notice") or None,
+        "interpretation": ts.get("copilot_interpretation") or None,
+        "question": ts.get("copilot_question") or None,
+    }
+
+    history_brief: list[dict[str, Any]] = []
+    for item in history[-5:]:
+        if not isinstance(item, dict):
+            continue
+        history_brief.append(
+            {
+                "url": item.get("url") or "",
+                "title": item.get("title") or "",
+                "domain": item.get("domain") or "",
+                "captured_at": item.get("captured_at"),
+            }
+        )
+
+    return {
+        "session_id": session_id,
+        "has_page_context_snapshot": bool(snapshot),
+        "page_context_snapshot": {
+            "url": snapshot.get("url") or "",
+            "title": snapshot.get("title") or "",
+            "domain": snapshot.get("domain") or "",
+            "captured_at": snapshot.get("captured_at"),
+            "reason": snapshot.get("reason"),
+        },
+        "page_context_history": history_brief,
+        "page_context_button_count": len(list(snapshot.get("visible_buttons") or snapshot.get("buttons") or [])),
+        "page_context_input_count": len(list(snapshot.get("visible_inputs") or snapshot.get("inputs") or [])),
+        "page_context_history_count": len(history),
+        "observed_actions_count": observed_actions_count,
+        "latest_copilot_fields": latest_copilot_fields,
+    }
 
 
 @app.post("/api/bill/chat")

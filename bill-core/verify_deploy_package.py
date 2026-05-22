@@ -21,6 +21,7 @@ REQUIRED_FILES = [
     "conversational/conversation_service.py",
     "requirements.txt",
     "Procfile",
+    ".platform/nginx/conf.d/client_max_body_size.conf",
 ]
 
 ROOT = Path(__file__).resolve().parent

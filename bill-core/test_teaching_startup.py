@@ -1744,6 +1744,59 @@ class TestTeachingCopilotPhase1:
         assert stored.get("page_context_snapshot")
         assert len(stored.get("page_context_history") or []) == 1
 
+    def test_context_endpoint_rejects_omnibox_snapshot(self, client):
+        sid = self._seed_session()
+        res = client.post(
+            f"/api/teaching/session/{sid}/context",
+            json={
+                "url": "chrome-extension://omnibox-popup/index.html",
+                "title": "Omnibox Popup | top-chrome",
+                "visible_buttons": [{"text": "Search", "aria_label": "", "role": "button"}],
+            },
+        )
+        assert res.status_code == 200
+        assert (res.json().get("reply") or "") == "Invalid browser target ignored."
+        snap = (res.json().get("teaching_session") or {}).get("page_context_snapshot") or {}
+        assert snap.get("url") == ""
+        assert snap.get("title") == "Bill is waiting for the real webpage tab."
+        assert list(snap.get("visible_buttons") or []) == []
+        assert str(snap.get("reason") or "") == "invalid_target_filtered"
+
+    def test_debug_clears_existing_invalid_snapshot(self, client):
+        import main as m
+
+        sid = self._seed_session()
+        record = m._teaching_startup_sessions[sid]
+        record["teaching_session"]["page_context_snapshot"] = {
+            "url": "chrome://omnibox-popup.top-chrome/",
+            "title": "Omnibox Popup | top-chrome",
+            "visible_buttons": [{"text": "Search"}],
+        }
+        record["teaching_session"]["page_context_history"] = [
+            {
+                "url": "chrome-extension://omnibox-popup/index.html",
+                "title": "Omnibox Popup | top-chrome",
+                "captured_at": "2026-05-20T10:10:20Z",
+            },
+            {
+                "url": "https://go.trackvia.com/#/signin",
+                "title": "TrackVia Sign In",
+                "captured_at": "2026-05-20T10:10:40Z",
+            },
+        ]
+        m._teaching_startup_sessions[sid] = record
+
+        debug_res = client.get(f"/api/teaching/session/{sid}/debug")
+        assert debug_res.status_code == 200
+        body = debug_res.json()
+        snap = body.get("page_context_snapshot") or {}
+        assert snap.get("url") == ""
+        assert snap.get("title") == "Bill is waiting for the real webpage tab."
+        assert body.get("has_page_context_snapshot") is True
+        history = body.get("page_context_history") or []
+        assert len(history) == 1
+        assert history[0].get("url") == "https://go.trackvia.com/#/signin"
+
     def test_click_that_button_uses_latest_visible_button_context(self, client):
         import main as m
         sid = self._seed_session()
@@ -1796,6 +1849,15 @@ class TestTeachingCopilotPhase1:
         # Type declarations may include selector_hint, but render markup should not.
         ui_region = text[text.find("Bill can currently see"):text.find("Floating Chat Panel")]
         assert "selector_hint" not in ui_region
+
+    def test_ui_bill_can_see_panel_masks_omnibox_context(self):
+        page_tsx = Path(__file__).resolve().parents[1] / "bill-web" / "app" / "page.tsx"
+        text = page_tsx.read_text(encoding="utf-8")
+        ui_region = text[text.find("Bill can currently see"):text.find("Floating Chat Panel")]
+        assert "Bill is waiting for the real webpage tab." in ui_region
+        assert "Waiting for real webpage tab" in ui_region
+        assert "omnibox-popup" in ui_region
+        assert "top-chrome" in ui_region
 
     def test_context_payload_with_unexpected_shape_does_not_break_teaching_session(self, client):
         sid = self._seed_session()

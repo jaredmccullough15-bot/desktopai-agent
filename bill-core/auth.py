@@ -81,6 +81,18 @@ def _reject_request(request: Request, status_code: int, detail: str, scope: str)
         request.client.host if request.client else "unknown",
         detail,
     )
+    try:
+        from structured_logging import slog_warning
+        slog_warning(
+            "auth_rejected",
+            route=request.url.path,
+            message=detail,
+            scope=scope,
+            status_code=status_code,
+            method=request.method,
+        )
+    except Exception:
+        pass
     raise HTTPException(status_code=status_code, detail=detail)
 
 
