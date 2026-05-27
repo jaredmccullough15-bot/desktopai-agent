@@ -182,6 +182,7 @@ type TeachingSession = {
   pageContextSnapshot?: {
     url?: string;
     title?: string;
+    domain?: string;
     visible_buttons?: Array<{ text?: string; aria_label?: string; role?: string; selector_hint?: string | null }>;
     visible_inputs?: Array<{ label?: string; placeholder?: string; type?: string; name?: string; selector_hint?: string | null; sensitive?: boolean }>;
     visible_links?: Array<{ text?: string; href?: string }>;
@@ -221,6 +222,7 @@ type TeachingSessionApiResponse = {
     page_context_snapshot?: {
       url?: string;
       title?: string;
+      domain?: string;
       visible_buttons?: Array<{ text?: string; aria_label?: string; role?: string; selector_hint?: string | null }>;
       visible_inputs?: Array<{ label?: string; placeholder?: string; type?: string; name?: string; selector_hint?: string | null; sensitive?: boolean }>;
       visible_links?: Array<{ text?: string; href?: string }>;
@@ -305,6 +307,17 @@ type TeachingSessionApiResponse = {
   } | null;
 };
 
+const INVALID_TEACHING_CONTEXT_MARKERS = ["omnibox-popup", "top-chrome", "chrome://", "chrome-extension://", "devtools://", "about:", "edge://", "extension://"];
+const INVALID_TEACHING_CONTEXT_MESSAGE = "Bill is waiting for the real webpage tab.";
+
+function isInvalidTeachingContextSnapshot(snapshot: { url?: string; title?: string; domain?: string } | null | undefined): boolean {
+  const urlValue = snapshot?.url || "";
+  const titleValue = snapshot?.title || "";
+  const domainValue = snapshot?.domain || "";
+  const lowered = `${urlValue} ${titleValue} ${domainValue}`.toLowerCase();
+  return INVALID_TEACHING_CONTEXT_MARKERS.some((marker) => lowered.includes(marker));
+}
+
 type TeachingReviewSummary = {
   workflowSummary?: string;
   totalSteps: number;
@@ -318,6 +331,17 @@ type TeachingExecutionReadiness = {
   start_url?: string | null;
   blocking_reasons?: string[];
   execution_warnings?: string[];
+};
+
+type TeachingStepStatus = {
+  label: "Runnable" | "Manual-only" | "Needs clarification";
+  reason: string;
+};
+
+type EmployeeReadiness = {
+  label: "Ready to test" | "Almost ready" | "Needs more teaching";
+  reasons: string[];
+  toneClass: string;
 };
 
 type BrainCommandResponse = {
@@ -1032,15 +1056,12 @@ export default function Home() {
   });
 
   const mapApiTeachingSession = useCallback(
-    (input: TeachingSessionApiResponse["teaching_session"]): TeachingSession => ({
-      sessionId: input.session_id,
-      workflowName: input.workflow_name,
-      workflowSummary: input.workflow_summary ?? undefined,
-      status: input.status,
-      pageContextSnapshot: input.page_context_snapshot
+    (input: TeachingSessionApiResponse["teaching_session"]): TeachingSession => {
+      const mappedSnapshot = input.page_context_snapshot
         ? {
             url: input.page_context_snapshot.url,
             title: input.page_context_snapshot.title,
+            domain: input.page_context_snapshot.domain,
             visible_buttons: input.page_context_snapshot.visible_buttons,
             visible_inputs: input.page_context_snapshot.visible_inputs,
             visible_links: input.page_context_snapshot.visible_links,
@@ -1056,7 +1077,44 @@ export default function Home() {
             modal_title: input.page_context_snapshot.modal_title,
             captured_at: input.page_context_snapshot.captured_at,
           }
-        : null,
+        : null;
+
+      const safeSnapshot = isInvalidTeachingContextSnapshot(mappedSnapshot)
+        ? (() => {
+            console.warn("TEACH_UI_INVALID_CONTEXT_MASKED", {
+              session_id: input.session_id,
+              url: mappedSnapshot?.url || "",
+              title: mappedSnapshot?.title || "",
+              domain: mappedSnapshot?.domain || "",
+            });
+            return {
+              url: "",
+              title: INVALID_TEACHING_CONTEXT_MESSAGE,
+              domain: "",
+              visible_buttons: [],
+              visible_inputs: [],
+              visible_links: [],
+              visible_headings: [],
+              buttons: [],
+              inputs: [],
+              links: [],
+              headings: [],
+              active_element: null,
+              recent_click_label: null,
+              recent_type_field: null,
+              modal_present: false,
+              modal_title: null,
+              captured_at: mappedSnapshot?.captured_at,
+            };
+          })()
+        : mappedSnapshot;
+
+      return {
+        sessionId: input.session_id,
+        workflowName: input.workflow_name,
+        workflowSummary: input.workflow_summary ?? undefined,
+        status: input.status,
+        pageContextSnapshot: safeSnapshot,
       steps: (input.steps ?? []).map((step) => ({
         id: step.id,
         order: step.order,
@@ -1082,7 +1140,8 @@ export default function Home() {
         requiredInputs: step.required_inputs ?? [],
         confirmed: Boolean(step.confirmed),
       })),
-    }),
+      };
+    },
     [],
   );
 
@@ -1251,6 +1310,234 @@ export default function Home() {
       execution_warnings: mergedExecutionWarnings,
     } satisfies TeachingExecutionReadiness;
   }, [guidedTeachingExecutionReadiness, localTeachingExecutionReadiness]);
+
+  const explainStepStatus = useCallback((step: WorkflowStep): TeachingStepStatus => {
+    const actions = step.observedActions ?? [];
+    if (actions.length === 0) {
+      return {
+        label: "Manual-only",
+        reason: "Bill only has a note. He does not know what to click yet.",
+      };
+    }
+
+    let hasRunnable = false;
+    let hasManualConstraint = false;
+    let hasAmbiguity = false;
+
+    for (const action of actions) {
+      if (action.type === "navigate") {
+        if ((action.url ?? "").trim()) {
+          hasRunnable = true;
+        } else {
+          hasManualConstraint = true;
+        }
+        continue;
+      }
+
+      if (action.type === "click" || action.type === "submit") {
+        if ((action.selector ?? "").trim()) {
+          hasRunnable = true;
+        } else if ((action.label ?? "").trim()) {
+          hasAmbiguity = true;
+        } else {
+          hasManualConstraint = true;
+        }
+        continue;
+      }
+
+      if (action.type === "type" || action.type === "select") {
+        if ((action.selector ?? "").trim() && !action.valueRedacted) {
+          hasRunnable = true;
+        } else if (action.valueRedacted) {
+          hasManualConstraint = true;
+        } else {
+          hasAmbiguity = true;
+        }
+        continue;
+      }
+    }
+
+    if (hasRunnable && !hasManualConstraint && !hasAmbiguity) {
+      return {
+        label: "Runnable",
+        reason: "Bill has a replayable click/type target for this step.",
+      };
+    }
+
+    if (hasRunnable && (hasManualConstraint || hasAmbiguity)) {
+      return {
+        label: "Needs clarification",
+        reason: "Bill captured part of this step, but one action still needs a clearer target.",
+      };
+    }
+
+    if (hasAmbiguity) {
+      return {
+        label: "Needs clarification",
+        reason: "Bill found multiple possible targets. Confirm the exact button or field.",
+      };
+    }
+
+    return {
+      label: "Manual-only",
+      reason: "Bill saw the action, but it was saved as a note, not a runnable step.",
+    };
+  }, []);
+
+  const canonicalStartUrl = useMemo(() => {
+    if (!guidedTeachingSession) return "";
+    const fromReadiness = String(guidedTeachingEffectiveReadiness?.start_url || "").trim();
+    if (fromReadiness) return fromReadiness;
+    const firstNavigation = guidedTeachingSession.steps
+      .flatMap((step) => step.observedActions ?? [])
+      .find((action) => action.type === "navigate" && Boolean(action.url?.trim()));
+    return String(firstNavigation?.url || "").trim();
+  }, [guidedTeachingEffectiveReadiness?.start_url, guidedTeachingSession]);
+
+  const capturedButtons = useMemo(() => {
+    const snapshot = guidedTeachingSession?.pageContextSnapshot;
+    const visible = (snapshot?.visible_buttons ?? [])
+      .map((button) => String(button.text || button.aria_label || "").trim())
+      .filter(Boolean);
+    const fallback = (snapshot?.buttons ?? []).map((value) => String(value || "").trim()).filter(Boolean);
+    return Array.from(new Set([...(visible.length ? visible : fallback)])).slice(0, 8);
+  }, [guidedTeachingSession?.pageContextSnapshot]);
+
+  const capturedFields = useMemo(() => {
+    const snapshot = guidedTeachingSession?.pageContextSnapshot;
+    const visible = (snapshot?.visible_inputs ?? [])
+      .map((input) => String(input.label || input.placeholder || input.name || "").trim())
+      .filter(Boolean);
+    const fallback = (snapshot?.inputs ?? [])
+      .map((input) => String(input.label || input.placeholder || "").trim())
+      .filter(Boolean);
+    return Array.from(new Set([...(visible.length ? visible : fallback)])).slice(0, 8);
+  }, [guidedTeachingSession?.pageContextSnapshot]);
+
+  const capturedLinks = useMemo(() => {
+    const snapshot = guidedTeachingSession?.pageContextSnapshot;
+    const visible = (snapshot?.visible_links ?? [])
+      .map((link) => String(link.text || link.href || "").trim())
+      .filter(Boolean);
+    const fallback = (snapshot?.links ?? []).map((value) => String(value || "").trim()).filter(Boolean);
+    return Array.from(new Set([...(visible.length ? visible : fallback)])).slice(0, 8);
+  }, [guidedTeachingSession?.pageContextSnapshot]);
+
+  const stepStatusSummary = useMemo(() => {
+    const steps = guidedTeachingSession?.steps ?? [];
+    let runnable = 0;
+    let manualOnly = 0;
+    let needsClarification = 0;
+    for (const step of steps) {
+      const status = explainStepStatus(step);
+      if (status.label === "Runnable") runnable += 1;
+      if (status.label === "Manual-only") manualOnly += 1;
+      if (status.label === "Needs clarification") needsClarification += 1;
+    }
+    return { runnable, manualOnly, needsClarification, total: steps.length };
+  }, [explainStepStatus, guidedTeachingSession?.steps]);
+
+  const employeeReadiness = useMemo((): EmployeeReadiness => {
+    const readiness = guidedTeachingEffectiveReadiness;
+    const reasons: string[] = [];
+    const hasStart = Boolean(readiness?.has_start_url || canonicalStartUrl);
+    const hasRunnableStep = stepStatusSummary.runnable > 0;
+
+    if (readiness?.runnable) {
+      reasons.push("Bill has a starting page and at least one runnable step.");
+      if (stepStatusSummary.manualOnly > 0) {
+        reasons.push("Some steps are still notes only, but you can test the core path now.");
+      }
+      return {
+        label: "Ready to test",
+        reasons,
+        toneClass: "border-emerald-400/40 bg-emerald-500/10 text-emerald-100",
+      };
+    }
+
+    if (!hasStart) {
+      reasons.push("Bill still needs a starting page.");
+    }
+    if (!hasRunnableStep) {
+      reasons.push("Bill needs at least one runnable step before testing.");
+    }
+    if ((readiness?.blocking_reasons ?? []).length > 0) {
+      reasons.push(...(readiness?.blocking_reasons ?? []).slice(0, 2));
+    }
+
+    if (hasStart || hasRunnableStep) {
+      return {
+        label: "Almost ready",
+        reasons,
+        toneClass: "border-amber-400/40 bg-amber-500/10 text-amber-100",
+      };
+    }
+
+    return {
+      label: "Needs more teaching",
+      reasons,
+      toneClass: "border-rose-400/40 bg-rose-500/10 text-rose-100",
+    };
+  }, [canonicalStartUrl, guidedTeachingEffectiveReadiness, stepStatusSummary.manualOnly, stepStatusSummary.runnable]);
+
+  const teachingCoach = useMemo(() => {
+    const session = guidedTeachingSession;
+    const hasPurpose = Boolean(session?.workflowSummary?.trim());
+    const hasStart = Boolean(canonicalStartUrl);
+    const hasSnapshot = Boolean(session?.pageContextSnapshot?.url || session?.pageContextSnapshot?.domain);
+    const latestStep =
+      !session || session.steps.length === 0
+        ? null
+        : ([...session.steps].reverse().find((step) => !step.confirmed)
+          ?? session.steps[session.steps.length - 1]
+          ?? null);
+    const latestStatus = latestStep ? explainStepStatus(latestStep) : null;
+
+    if (!hasPurpose) {
+      return {
+        phase: "Define workflow purpose",
+        guidance:
+          "Tell Bill what this workflow is for, like: 'This logs into TrackVia and opens the client search page.'",
+      };
+    }
+    if (!hasStart) {
+      return {
+        phase: "Choose starting page",
+        guidance: "Now give Bill the starting URL or open the page in the teaching browser.",
+      };
+    }
+    if (!hasSnapshot || isInvalidTeachingContextSnapshot(session?.pageContextSnapshot)) {
+      return {
+        phase: "Confirm Bill sees the page",
+        guidance: "Make sure the real webpage tab is active so Bill can read fields and buttons.",
+      };
+    }
+    if ((session?.steps.length ?? 0) === 0) {
+      return {
+        phase: "Teach first action",
+        guidance: "Bill sees the page. Tell Bill what to click or type next.",
+      };
+    }
+    if (latestStep && !latestStep.confirmed) {
+      return {
+        phase: "Confirm runnable step",
+        guidance:
+          latestStatus?.label === "Runnable"
+            ? "Review this step. If it looks right, confirm it."
+            : "This step needs clarification. Add detail so Bill knows the exact target.",
+      };
+    }
+    if (!guidedTeachingEffectiveReadiness?.runnable) {
+      return {
+        phase: "Continue or finish",
+        guidance: "Keep teaching the next action or finish once Bill has a runnable path.",
+      };
+    }
+    return {
+      phase: "Ready to test",
+      guidance: "Bill has enough to run. Start a test run and confirm the result.",
+    };
+  }, [canonicalStartUrl, explainStepStatus, guidedTeachingEffectiveReadiness?.runnable, guidedTeachingSession]);
 
   const getLatestRelevantStep = useCallback((): WorkflowStep | null => {
     if (!guidedTeachingSession || guidedTeachingSession.steps.length === 0) {
@@ -3739,6 +4026,7 @@ export default function Home() {
       );
       const data = (await res.json()) as { pid?: number; status?: string; detail?: string; task_id?: string };
       if (!res.ok) throw new Error(data.detail ?? `Launch failed (${res.status})`);
+      setTeachingOverlayTaskId(data.task_id ?? null);
       setTeachingLaunchStatus("running");
       setFeedback(setLearningFeedback, "success", `Teach browser launch requested. Task ${data.task_id ?? "queued"}.`);
       await loadBrainPanels();
@@ -4263,7 +4551,12 @@ export default function Home() {
 
               <div className="mt-4 grid grid-cols-1 gap-3">
                 <section className="rounded-xl border border-cyan-800/60 bg-cyan-950/30 p-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-cyan-300">Teaching Co-Pilot</p>
+                  <p className="text-xs uppercase tracking-[0.16em] text-cyan-300">Teaching Coach</p>
+                  <div className="mt-2 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
+                    <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">Current phase</p>
+                    <p className="mt-1 text-sm font-semibold text-cyan-50">{teachingCoach.phase}</p>
+                    <p className="mt-1 text-xs text-cyan-100">{teachingCoach.guidance}</p>
+                  </div>
                   <div className="mt-2 space-y-2 text-sm">
                     <div className="rounded-md border border-cyan-700/40 bg-slate-950/40 px-2 py-2">
                       <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200/80">What Bill just noticed</p>
@@ -4282,12 +4575,18 @@ export default function Home() {
                       <div className="mt-2 space-y-2 text-xs text-sky-50">
                         <p>
                           <span className="text-sky-200/80">Page:</span>{" "}
-                          {guidedTeachingSession.pageContextSnapshot?.title || "Unknown page"}
+                          {(() => {
+                            const snapshot = guidedTeachingSession.pageContextSnapshot;
+                            if (isInvalidTeachingContextSnapshot(snapshot)) return INVALID_TEACHING_CONTEXT_MESSAGE;
+                            return snapshot?.title || "Unknown page";
+                          })()}
                         </p>
                         <p>
                           <span className="text-sky-200/80">Domain:</span>{" "}
                           {(() => {
-                            const urlValue = guidedTeachingSession.pageContextSnapshot?.url || "";
+                            const snapshot = guidedTeachingSession.pageContextSnapshot;
+                            const urlValue = snapshot?.url || "";
+                            if (isInvalidTeachingContextSnapshot(snapshot)) return "Waiting for real webpage tab";
                             if (!urlValue) return "Not available";
                             try {
                               return new URL(urlValue).hostname || "Not available";
@@ -4298,19 +4597,11 @@ export default function Home() {
                         </p>
                         <p>
                           <span className="text-sky-200/80">Top buttons:</span>{" "}
-                          {(
-                            guidedTeachingSession.pageContextSnapshot?.visible_buttons?.map((b) => b.text).filter(Boolean)
-                              || guidedTeachingSession.pageContextSnapshot?.buttons
-                              || []
-                          ).slice(0, 4).join(", ") || "None detected"}
+                          {capturedButtons.slice(0, 4).join(", ") || "None detected"}
                         </p>
                         <p>
                           <span className="text-sky-200/80">Top fields:</span>{" "}
-                          {(
-                            guidedTeachingSession.pageContextSnapshot?.visible_inputs?.map((i) => i.label || i.placeholder).filter(Boolean)
-                              || guidedTeachingSession.pageContextSnapshot?.inputs?.map((i) => i.label || i.placeholder).filter(Boolean)
-                              || []
-                          ).slice(0, 4).join(", ") || "None detected"}
+                          {capturedFields.slice(0, 4).join(", ") || "None detected"}
                         </p>
                         <p>
                           <span className="text-sky-200/80">Popup:</span>{" "}
@@ -4320,6 +4611,35 @@ export default function Home() {
                         </p>
                       </div>
                     </details>
+                  </div>
+                </section>
+
+                <section className="rounded-xl border border-emerald-800/60 bg-emerald-950/25 p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-emerald-300">Captured So Far</p>
+                  <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-emerald-50 md:grid-cols-2">
+                    <p><span className="text-emerald-200/80">Workflow:</span> {guidedTeachingSession.workflowName || "Untitled"}</p>
+                    <p><span className="text-emerald-200/80">Purpose:</span> {guidedTeachingSession.workflowSummary || "Needs clarification"}</p>
+                    <p><span className="text-emerald-200/80">Saved starting page:</span> {canonicalStartUrl || "Not saved yet"}</p>
+                    <p><span className="text-emerald-200/80">Current page/domain:</span> {guidedTeachingSession.pageContextSnapshot?.url || guidedTeachingSession.pageContextSnapshot?.domain || "Waiting for page"}</p>
+                  </div>
+                  <div className="mt-2 space-y-1 text-xs text-emerald-100">
+                    <p><span className="text-emerald-200/80">Bill can see this field:</span> {capturedFields.slice(0, 5).join(", ") || "None yet"}</p>
+                    <p><span className="text-emerald-200/80">Bill can see this button:</span> {capturedButtons.slice(0, 5).join(", ") || "None yet"}</p>
+                    <p><span className="text-emerald-200/80">Detected links:</span> {capturedLinks.slice(0, 5).join(", ") || "None yet"}</p>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                    <span className="rounded border border-emerald-400/40 bg-emerald-500/10 px-2 py-1">Runnable steps: {stepStatusSummary.runnable}</span>
+                    <span className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1">Needs clarification: {stepStatusSummary.needsClarification}</span>
+                    <span className="rounded border border-slate-500/50 bg-slate-800 px-2 py-1">Manual-only: {stepStatusSummary.manualOnly}</span>
+                  </div>
+                  <div className={`mt-2 rounded-md border px-2.5 py-2 ${employeeReadiness.toneClass}`}>
+                    <p className="text-[11px] uppercase tracking-[0.14em]">Readiness status</p>
+                    <p className="mt-1 text-sm font-semibold">{employeeReadiness.label}</p>
+                    <ul className="mt-1 list-disc space-y-1 pl-4 text-xs">
+                      {employeeReadiness.reasons.slice(0, 3).map((reason, index) => (
+                        <li key={`employee-readiness-${index}`}>{reason}</li>
+                      ))}
+                    </ul>
                   </div>
                 </section>
 
@@ -4463,6 +4783,21 @@ export default function Home() {
                           ) : (
                             <>
                               <p className="mt-2 text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
+                              {(() => {
+                                const status = explainStepStatus(step);
+                                const classes =
+                                  status.label === "Runnable"
+                                    ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100"
+                                    : status.label === "Needs clarification"
+                                      ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
+                                      : "border-slate-500/50 bg-slate-800 text-slate-200";
+                                return (
+                                  <div className={`mt-2 rounded-md border px-2.5 py-2 ${classes}`}>
+                                    <p className="text-[11px] uppercase tracking-[0.14em]">{status.label}</p>
+                                    <p className="mt-1 text-xs">{status.reason}</p>
+                                  </div>
+                                );
+                              })()}
                               <div className="mt-2 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
                                 <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">What Bill thinks he learned</p>
                                 <p className="mt-1 text-xs text-cyan-100">{step.billSummary || "Bill is still interpreting this step."}</p>
@@ -4572,6 +4907,20 @@ export default function Home() {
                     )}
                   </div>
                 </section>
+
+                <details className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                  <summary className="cursor-pointer text-xs uppercase tracking-[0.16em] text-slate-400">Advanced details</summary>
+                  <div className="mt-2 space-y-2 text-xs text-slate-300">
+                    <p>Session ID: {guidedTeachingSession.sessionId || "n/a"}</p>
+                    <p>Draft ID: {teachingSessionDraftId || "n/a"}</p>
+                    <p>Task ID: {teachingOverlayTaskId || teachingStartupState?.task_id || "n/a"}</p>
+                    <p>Startup status: {teachingStartupState?.status || "n/a"}</p>
+                    <p>Worker UUID: {teachingStartupState?.target_machine_uuid || "n/a"}</p>
+                    <pre className="max-h-52 overflow-auto rounded-md border border-slate-700 bg-slate-950/80 p-2 text-[11px] text-slate-200">
+                      {JSON.stringify(guidedTeachingSession.pageContextSnapshot ?? {}, null, 2)}
+                    </pre>
+                  </div>
+                </details>
               </div>
             </section>
           ) : null}
