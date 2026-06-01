@@ -182,6 +182,7 @@ type TeachingSession = {
   pageContextSnapshot?: {
     url?: string;
     title?: string;
+    domain?: string;
     visible_buttons?: Array<{ text?: string; aria_label?: string; role?: string; selector_hint?: string | null }>;
     visible_inputs?: Array<{ label?: string; placeholder?: string; type?: string; name?: string; selector_hint?: string | null; sensitive?: boolean }>;
     visible_links?: Array<{ text?: string; href?: string }>;
@@ -221,6 +222,7 @@ type TeachingSessionApiResponse = {
     page_context_snapshot?: {
       url?: string;
       title?: string;
+      domain?: string;
       visible_buttons?: Array<{ text?: string; aria_label?: string; role?: string; selector_hint?: string | null }>;
       visible_inputs?: Array<{ label?: string; placeholder?: string; type?: string; name?: string; selector_hint?: string | null; sensitive?: boolean }>;
       visible_links?: Array<{ text?: string; href?: string }>;
@@ -305,6 +307,17 @@ type TeachingSessionApiResponse = {
   } | null;
 };
 
+const INVALID_TEACHING_CONTEXT_MARKERS = ["omnibox-popup", "top-chrome", "chrome://", "chrome-extension://", "devtools://", "about:", "edge://", "extension://"];
+const INVALID_TEACHING_CONTEXT_MESSAGE = "Bill is waiting for the real webpage tab.";
+
+function isInvalidTeachingContextSnapshot(snapshot: { url?: string; title?: string; domain?: string } | null | undefined): boolean {
+  const urlValue = snapshot?.url || "";
+  const titleValue = snapshot?.title || "";
+  const domainValue = snapshot?.domain || "";
+  const lowered = `${urlValue} ${titleValue} ${domainValue}`.toLowerCase();
+  return INVALID_TEACHING_CONTEXT_MARKERS.some((marker) => lowered.includes(marker));
+}
+
 type TeachingReviewSummary = {
   workflowSummary?: string;
   totalSteps: number;
@@ -318,6 +331,38 @@ type TeachingExecutionReadiness = {
   start_url?: string | null;
   blocking_reasons?: string[];
   execution_warnings?: string[];
+};
+
+type GeneratedWorkflowSOP = {
+  workflow_id: string;
+  draft_id: string;
+  workflow_name: string;
+  readiness_status: "runnable" | "needs_more_teaching" | "manual_only";
+  runnable: boolean;
+  has_start_url: boolean;
+  last_validated_date?: string | null;
+  generated_at: string;
+  markdown: string;
+  source_summary?: {
+    step_count?: number;
+    captured_fields?: string[];
+    captured_buttons?: string[];
+    captured_pages?: string[];
+    manual_step_count?: number;
+    needs_confirmation_count?: number;
+    workflow_summary_present?: boolean;
+  };
+};
+
+type TeachingStepStatus = {
+  label: "Runnable" | "Manual-only" | "Needs clarification";
+  reason: string;
+};
+
+type EmployeeReadiness = {
+  label: "Ready to test" | "Almost ready" | "Needs more teaching";
+  reasons: string[];
+  toneClass: string;
 };
 
 type BrainCommandResponse = {
@@ -751,6 +796,9 @@ export default function Home() {
   const [guidedTeachingApprovalMessage, setGuidedTeachingApprovalMessage] = useState<string | null>(null);
   const [guidedTeachingRunNowBusy, setGuidedTeachingRunNowBusy] = useState(false);
   const [guidedTeachingRunNowMessage, setGuidedTeachingRunNowMessage] = useState<string | null>(null);
+  const [guidedTeachingSopBusy, setGuidedTeachingSopBusy] = useState(false);
+  const [guidedTeachingSopError, setGuidedTeachingSopError] = useState<string | null>(null);
+  const [guidedTeachingSopRecord, setGuidedTeachingSopRecord] = useState<GeneratedWorkflowSOP | null>(null);
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [editingAdvancedDetailsOpen, setEditingAdvancedDetailsOpen] = useState(false);
   const [editingStepState, setEditingStepState] = useState<GuidedStepEditState>({
@@ -1032,15 +1080,12 @@ export default function Home() {
   });
 
   const mapApiTeachingSession = useCallback(
-    (input: TeachingSessionApiResponse["teaching_session"]): TeachingSession => ({
-      sessionId: input.session_id,
-      workflowName: input.workflow_name,
-      workflowSummary: input.workflow_summary ?? undefined,
-      status: input.status,
-      pageContextSnapshot: input.page_context_snapshot
+    (input: TeachingSessionApiResponse["teaching_session"]): TeachingSession => {
+      const mappedSnapshot = input.page_context_snapshot
         ? {
             url: input.page_context_snapshot.url,
             title: input.page_context_snapshot.title,
+            domain: input.page_context_snapshot.domain,
             visible_buttons: input.page_context_snapshot.visible_buttons,
             visible_inputs: input.page_context_snapshot.visible_inputs,
             visible_links: input.page_context_snapshot.visible_links,
@@ -1056,7 +1101,44 @@ export default function Home() {
             modal_title: input.page_context_snapshot.modal_title,
             captured_at: input.page_context_snapshot.captured_at,
           }
-        : null,
+        : null;
+
+      const safeSnapshot = isInvalidTeachingContextSnapshot(mappedSnapshot)
+        ? (() => {
+            console.warn("TEACH_UI_INVALID_CONTEXT_MASKED", {
+              session_id: input.session_id,
+              url: mappedSnapshot?.url || "",
+              title: mappedSnapshot?.title || "",
+              domain: mappedSnapshot?.domain || "",
+            });
+            return {
+              url: "",
+              title: INVALID_TEACHING_CONTEXT_MESSAGE,
+              domain: "",
+              visible_buttons: [],
+              visible_inputs: [],
+              visible_links: [],
+              visible_headings: [],
+              buttons: [],
+              inputs: [],
+              links: [],
+              headings: [],
+              active_element: null,
+              recent_click_label: null,
+              recent_type_field: null,
+              modal_present: false,
+              modal_title: null,
+              captured_at: mappedSnapshot?.captured_at,
+            };
+          })()
+        : mappedSnapshot;
+
+      return {
+        sessionId: input.session_id,
+        workflowName: input.workflow_name,
+        workflowSummary: input.workflow_summary ?? undefined,
+        status: input.status,
+        pageContextSnapshot: safeSnapshot,
       steps: (input.steps ?? []).map((step) => ({
         id: step.id,
         order: step.order,
@@ -1082,7 +1164,8 @@ export default function Home() {
         requiredInputs: step.required_inputs ?? [],
         confirmed: Boolean(step.confirmed),
       })),
-    }),
+      };
+    },
     [],
   );
 
@@ -1123,6 +1206,8 @@ export default function Home() {
       setGuidedTeachingWarnings([]);
       setGuidedTeachingApprovalMessage(null);
       setGuidedTeachingRunNowMessage(null);
+      setGuidedTeachingSopError(null);
+      setGuidedTeachingSopRecord(null);
       setGuidedTeachingMessages([
         {
           role: "assistant",
@@ -1161,6 +1246,8 @@ export default function Home() {
     setGuidedTeachingSession(session);
     setGuidedTeachingWarnings([]);
     setGuidedTeachingExecutionReadiness(null);
+    setGuidedTeachingSopError(null);
+    setGuidedTeachingSopRecord(null);
     setGuidedTeachingReviewSummary({
       workflowSummary: session.workflowSummary,
       totalSteps: session.steps.length,
@@ -1252,6 +1339,248 @@ export default function Home() {
     } satisfies TeachingExecutionReadiness;
   }, [guidedTeachingExecutionReadiness, localTeachingExecutionReadiness]);
 
+  const explainStepStatus = useCallback((step: WorkflowStep): TeachingStepStatus => {
+    const actions = step.observedActions ?? [];
+    if (actions.length === 0) {
+      return {
+        label: "Manual-only",
+        reason: "Bill only has a note. He does not know what to click yet.",
+      };
+    }
+
+    let hasRunnable = false;
+    let hasManualConstraint = false;
+    let hasAmbiguity = false;
+
+    for (const action of actions) {
+      if (action.type === "navigate") {
+        if ((action.url ?? "").trim()) {
+          hasRunnable = true;
+        } else {
+          hasManualConstraint = true;
+        }
+        continue;
+      }
+
+      if (action.type === "click" || action.type === "submit") {
+        if ((action.selector ?? "").trim()) {
+          hasRunnable = true;
+        } else if ((action.label ?? "").trim()) {
+          hasAmbiguity = true;
+        } else {
+          hasManualConstraint = true;
+        }
+        continue;
+      }
+
+      if (action.type === "type" || action.type === "select") {
+        if ((action.selector ?? "").trim() && !action.valueRedacted) {
+          hasRunnable = true;
+        } else if (action.valueRedacted) {
+          hasManualConstraint = true;
+        } else {
+          hasAmbiguity = true;
+        }
+        continue;
+      }
+    }
+
+    if (hasRunnable && !hasManualConstraint && !hasAmbiguity) {
+      return {
+        label: "Runnable",
+        reason: "Bill has a replayable click/type target for this step.",
+      };
+    }
+
+    if (hasRunnable && (hasManualConstraint || hasAmbiguity)) {
+      return {
+        label: "Needs clarification",
+        reason: "Bill captured part of this step, but one action still needs a clearer target.",
+      };
+    }
+
+    if (hasAmbiguity) {
+      return {
+        label: "Needs clarification",
+        reason: "Bill found multiple possible targets. Confirm the exact button or field.",
+      };
+    }
+
+    return {
+      label: "Manual-only",
+      reason: "Bill saw the action, but it was saved as a note, not a runnable step.",
+    };
+  }, []);
+
+  const canonicalStartUrl = useMemo(() => {
+    if (!guidedTeachingSession) return "";
+    const fromReadiness = String(guidedTeachingEffectiveReadiness?.start_url || "").trim();
+    if (fromReadiness) return fromReadiness;
+    const firstNavigation = guidedTeachingSession.steps
+      .flatMap((step) => step.observedActions ?? [])
+      .find((action) => action.type === "navigate" && Boolean(action.url?.trim()));
+    return String(firstNavigation?.url || "").trim();
+  }, [guidedTeachingEffectiveReadiness?.start_url, guidedTeachingSession]);
+
+  const capturedButtons = useMemo(() => {
+    const snapshot = guidedTeachingSession?.pageContextSnapshot;
+    const visible = (snapshot?.visible_buttons ?? [])
+      .map((button) => String(button.text || button.aria_label || "").trim())
+      .filter(Boolean);
+    const fallback = (snapshot?.buttons ?? []).map((value) => String(value || "").trim()).filter(Boolean);
+    return Array.from(new Set([...(visible.length ? visible : fallback)])).slice(0, 8);
+  }, [guidedTeachingSession?.pageContextSnapshot]);
+
+  const capturedFields = useMemo(() => {
+    const snapshot = guidedTeachingSession?.pageContextSnapshot;
+    const visible = (snapshot?.visible_inputs ?? [])
+      .map((input) => String(input.label || input.placeholder || input.name || "").trim())
+      .filter(Boolean);
+    const fallback = (snapshot?.inputs ?? [])
+      .map((input) => String(input.label || input.placeholder || "").trim())
+      .filter(Boolean);
+    return Array.from(new Set([...(visible.length ? visible : fallback)])).slice(0, 8);
+  }, [guidedTeachingSession?.pageContextSnapshot]);
+
+  const capturedLinks = useMemo(() => {
+    const snapshot = guidedTeachingSession?.pageContextSnapshot;
+    const visible = (snapshot?.visible_links ?? [])
+      .map((link) => String(link.text || link.href || "").trim())
+      .filter(Boolean);
+    const fallback = (snapshot?.links ?? []).map((value) => String(value || "").trim()).filter(Boolean);
+    return Array.from(new Set([...(visible.length ? visible : fallback)])).slice(0, 8);
+  }, [guidedTeachingSession?.pageContextSnapshot]);
+
+  const stepStatusSummary = useMemo(() => {
+    const steps = guidedTeachingSession?.steps ?? [];
+    let runnable = 0;
+    let manualOnly = 0;
+    let needsClarification = 0;
+    for (const step of steps) {
+      const status = explainStepStatus(step);
+      if (status.label === "Runnable") runnable += 1;
+      if (status.label === "Manual-only") manualOnly += 1;
+      if (status.label === "Needs clarification") needsClarification += 1;
+    }
+    return { runnable, manualOnly, needsClarification, total: steps.length };
+  }, [explainStepStatus, guidedTeachingSession?.steps]);
+
+  const employeeReadiness = useMemo((): EmployeeReadiness => {
+    const readiness = guidedTeachingEffectiveReadiness;
+    const reasons: string[] = [];
+    const hasStart = Boolean(readiness?.has_start_url || canonicalStartUrl);
+    const hasRunnableStep = stepStatusSummary.runnable > 0;
+
+    if (readiness?.runnable) {
+      reasons.push("Bill has a starting page and at least one runnable step.");
+      if (stepStatusSummary.manualOnly > 0) {
+        reasons.push("Some steps are still notes only, but you can test the core path now.");
+      }
+      return {
+        label: "Ready to test",
+        reasons,
+        toneClass: "border-emerald-400/40 bg-emerald-500/10 text-emerald-100",
+      };
+    }
+
+    if (!hasStart) {
+      reasons.push("Bill still needs a starting page.");
+    }
+    if (!hasRunnableStep) {
+      reasons.push("Bill needs at least one runnable step before testing.");
+    }
+    if ((readiness?.blocking_reasons ?? []).length > 0) {
+      reasons.push(...(readiness?.blocking_reasons ?? []).slice(0, 2));
+    }
+
+    if (hasStart || hasRunnableStep) {
+      return {
+        label: "Almost ready",
+        reasons,
+        toneClass: "border-amber-400/40 bg-amber-500/10 text-amber-100",
+      };
+    }
+
+    return {
+      label: "Needs more teaching",
+      reasons,
+      toneClass: "border-rose-400/40 bg-rose-500/10 text-rose-100",
+    };
+  }, [canonicalStartUrl, guidedTeachingEffectiveReadiness, stepStatusSummary.manualOnly, stepStatusSummary.runnable]);
+
+  const teachingCoach = useMemo(() => {
+    const session = guidedTeachingSession;
+    const hasPurpose = Boolean(session?.workflowSummary?.trim());
+    const hasStart = Boolean(canonicalStartUrl);
+    const hasSnapshot = Boolean(session?.pageContextSnapshot?.url || session?.pageContextSnapshot?.domain);
+    const latestStep =
+      !session || session.steps.length === 0
+        ? null
+        : ([...session.steps].reverse().find((step) => !step.confirmed)
+          ?? session.steps[session.steps.length - 1]
+          ?? null);
+    const latestStatus = latestStep ? explainStepStatus(latestStep) : null;
+
+    if (!hasPurpose) {
+      return {
+        phase: "Define workflow purpose",
+        guidance:
+          "Tell Bill what this workflow is for, like: 'This logs into TrackVia and opens the client search page.'",
+        nextAction: "Describe the workflow in one sentence.",
+        examplePhrase: "This workflow logs into TrackVia and opens the client search page.",
+      };
+    }
+    if (!hasStart) {
+      return {
+        phase: "Choose starting page",
+        guidance: "Now give Bill the starting URL or open the page in the teaching browser.",
+        nextAction: "Open the login page or paste the starting URL.",
+        examplePhrase: "Open TrackVia's login page.",
+      };
+    }
+    if (!hasSnapshot || isInvalidTeachingContextSnapshot(session?.pageContextSnapshot)) {
+      return {
+        phase: "Confirm Bill sees the page",
+        guidance: "Make sure the real webpage tab is active so Bill can read fields and buttons.",
+        nextAction: "Switch to the real browser tab.",
+        examplePhrase: "Bill should be able to see the login form now.",
+      };
+    }
+    if ((session?.steps.length ?? 0) === 0) {
+      return {
+        phase: "Teach first action",
+        guidance: "Bill sees the page. Tell Bill what to click or type next.",
+        nextAction: "Capture the first click or field entry.",
+        examplePhrase: "Click the Sign In button.",
+      };
+    }
+    if (latestStep && !latestStep.confirmed) {
+      return {
+        phase: "Confirm runnable step",
+        guidance:
+          latestStatus?.label === "Runnable"
+            ? "Review this step. If it looks right, confirm it."
+            : "This step needs clarification. Add detail so Bill knows the exact target.",
+        nextAction: latestStatus?.label === "Runnable" ? "Confirm the current step." : "Fix the target or add one more clue.",
+        examplePhrase: latestStatus?.label === "Runnable" ? "Yes, confirm this step." : "Click the blue Sign In button.",
+      };
+    }
+    if (!guidedTeachingEffectiveReadiness?.runnable) {
+      return {
+        phase: "Continue or finish",
+        guidance: "Keep teaching the next action or finish once Bill has a runnable path.",
+        nextAction: "Teach the next missing action.",
+        examplePhrase: "After login, open the client search page.",
+      };
+    }
+    return {
+      phase: "Ready to test",
+      guidance: "Bill has enough to run. Start a test run and confirm the result.",
+      nextAction: "Run the workflow and verify the result.",
+      examplePhrase: "Run a test on this taught workflow.",
+    };
+  }, [canonicalStartUrl, explainStepStatus, guidedTeachingEffectiveReadiness?.runnable, guidedTeachingSession]);
+
   const getLatestRelevantStep = useCallback((): WorkflowStep | null => {
     if (!guidedTeachingSession || guidedTeachingSession.steps.length === 0) {
       return null;
@@ -1259,6 +1588,8 @@ export default function Home() {
     const latestUnconfirmed = [...guidedTeachingSession.steps].reverse().find((step) => !step.confirmed);
     return latestUnconfirmed ?? guidedTeachingSession.steps[guidedTeachingSession.steps.length - 1] ?? null;
   }, [guidedTeachingSession]);
+
+  const latestTeachingStep = useMemo(() => getLatestRelevantStep(), [getLatestRelevantStep]);
 
   const callTeachingStepEndpoint = useCallback(async (
     stepId: string,
@@ -1743,6 +2074,77 @@ export default function Home() {
       setGuidedTeachingRunNowBusy(false);
     }
   };
+
+  const generateGuidedTeachingSop = useCallback(async () => {
+    if (guidedTeachingSopBusy) {
+      return;
+    }
+
+    const draftId = (teachingSessionDraftId || "").trim();
+    const workflowName = (guidedTeachingSession?.workflowName || "").trim();
+    if (!draftId && !workflowName) {
+      setGuidedTeachingSopError("No draft or workflow id is available yet. Approve the draft first.");
+      return;
+    }
+
+    setGuidedTeachingSopBusy(true);
+    setGuidedTeachingSopError(null);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+
+      const endpoint = draftId
+        ? `${apiBase}/api/teaching/drafts/${encodeURIComponent(draftId)}/generate-sop`
+        : `${apiBase}/api/workflows/${encodeURIComponent(workflowSlug(workflowName))}/sop`;
+      const method = draftId ? "POST" : "GET";
+
+      const response = await fetch(endpoint, {
+        method,
+        headers: method === "POST" ? { "Content-Type": "application/json" } : undefined,
+      });
+      const body = (await response.json()) as GeneratedWorkflowSOP & { detail?: string | { message?: string } };
+      if (!response.ok) {
+        const detail = typeof body.detail === "string" ? body.detail : body.detail?.message;
+        throw new Error(detail || `SOP generation failed (${response.status})`);
+      }
+
+      setGuidedTeachingSopRecord(body);
+      setGuidedTeachingSopError(null);
+    } catch (error) {
+      setGuidedTeachingSopError(error instanceof Error ? error.message : "Unknown SOP generation error");
+    } finally {
+      setGuidedTeachingSopBusy(false);
+    }
+  }, [guidedTeachingSession?.workflowName, guidedTeachingSopBusy, teachingSessionDraftId]);
+
+  const copyGuidedTeachingSop = useCallback(async () => {
+    if (!guidedTeachingSopRecord?.markdown) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(guidedTeachingSopRecord.markdown);
+      setGuidedTeachingSopError(null);
+    } catch {
+      setGuidedTeachingSopError("Copy failed. Your browser may block clipboard access.");
+    }
+  }, [guidedTeachingSopRecord]);
+
+  const downloadGuidedTeachingSop = useCallback(() => {
+    if (!guidedTeachingSopRecord?.markdown) {
+      return;
+    }
+    const blob = new Blob([guidedTeachingSopRecord.markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${workflowSlug(guidedTeachingSopRecord.workflow_name || "workflow")}-sop.md`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }, [guidedTeachingSopRecord]);
 
   const billVoice = useBillVoice(getApiBase());
   const commandMic = useBillMic();
@@ -3739,6 +4141,7 @@ export default function Home() {
       );
       const data = (await res.json()) as { pid?: number; status?: string; detail?: string; task_id?: string };
       if (!res.ok) throw new Error(data.detail ?? `Launch failed (${res.status})`);
+      setTeachingOverlayTaskId(data.task_id ?? null);
       setTeachingLaunchStatus("running");
       setFeedback(setLearningFeedback, "success", `Teach browser launch requested. Task ${data.task_id ?? "queued"}.`);
       await loadBrainPanels();
@@ -4070,21 +4473,21 @@ export default function Home() {
       </div>
 
       {guidedTeachingSession ? (
-        <div className="fixed bottom-4 right-4 z-[70] flex max-w-[min(32rem,calc(100vw-2rem))] flex-col items-end gap-3">
+        <div className="fixed inset-3 z-[70] flex flex-col gap-3 pointer-events-none">
           <button
             type="button"
             onClick={() => {
               setTeachingOverlayOpen(true);
               logTeachOverlay("manual overlay open requested", { session_id: guidedTeachingSession.sessionId });
             }}
-            className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-100 shadow-lg shadow-cyan-950/40 hover:bg-cyan-500/25"
+            className="pointer-events-auto self-start rounded-full border border-cyan-400/40 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-100 shadow-lg shadow-cyan-950/40 hover:bg-cyan-500/25"
           >
-            Open Teaching Mode
+            Start Teaching
           </button>
 
           {teachingStartupState && teachingStartupState.status !== "active" && (
             <section
-              className={`w-full rounded-2xl border p-4 text-slate-100 shadow-2xl backdrop-blur ${
+              className={`pointer-events-auto w-full max-w-[min(42rem,calc(100vw-1.5rem))] rounded-2xl border p-4 text-slate-100 shadow-2xl backdrop-blur ${
                 teachingStartupState.status === "failed"
                   ? "border-rose-500/40 bg-rose-950/80"
                   : "border-cyan-400/30 bg-slate-950/95"
@@ -4119,460 +4522,531 @@ export default function Home() {
           )}
 
           {teachingOverlayOpen ? (
-            <section className="w-full rounded-2xl border border-cyan-400/30 bg-slate-950/95 p-4 text-slate-100 shadow-2xl shadow-slate-950/60 backdrop-blur">
-              {/* Progress/Status Panel */}
-              <div className="mb-4 flex flex-col gap-2 rounded-xl border border-cyan-400/20 bg-cyan-500/5 p-3">
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Progress</span>
-                  <span className="ml-auto text-xs text-slate-400">{guidedTeachingSession.workflowName}</span>
-                </div>
-                <div className="flex flex-wrap gap-2 text-xs">
-                  {/* State indicator */}
-                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "intro" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Intro</span>
-                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "teaching" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Learning</span>
-                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "review" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Reviewing</span>
-                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "ready" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Ready to Run</span>
-                  <span className={`rounded px-2 py-1 font-semibold ${guidedTeachingSession.status === "needs_more_teaching" ? "bg-cyan-600/30 text-cyan-100" : "bg-slate-800 text-slate-300"}`}>Needs More Teaching</span>
-                </div>
-                <div className="flex flex-wrap gap-4 mt-2 text-xs">
-                  <span>Summary: <span className="font-semibold text-cyan-100">{guidedTeachingReviewSummary?.workflowSummary || guidedTeachingSession.workflowSummary || "—"}</span></span>
-                  <span>Steps: <span className="font-semibold text-cyan-100">{guidedTeachingReviewSummary?.totalSteps ?? guidedTeachingSession.steps.length}</span></span>
-                  <span>Confirmed: <span className="font-semibold text-emerald-200">{guidedTeachingReviewSummary?.confirmedSteps ?? guidedTeachingSession.steps.filter((step) => step.confirmed).length}</span></span>
-                  <span>Unconfirmed: <span className="font-semibold text-amber-200">{guidedTeachingReviewSummary?.unconfirmedSteps ?? guidedTeachingSession.steps.filter((step) => !step.confirmed).length}</span></span>
-                  <span>Status: <span className={`font-semibold ${guidedTeachingSession.status === "ready" ? "text-emerald-200" : guidedTeachingSession.status === "needs_more_teaching" ? "text-amber-200" : "text-slate-200"}`}>{guidedTeachingSession.status === "ready" ? "Runnable" : guidedTeachingSession.status === "needs_more_teaching" ? "Needs More Teaching" : guidedTeachingSession.status.charAt(0).toUpperCase() + guidedTeachingSession.status.slice(1)}</span></span>
-                  <span>Warnings: <span className="font-semibold text-amber-200">{guidedTeachingWarnings.length}</span></span>
-                  <span>Approval: <span className={`font-semibold ${guidedTeachingSession.status === "approved" ? "text-emerald-200" : "text-slate-200"}`}>{guidedTeachingSession.status === "approved" ? "Approved" : "Pending"}</span></span>
-                </div>
-              </div>
-              {/* End Progress/Status Panel */}
-              <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
-                <div>
+            <section className="pointer-events-auto flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-cyan-400/30 bg-slate-950/95 text-slate-100 shadow-2xl shadow-slate-950/60 backdrop-blur">
+              <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-4 py-4">
+                <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Mode Active</p>
                   <h2 className="mt-1 text-lg font-semibold text-white">{guidedTeachingSession.workflowName}</h2>
                   <p className="mt-1 text-xs text-slate-400">Train Bill like a new hire while you work.</p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setTeachingOverlayOpen(false)}
-                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500 hover:text-white"
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 hover:border-slate-500 hover:text-white"
                   >
-                    Hide
+                    Cancel / End Session
                   </button>
                   <button
                     type="button"
                     onClick={() => void reviewGuidedTeachingSession()}
                     disabled={guidedTeachingBusy || guidedTeachingSession.status === "review" || guidedTeachingSession.status === "approved"}
-                    className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-100 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Review What Bill Learned
+                    Finish Teaching
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void approveGuidedTeachingSession()}
+                    disabled={guidedTeachingBusy}
+                    className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Approve Draft
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runGuidedTeachingWorkflowNow()}
+                    disabled={guidedTeachingRunNowBusy || !guidedTeachingEffectiveReadiness?.runnable}
+                    className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {guidedTeachingRunNowBusy ? "Running..." : "Run Test"}
                   </button>
                 </div>
-              </div>
+              </header>
 
-              {(guidedTeachingSession.status === "review" || guidedTeachingSession.status === "approved" || guidedTeachingReviewSummary) && (
-                <section className="mt-4 rounded-xl border border-amber-500/30 bg-amber-950/25 p-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-amber-200">Review Workflow</p>
-                  <p className="mt-1 text-sm text-amber-50">
-                    {guidedTeachingReviewSummary?.workflowSummary || guidedTeachingSession.workflowSummary || "Review captured steps before final approval."}
-                  </p>
-                  <p className="mt-2 text-xs text-amber-100/90">
-                    Steps: {guidedTeachingReviewSummary?.totalSteps ?? guidedTeachingSession.steps.length} | Confirmed: {guidedTeachingReviewSummary?.confirmedSteps ?? guidedTeachingSession.steps.filter((step) => step.confirmed).length} | Unconfirmed: {guidedTeachingReviewSummary?.unconfirmedSteps ?? guidedTeachingSession.steps.filter((step) => !step.confirmed).length}
-                  </p>
-                  <p className="mt-2 text-xs text-amber-100/90">
-                    Run status: {guidedTeachingEffectiveReadiness?.runnable ? "Runnable" : "Needs More Teaching"}
-                  </p>
-                  {guidedTeachingEffectiveReadiness?.start_url ? (
-                    <p className="mt-1 text-xs text-amber-100/90">Starting page: {guidedTeachingEffectiveReadiness.start_url}</p>
-                  ) : (
-                    <p className="mt-1 text-xs text-amber-100/90">Starting page: Not captured yet</p>
-                  )}
-                  {(guidedTeachingEffectiveReadiness?.blocking_reasons ?? []).length > 0 && (
-                    <div className="mt-2 rounded-md border border-rose-400/40 bg-rose-500/10 px-2 py-2 text-xs text-rose-100">
-                      <p className="font-semibold">Needs attention before run:</p>
-                      <ul className="mt-1 list-disc space-y-1 pl-4">
-                        {(guidedTeachingEffectiveReadiness?.blocking_reasons ?? []).map((reason, index) => (
-                          <li key={`blocking-${index}`}>{reason}</li>
-                        ))}
-                      </ul>
+              <div className="grid min-h-0 flex-1 gap-4 overflow-hidden px-4 py-4 lg:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.95fr)]">
+                <div className="flex min-h-0 flex-col gap-4 overflow-hidden">
+                  <section className="rounded-2xl border border-cyan-800/60 bg-cyan-950/30 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs uppercase tracking-[0.16em] text-cyan-300">Teaching Coach</p>
+                      <span className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${guidedTeachingEffectiveReadiness?.runnable ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100" : "border-amber-400/40 bg-amber-500/10 text-amber-100"}`}>
+                        {guidedTeachingEffectiveReadiness?.runnable ? "Ready to test" : "Still teaching"}
+                      </span>
                     </div>
-                  )}
-                  {(guidedTeachingEffectiveReadiness?.execution_warnings ?? []).length > 0 && (
-                    <div className="mt-2 rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-2 text-xs text-amber-100">
-                      <p className="font-semibold">Execution warnings:</p>
-                      <ul className="mt-1 list-disc space-y-1 pl-4">
-                        {(guidedTeachingEffectiveReadiness?.execution_warnings ?? []).map((warning, index) => (
-                          <li key={`warning-${index}`}>{warning}</li>
-                        ))}
-                      </ul>
+                    <div className="mt-3 grid gap-2 text-sm">
+                      <div className="rounded-lg border border-cyan-700/40 bg-slate-950/40 px-3 py-2">
+                        <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200/80">Current phase</p>
+                        <p className="mt-1 font-semibold text-cyan-50">{teachingCoach.phase}</p>
+                      </div>
+                      <div className="rounded-lg border border-cyan-700/40 bg-slate-950/40 px-3 py-2">
+                        <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200/80">One short instruction</p>
+                        <p className="mt-1 text-cyan-50">{teachingCoach.guidance}</p>
+                      </div>
+                      <div className="rounded-lg border border-emerald-700/40 bg-slate-950/40 px-3 py-2">
+                        <p className="text-[11px] uppercase tracking-[0.14em] text-emerald-200/80">Next recommended action</p>
+                        <p className="mt-1 text-emerald-50">{teachingCoach.nextAction}</p>
+                      </div>
+                      <div className="rounded-lg border border-amber-700/40 bg-slate-950/40 px-3 py-2">
+                        <p className="text-[11px] uppercase tracking-[0.14em] text-amber-200/80">Example phrase</p>
+                        <p className="mt-1 text-amber-50">{teachingCoach.examplePhrase}</p>
+                      </div>
                     </div>
-                  )}
-                  {(guidedTeachingWarnings.includes("Some steps are not confirmed yet. You can approve anyway, but Bill may need more training.") || (guidedTeachingReviewSummary?.unconfirmedSteps ?? 0) > 0) && (
-                    <p className="mt-2 rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-1.5 text-xs text-amber-100">
-                      Some steps are not confirmed yet. You can approve anyway, but Bill may need more training.
-                    </p>
-                  )}
-                  {guidedTeachingApprovalMessage && (
-                    <p className="mt-2 rounded-md border border-emerald-400/40 bg-emerald-400/10 px-2 py-1.5 text-xs text-emerald-100">
-                      Workflow approved. Bill created a playbook draft for review.
-                    </p>
-                  )}
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void reviewGuidedTeachingSession()}
-                      disabled={guidedTeachingBusy || guidedTeachingSession.status === "review" || guidedTeachingSession.status === "approved"}
-                      className="rounded border border-amber-400/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Review Workflow
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void continueGuidedTeachingSession()}
-                      disabled={guidedTeachingBusy}
-                      className="rounded border border-slate-600 px-2.5 py-1.5 text-xs text-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Continue Teaching
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void approveGuidedTeachingSession()}
-                      disabled={guidedTeachingBusy}
-                      className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Approve Workflow
-                    </button>
-                    {(guidedTeachingSession.status === "approved" || guidedTeachingSession.status === "ready") && (
-                      <button
-                        type="button"
-                        onClick={() => void runGuidedTeachingWorkflowNow()}
-                        disabled={guidedTeachingRunNowBusy || !guidedTeachingEffectiveReadiness?.runnable}
-                        className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {guidedTeachingRunNowBusy ? "Starting Run..." : "Run Workflow Now"}
-                      </button>
-                    )}
-                  </div>
-                  {guidedTeachingRunNowMessage && (
-                    <p className="mt-2 rounded-md border border-cyan-400/40 bg-cyan-500/10 px-2 py-1.5 text-xs text-cyan-100">
-                      {guidedTeachingRunNowMessage}
-                    </p>
-                  )}
-                </section>
-              )}
+                  </section>
 
-              <div className="mt-4 grid grid-cols-1 gap-3">
-                <section className="rounded-xl border border-cyan-800/60 bg-cyan-950/30 p-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-cyan-300">Teaching Co-Pilot</p>
-                  <div className="mt-2 space-y-2 text-sm">
-                    <div className="rounded-md border border-cyan-700/40 bg-slate-950/40 px-2 py-2">
-                      <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200/80">What Bill just noticed</p>
-                      <p className="mt-1 text-cyan-50">{guidedTeachingCopilotNotice || "Waiting for the next observed action."}</p>
+                  <section className="min-h-0 rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Conversation</p>
+                      <span className="text-xs text-slate-400">Backtick (`) still works</span>
                     </div>
-                    <div className="rounded-md border border-emerald-700/40 bg-slate-950/40 px-2 py-2">
-                      <p className="text-[11px] uppercase tracking-[0.14em] text-emerald-200/80">What Bill thinks this means</p>
-                      <p className="mt-1 text-emerald-50">{guidedTeachingCopilotInterpretation || "No interpretation yet."}</p>
-                    </div>
-                    <div className="rounded-md border border-amber-700/40 bg-slate-950/40 px-2 py-2">
-                      <p className="text-[11px] uppercase tracking-[0.14em] text-amber-200/80">Bill's question</p>
-                      <p className="mt-1 text-amber-50">{guidedTeachingCopilotQuestion || "No question right now."}</p>
-                    </div>
-                    <details className="rounded-md border border-sky-700/30 bg-slate-950/40 px-2 py-2" open>
-                      <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-sky-200/80">Bill can currently see</summary>
-                      <div className="mt-2 space-y-2 text-xs text-sky-50">
-                        <p>
-                          <span className="text-sky-200/80">Page:</span>{" "}
-                          {guidedTeachingSession.pageContextSnapshot?.title || "Unknown page"}
+                    <div className="mt-2 flex min-h-0 flex-col gap-3">
+                      {teachingVoiceError && (
+                        <p className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                          {teachingVoiceError}
                         </p>
-                        <p>
-                          <span className="text-sky-200/80">Domain:</span>{" "}
-                          {(() => {
-                            const urlValue = guidedTeachingSession.pageContextSnapshot?.url || "";
-                            if (!urlValue) return "Not available";
-                            try {
-                              return new URL(urlValue).hostname || "Not available";
-                            } catch {
-                              return "Not available";
+                      )}
+                      <div className="max-h-52 space-y-2 overflow-auto pr-1 text-sm leading-5">
+                        {guidedTeachingMessages.map((entry, index) => (
+                          <div
+                            key={`${entry.role}-${index}`}
+                            className={`rounded-lg px-3 py-2 ${entry.role === "assistant" ? "bg-cyan-500/10 text-cyan-100" : "bg-slate-800 text-slate-100"}`}
+                          >
+                            {entry.message}
+                          </div>
+                        ))}
+                      </div>
+                      <textarea
+                        value={guidedTeachingInput}
+                        onChange={(event) => setGuidedTeachingInput(event.target.value)}
+                        placeholder={guidedTeachingTargetStepId ? "Add detail for selected step..." : "Explain what you're doing as you work..."}
+                        className="min-h-24 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void submitGuidedTeachingMessage()}
+                          disabled={guidedTeachingBusy || !guidedTeachingInput.trim()}
+                          className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Send to Bill
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isListening) {
+                              stopListening();
+                            } else {
+                              startListening();
                             }
-                          })()}
-                        </p>
-                        <p>
-                          <span className="text-sky-200/80">Top buttons:</span>{" "}
-                          {(
-                            guidedTeachingSession.pageContextSnapshot?.visible_buttons?.map((b) => b.text).filter(Boolean)
-                              || guidedTeachingSession.pageContextSnapshot?.buttons
-                              || []
-                          ).slice(0, 4).join(", ") || "None detected"}
-                        </p>
-                        <p>
-                          <span className="text-sky-200/80">Top fields:</span>{" "}
-                          {(
-                            guidedTeachingSession.pageContextSnapshot?.visible_inputs?.map((i) => i.label || i.placeholder).filter(Boolean)
-                              || guidedTeachingSession.pageContextSnapshot?.inputs?.map((i) => i.label || i.placeholder).filter(Boolean)
-                              || []
-                          ).slice(0, 4).join(", ") || "None detected"}
-                        </p>
-                        <p>
-                          <span className="text-sky-200/80">Popup:</span>{" "}
-                          {guidedTeachingSession.pageContextSnapshot?.modal_present
-                            ? (guidedTeachingSession.pageContextSnapshot?.modal_title || "Popup detected")
-                            : "No popup detected"}
-                        </p>
+                          }}
+                          className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                            isListening
+                              ? "border border-rose-400/50 bg-rose-500/20 text-rose-100"
+                              : "border border-indigo-400/40 bg-indigo-500/15 text-indigo-100 hover:bg-indigo-500/25"
+                          }`}
+                          disabled={!voiceSupported}
+                        >
+                          {isListening ? "Stop Listening" : "Speak to Bill"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void continueGuidedTeachingSession()}
+                          disabled={guidedTeachingBusy}
+                          className="rounded-lg border border-slate-600 px-4 py-2 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Continue Teaching
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void reviewGuidedTeachingSession()}
+                          disabled={guidedTeachingBusy || guidedTeachingSession.status === "review" || guidedTeachingSession.status === "approved"}
+                          className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Review
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="min-h-0 rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Steps</p>
+                      <span className="text-xs text-slate-400">{guidedTeachingSession.steps.length} captured</span>
+                    </div>
+                    <div className="mt-2 max-h-[36vh] space-y-2 overflow-y-auto pr-1">
+                      {guidedTeachingSession.steps.length === 0 ? (
+                        <div className="rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-3 text-sm text-slate-300">
+                          Step cards are ready. As you teach, Bill will add summarized steps here.
+                        </div>
+                      ) : (
+                        guidedTeachingSession.steps.map((step) => {
+                          const status = explainStepStatus(step);
+                          const isEditing = editingStepId === step.id;
+                          return (
+                            <article key={step.id} className="rounded-xl border border-slate-700 bg-slate-950/70 p-3 text-sm">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-xs uppercase tracking-[0.16em] text-slate-500">Step {step.order}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${status.label === "Runnable" ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : status.label === "Needs clarification" ? "border-amber-400/40 bg-amber-500/10 text-amber-100" : "border-slate-500/50 bg-slate-800 text-slate-200"}`}>
+                                      {status.label}
+                                    </span>
+                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${step.confirmed ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : "border-amber-400/40 bg-amber-500/10 text-amber-100"}`}>
+                                      {step.confirmed ? "Confirmed" : "Unconfirmed"}
+                                    </span>
+                                  </div>
+                                  {isEditing ? (
+                                    <input
+                                      value={editingStepState.title}
+                                      onChange={(event) => setEditingStepState((current) => ({ ...current, title: event.target.value }))}
+                                      className="mt-2 w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"
+                                      placeholder="Step title"
+                                    />
+                                  ) : (
+                                    <h3 className="mt-2 truncate font-semibold text-white">{step.title}</h3>
+                                  )}
+                                </div>
+                              </div>
+
+                              {isEditing ? (
+                                <div className="mt-2 space-y-2">
+                                  <textarea
+                                    value={editingStepState.employeeExplanation}
+                                    onChange={(event) => setEditingStepState((current) => ({ ...current, employeeExplanation: event.target.value }))}
+                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                                    placeholder="What employee did"
+                                  />
+                                  <textarea
+                                    value={editingStepState.billSummary}
+                                    onChange={(event) => setEditingStepState((current) => ({ ...current, billSummary: event.target.value }))}
+                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                                    placeholder="What Bill thinks"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingAdvancedDetailsOpen((current) => !current)}
+                                    className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
+                                  >
+                                    {editingAdvancedDetailsOpen ? "Hide Advanced Details" : "Advanced Details"}
+                                  </button>
+                                  {editingAdvancedDetailsOpen && (
+                                    <>
+                                      <input
+                                        value={editingStepState.decisionRules}
+                                        onChange={(event) => setEditingStepState((current) => ({ ...current, decisionRules: event.target.value }))}
+                                        className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                                        placeholder="Decision rules (semicolon separated)"
+                                      />
+                                      <input
+                                        value={editingStepState.exceptions}
+                                        onChange={(event) => setEditingStepState((current) => ({ ...current, exceptions: event.target.value }))}
+                                        className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                                        placeholder="Exceptions (semicolon separated)"
+                                      />
+                                      <input
+                                        value={editingStepState.requiredInputs}
+                                        onChange={(event) => setEditingStepState((current) => ({ ...current, requiredInputs: event.target.value }))}
+                                        className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                                        placeholder="Required inputs (comma separated)"
+                                      />
+                                    </>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="mt-2 space-y-2">
+                                  <p className="text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
+                                  <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
+                                    <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">Target</p>
+                                    <p className="mt-1 text-xs text-cyan-50">{step.observedActions[0]?.label || step.observedActions[0]?.selector || "Not captured yet"}</p>
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {isEditing ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleSaveEditStep(step.id)}
+                                      disabled={guidedTeachingBusy}
+                                      className="rounded border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCancelEditStep()}
+                                      disabled={guidedTeachingBusy}
+                                      className="rounded border border-slate-600 px-3 py-2 text-xs font-semibold text-slate-200"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => void confirmGuidedTeachingStep(step.id)}
+                                      disabled={guidedTeachingBusy || step.confirmed}
+                                      className="rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      Confirm
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleEditStep(step)}
+                                      disabled={guidedTeachingBusy}
+                                      className="rounded border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      Fix Step
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddDetail(step)}
+                                      disabled={guidedTeachingBusy}
+                                      className="rounded border border-slate-600 px-3 py-2 text-xs font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      Add Detail
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (window.confirm("Delete this step?")) {
+                                          void handleDeleteStep(step);
+                                        }
+                                      }}
+                                      disabled={guidedTeachingBusy}
+                                      className="rounded border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      Remove
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleRedoStep(step)}
+                                      disabled={guidedTeachingBusy}
+                                      className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      Redo
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+
+                              <details className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                                <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-slate-400">Show technical info</summary>
+                                <div className="mt-2 space-y-2 text-xs text-slate-300">
+                                  <p>Confidence: {(Math.max(0, Math.min(1, step.billConfidence || 0)) * 100).toFixed(0)}%</p>
+                                  <p>Employee explanation: {step.employeeExplanation || "Pending"}</p>
+                                  <p>Required data: {step.requiredInputs.join(", ") || "Pending"}</p>
+                                  <p>Decision rules: {step.decisionRules.join("; ") || "None yet"}</p>
+                                  <p>Exceptions: {step.exceptions.join("; ") || "None yet"}</p>
+                                  {step.pendingQuestion && <p>Pending question: {step.pendingQuestion}</p>}
+                                  <div>
+                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
+                                    {step.observedActions.length === 0 ? (
+                                      <p className="mt-1 text-slate-400">No browser actions captured yet.</p>
+                                    ) : (
+                                      <ul className="mt-1 space-y-1">
+                                        {step.observedActions.map((action) => (
+                                          <li key={action.id}>{formatObservedAction(action)}</li>
+                                        ))}
+                                      </ul>
+                                    )}
+                                  </div>
+                                </div>
+                              </details>
+                            </article>
+                          );
+                        })
+                      )}
+                    </div>
+                  </section>
+
+                  <details className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                    <summary className="cursor-pointer text-xs uppercase tracking-[0.16em] text-slate-400">Advanced details</summary>
+                    <div className="mt-2 space-y-2 text-xs text-slate-300">
+                      <p>Session ID: {guidedTeachingSession.sessionId || "n/a"}</p>
+                      <p>Draft ID: {teachingSessionDraftId || "n/a"}</p>
+                      <p>Task ID: {teachingOverlayTaskId || teachingStartupState?.task_id || "n/a"}</p>
+                      <p>Startup status: {teachingStartupState?.status || "n/a"}</p>
+                      <p>Worker UUID: {teachingStartupState?.target_machine_uuid || "n/a"}</p>
+                      <pre className="max-h-56 overflow-auto rounded-md border border-slate-700 bg-slate-950/80 p-2 text-[11px] text-slate-200">
+                        {JSON.stringify(guidedTeachingSession.pageContextSnapshot ?? {}, null, 2)}
+                      </pre>
+                    </div>
+                  </details>
+                </div>
+
+                <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto lg:sticky lg:top-0">
+                  <section className="rounded-2xl border border-emerald-800/60 bg-emerald-950/25 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs uppercase tracking-[0.16em] text-emerald-300">Captured So Far</p>
+                      <span className="text-[11px] text-emerald-100/80">Compact summary</span>
+                    </div>
+                    <div className="mt-3 space-y-2 text-xs text-emerald-50">
+                      <p><span className="text-emerald-200/80">Starting page:</span> {canonicalStartUrl ? "Saved" : "Missing"}</p>
+                      <p><span className="text-emerald-200/80">Current page:</span> {guidedTeachingSession.pageContextSnapshot?.domain || guidedTeachingSession.pageContextSnapshot?.url || "Waiting for page"}</p>
+                      <p><span className="text-emerald-200/80">Detected controls:</span> {capturedButtons.length + capturedFields.length + capturedLinks.length} total</p>
+                      <p><span className="text-emerald-200/80">Top controls:</span> {capturedButtons.slice(0, 2).join(", ") || "None yet"}</p>
+                      <p><span className="text-emerald-200/80">Steps captured:</span> {stepStatusSummary.runnable} runnable, {stepStatusSummary.manualOnly} manual-only, {stepStatusSummary.needsClarification} need clarification</p>
+                    </div>
+                    <details className="mt-3 rounded-lg border border-emerald-400/20 bg-slate-950/30 px-3 py-2">
+                      <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-emerald-100/80">Show technical info</summary>
+                      <div className="mt-2 space-y-2 text-xs text-emerald-100">
+                        <p>Workflow: {guidedTeachingSession.workflowName || "Untitled"}</p>
+                        <p>Purpose: {guidedTeachingSession.workflowSummary || "Needs clarification"}</p>
+                        <p>Buttons: {capturedButtons.slice(0, 5).join(", ") || "None yet"}</p>
+                        <p>Fields: {capturedFields.slice(0, 5).join(", ") || "None yet"}</p>
+                        <p>Links: {capturedLinks.slice(0, 5).join(", ") || "None yet"}</p>
                       </div>
                     </details>
-                  </div>
-                </section>
+                  </section>
 
-                <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Floating Chat Panel</p>
-                  <p className="mt-1 text-xs text-slate-400">Use the button below to speak. Backtick (`) is still available as a shortcut.</p>
-                  <p className="mt-1 text-xs text-indigo-200">
-                    {!voiceSupported
-                      ? "Mic unavailable"
-                      : isListening
-                        ? "Listening..."
-                        : pendingTeachingTranscript || guidedTeachingBusy
-                          ? "Processing..."
-                          : "Ready"}
-                  </p>
-                  <p className="mt-1 text-[11px] text-slate-500">Bill will speak his replies aloud.</p>
-                  {teachingVoiceError && (
-                    <p className="mt-2 rounded-md border border-rose-400/40 bg-rose-500/10 px-2 py-1.5 text-xs text-rose-100">
-                      {teachingVoiceError}
-                    </p>
-                  )}
-                  <div className="mt-2 max-h-40 space-y-2 overflow-auto pr-1 text-sm">
-                    {guidedTeachingMessages.map((entry, index) => (
-                      <div
-                        key={`${entry.role}-${index}`}
-                        className={`rounded-lg px-3 py-2 ${entry.role === "assistant" ? "bg-cyan-500/10 text-cyan-100" : "bg-slate-800 text-slate-100"}`}
-                      >
-                        {entry.message}
-                      </div>
-                    ))}
-                  </div>
-                  <textarea
-                    value={guidedTeachingInput}
-                    onChange={(event) => setGuidedTeachingInput(event.target.value)}
-                    placeholder={guidedTeachingTargetStepId ? "Add detail for selected step..." : "Explain what you're doing as you work..."}
-                    className="mt-3 min-h-20 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
-                  />
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void submitGuidedTeachingMessage()}
-                      disabled={guidedTeachingBusy || !guidedTeachingInput.trim()}
-                      className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Send to Bill
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (isListening) {
-                          stopListening();
-                        } else {
-                          startListening();
-                        }
-                      }}
-                      className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                        isListening
-                          ? "border border-rose-400/50 bg-rose-500/20 text-rose-100"
-                          : "border border-indigo-400/40 bg-indigo-500/15 text-indigo-100 hover:bg-indigo-500/25"
-                      }`}
-                      disabled={!voiceSupported}
-                    >
-                      {isListening ? "Stop Listening" : "Speak to Bill"}
-                    </button>
-                  </div>
-                </section>
+                  <section className={`rounded-2xl border p-4 ${employeeReadiness.toneClass}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs uppercase tracking-[0.16em]">Readiness</p>
+                      <span className="text-[11px] font-semibold">
+                        {employeeReadiness.label === "Ready to test" ? "Ready to test" : employeeReadiness.label === "Almost ready" ? "Almost ready" : "Not ready yet"}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm font-semibold">{employeeReadiness.label}</p>
+                    <ul className="mt-2 space-y-1 text-xs">
+                      {employeeReadiness.reasons.slice(0, 3).map((reason, index) => (
+                        <li key={`employee-readiness-${index}`}>{reason}</li>
+                      ))}
+                    </ul>
+                    <div className="mt-3 rounded-lg border border-slate-200/10 bg-slate-950/30 px-3 py-2 text-xs">
+                      <p className="font-semibold text-white">Top missing items</p>
+                      <ul className="mt-1 list-disc space-y-1 pl-4 text-slate-100/90">
+                        {(guidedTeachingEffectiveReadiness?.blocking_reasons ?? []).slice(0, 3).map((reason, index) => (
+                          <li key={`readiness-block-${index}`}>{reason}</li>
+                        ))}
+                        {(!guidedTeachingEffectiveReadiness?.blocking_reasons || guidedTeachingEffectiveReadiness.blocking_reasons.length === 0) && (
+                          <li>No blocking items.</li>
+                        )}
+                      </ul>
+                    </div>
+                  </section>
 
-                <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Live Workflow Step Cards</p>
-                  <div className="mt-2 max-h-[46vh] space-y-2 overflow-y-auto pr-1">
-                    {guidedTeachingSession.steps.length === 0 ? (
-                      <div className="rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-3 text-sm text-slate-300">
-                        Step cards are ready. As you teach, Bill will add summarized steps here.
-                      </div>
-                    ) : (
-                      guidedTeachingSession.steps.map((step) => (
-                        <article key={step.id} className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 text-sm">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex-1">
-                              <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Step {step.order}</p>
-                              {editingStepId === step.id ? (
-                                <input
-                                  value={editingStepState.title}
-                                  onChange={(event) => setEditingStepState((current) => ({ ...current, title: event.target.value }))}
-                                  className="mt-1 w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-white"
-                                  placeholder="Step title"
-                                />
-                              ) : (
-                                <h3 className="mt-1 font-semibold text-white">{step.title}</h3>
-                              )}
-                            </div>
-                            <span className={`rounded-full border px-2 py-1 text-[10px] ${step.confirmed ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : "border-amber-400/40 bg-amber-500/10 text-amber-100"}`}>
-                              {step.confirmed ? "Confirmed" : "Needs Confirmation"}
-                            </span>
-                          </div>
-
-                          {editingStepId === step.id ? (
-                            <div className="mt-2 space-y-2">
-                              <textarea
-                                value={editingStepState.employeeExplanation}
-                                onChange={(event) => setEditingStepState((current) => ({ ...current, employeeExplanation: event.target.value }))}
-                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                placeholder="What employee did"
-                              />
-                              <textarea
-                                value={editingStepState.billSummary}
-                                onChange={(event) => setEditingStepState((current) => ({ ...current, billSummary: event.target.value }))}
-                                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                placeholder="What Bill thinks"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => setEditingAdvancedDetailsOpen((current) => !current)}
-                                className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
-                              >
-                                {editingAdvancedDetailsOpen ? "Hide Advanced Details" : "Advanced Details"}
-                              </button>
-                              {editingAdvancedDetailsOpen && (
-                                <>
-                                  <input
-                                    value={editingStepState.decisionRules}
-                                    onChange={(event) => setEditingStepState((current) => ({ ...current, decisionRules: event.target.value }))}
-                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                    placeholder="Decision rules (semicolon separated)"
-                                  />
-                                  <input
-                                    value={editingStepState.exceptions}
-                                    onChange={(event) => setEditingStepState((current) => ({ ...current, exceptions: event.target.value }))}
-                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                    placeholder="Exceptions (semicolon separated)"
-                                  />
-                                  <input
-                                    value={editingStepState.requiredInputs}
-                                    onChange={(event) => setEditingStepState((current) => ({ ...current, requiredInputs: event.target.value }))}
-                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-                                    placeholder="Required inputs (comma separated)"
-                                  />
-                                </>
-                              )}
-                            </div>
-                          ) : (
-                            <>
-                              <p className="mt-2 text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
-                              <div className="mt-2 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
-                                <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">What Bill thinks he learned</p>
-                                <p className="mt-1 text-xs text-cyan-100">{step.billSummary || "Bill is still interpreting this step."}</p>
-                                <p className="mt-1 text-[11px] text-cyan-200/90">Confidence: {(Math.max(0, Math.min(1, step.billConfidence || 0)) * 100).toFixed(0)}%</p>
-                                {step.pendingQuestion && (
-                                  <p className="mt-1 text-xs text-cyan-50">{step.pendingQuestion}</p>
-                                )}
-                              </div>
-                              <div className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-2">
-                                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
-                                {step.observedActions.length === 0 ? (
-                                  <p className="mt-1 text-xs text-slate-400">No browser actions captured yet.</p>
-                                ) : (
-                                  <ul className="mt-1 space-y-1 text-xs text-slate-300">
-                                    {step.observedActions.map((action) => (
-                                      <li key={action.id}>{formatObservedAction(action)}</li>
-                                    ))}
-                                  </ul>
-                                )}
-                              </div>
-                              <p className="mt-2 text-xs text-slate-400">Employee explanation: {step.employeeExplanation || "Pending"}</p>
-                              <p className="mt-1 text-xs text-slate-400">Required data: {step.requiredInputs.join(", ") || "Pending"}</p>
-                              <p className="mt-1 text-xs text-slate-400">Decision rules: {step.decisionRules.join("; ") || "None yet"}</p>
-                              <p className="mt-1 text-xs text-slate-400">Exceptions: {step.exceptions.join("; ") || "None yet"}</p>
-                            </>
-                          )}
-
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {editingStepId === step.id ? (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleSaveEditStep(step.id)}
-                                  disabled={guidedTeachingBusy}
-                                  className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  Save
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCancelEditStep()}
-                                  disabled={guidedTeachingBusy}
-                                  className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
-                                >
-                                  Cancel
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => handleEditStep(step)}
-                                  disabled={guidedTeachingBusy}
-                                  className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (window.confirm("Delete this step?")) {
-                                      void handleDeleteStep(step);
-                                    }
-                                  }}
-                                  disabled={guidedTeachingBusy}
-                                  className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  Delete
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleRedoStep(step)}
-                                  disabled={guidedTeachingBusy}
-                                  className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  Redo
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleAddDetail(step)}
-                                  disabled={guidedTeachingBusy}
-                                  className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  Add Detail
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleNotImportant(step)}
-                                  disabled={guidedTeachingBusy}
-                                  className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  Not Important
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void confirmGuidedTeachingStep(step.id)}
-                                  disabled={guidedTeachingBusy || step.confirmed}
-                                  className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  Yes
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </article>
-                      ))
+                  <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Status</p>
+                    <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                      <span className="rounded border border-cyan-400/40 bg-cyan-500/10 px-2 py-1">Workflow: {guidedTeachingSession.status}</span>
+                      <span className="rounded border border-emerald-400/40 bg-emerald-500/10 px-2 py-1">Runnable: {guidedTeachingEffectiveReadiness?.runnable ? "Yes" : "No"}</span>
+                      <span className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1">Warnings: {guidedTeachingWarnings.length}</span>
+                    </div>
+                    {guidedTeachingRunNowMessage && (
+                      <p className="mt-3 rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+                        {guidedTeachingRunNowMessage}
+                      </p>
                     )}
-                  </div>
-                </section>
+                    {guidedTeachingApprovalMessage && (
+                      <p className="mt-3 rounded-md border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-100">
+                        {guidedTeachingApprovalMessage}
+                      </p>
+                    )}
+                  </section>
+
+                  <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Workflow SOP</p>
+                      <span className="text-[11px] text-slate-400">
+                        {guidedTeachingSopRecord ? `Generated ${new Date(guidedTeachingSopRecord.generated_at).toLocaleString()}` : "Not generated"}
+                      </span>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void generateGuidedTeachingSop()}
+                        disabled={guidedTeachingSopBusy}
+                        className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {guidedTeachingSopBusy ? "Generating..." : "Generate SOP"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void copyGuidedTeachingSop()}
+                        disabled={!guidedTeachingSopRecord?.markdown}
+                        className="rounded-lg border border-slate-600 px-3 py-2 text-xs font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Copy
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => downloadGuidedTeachingSop()}
+                        disabled={!guidedTeachingSopRecord?.markdown}
+                        className="rounded-lg border border-slate-600 px-3 py-2 text-xs font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Download .md
+                      </button>
+                    </div>
+                    {guidedTeachingSopError && (
+                      <p className="mt-3 rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                        {guidedTeachingSopError}
+                      </p>
+                    )}
+                    {guidedTeachingSopRecord?.markdown && (
+                      <details className="mt-3 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2" open>
+                        <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-slate-400">Preview SOP</summary>
+                        <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-100">
+                          {guidedTeachingSopRecord.markdown}
+                        </pre>
+                      </details>
+                    )}
+                  </section>
+                </aside>
               </div>
+
+              <footer className="border-t border-slate-800 bg-slate-950/90 px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs uppercase tracking-[0.16em] text-slate-500">Actions</span>
+                  <button
+                    type="button"
+                    onClick={() => setTeachingOverlayOpen(true)}
+                    className="rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/20"
+                  >
+                    Start Teaching
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void confirmGuidedTeachingStep(latestTeachingStep?.id ?? "")}
+                    disabled={!latestTeachingStep || guidedTeachingBusy || latestTeachingStep.confirmed}
+                    className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Confirm Step
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => latestTeachingStep ? handleEditStep(latestTeachingStep) : undefined}
+                    disabled={!latestTeachingStep || guidedTeachingBusy}
+                    className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Fix Step
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void reviewGuidedTeachingSession()}
+                    disabled={guidedTeachingBusy || guidedTeachingSession.status === "review" || guidedTeachingSession.status === "approved"}
+                    className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-semibold text-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Finish Teaching
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runGuidedTeachingWorkflowNow()}
+                    disabled={guidedTeachingRunNowBusy || !guidedTeachingEffectiveReadiness?.runnable}
+                    className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-semibold text-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Run Test
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTeachingOverlayOpen(false)}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-300 hover:border-slate-500 hover:text-white"
+                  >
+                    Cancel / End Session
+                  </button>
+                </div>
+              </footer>
             </section>
           ) : null}
         </div>

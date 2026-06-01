@@ -198,7 +198,12 @@ class BrowserAction(BaseModel):
     id: str
     type: Literal["click", "type", "navigate", "select", "submit"]
     selector: str | None = None
+    selectors: list[str] = Field(default_factory=list)
+    locator_candidates: list[dict[str, Any]] = Field(default_factory=list)
     label: str | None = None
+    target_label: str | None = None
+    target_type: str | None = None
+    descriptors: list[str] = Field(default_factory=list)
     value_redacted: str | None = None
     url: str | None = None
     timestamp: str
@@ -461,6 +466,19 @@ class WorkflowSOPUpdateRequest(BaseModel):
     common_failures: list[str] | None = None
     recommended_fixes: list[str] | None = None
     best_worker_patterns: list[str] | None = None
+
+
+class WorkflowGeneratedSOPRecord(BaseModel):
+    workflow_id: str
+    draft_id: str
+    workflow_name: str
+    readiness_status: Literal["runnable", "needs_more_teaching", "manual_only"] = "needs_more_teaching"
+    runnable: bool = False
+    has_start_url: bool = False
+    last_validated_date: str | None = None
+    generated_at: str
+    markdown: str
+    source_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowVariableDefinition(BaseModel):

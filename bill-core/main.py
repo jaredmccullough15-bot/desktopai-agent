@@ -73,6 +73,7 @@ from schemas import (
     WorkerHeartbeatRequest,
     WorkerRegisterRequest,
     WorkerRegisterResponse,
+    WorkflowGeneratedSOPRecord,
     WorkflowSOPSummaryRecord,
     WorkflowSOPUpdateRequest,
     WorkflowLearningCreateRequest,
@@ -146,6 +147,7 @@ except Exception as _db_import_err:
     def save_draft_db(d): pass
 
 app = FastAPI(title="bill-core", version="0.1.0")
+TEACHING_AUTH_SUPPRESSION_VERSION = "v3_action_guard"
 
 
 def _split_csv_env(name: str) -> list[str]:
@@ -1008,6 +1010,7 @@ def health() -> dict:
         response["build_timestamp"] = _BUILD_MANIFEST["build_timestamp"]
     if _BUILD_MANIFEST.get("git_commit"):
         response["git_commit"] = _BUILD_MANIFEST["git_commit"]
+    response["teaching_auth_suppression_version"] = TEACHING_AUTH_SUPPRESSION_VERSION
     return response
 
 
@@ -2943,12 +2946,26 @@ def _to_executable_browser_steps(draft_steps: list[dict[str, Any]]) -> list[dict
     def _from_observed_action(action: dict[str, Any]) -> list[dict[str, Any]]:
         action_type = str(action.get("type") or "").strip().lower()
         selector = str(action.get("selector") or "").strip()
+        selectors = [str(item).strip() for item in list(action.get("selectors") or []) if str(item).strip()]
+        selectors = _filter_valid_teaching_selectors(selectors)
         url = str(action.get("url") or "").strip()
 
         if action_type == "navigate" and url:
             return [{"action": "open_url", "url": url}]
-        if action_type in {"click", "submit"} and selector:
-            return [{"action": "click_selector", "selector": selector, "timeout_ms": 20000}]
+        if action_type in {"click", "submit"}:
+            effective_selector = selector if _is_valid_teaching_selector(selector) else ""
+            if selector and not effective_selector:
+                logger.info("TEACH_SELECTOR_VALIDATION_FAILED selector=%s", selector[:240])
+            merged = _filter_valid_teaching_selectors(([effective_selector] if effective_selector else []) + selectors)
+            if merged:
+                return [
+                    {
+                        "action": "click_selector",
+                        "selector": merged[0],
+                        "selectors": merged,
+                        "timeout_ms": 20000,
+                    }
+                ]
         if action_type == "type" and selector:
             value = ""
             if action.get("value_redacted"):
@@ -2985,10 +3002,16 @@ def _to_executable_browser_steps(draft_steps: list[dict[str, Any]]) -> list[dict
                     }
                 )
             elif action_name == "click_selector" and item.get("selector"):
+                base_selector = str(item.get("selector") or "").strip()
+                selectors = [str(value).strip() for value in list(item.get("selectors") or []) if str(value).strip()]
+                merged = _filter_valid_teaching_selectors(([base_selector] if base_selector else []) + selectors)
+                if not merged:
+                    continue
                 converted.append(
                     {
                         "action": "click_selector",
-                        "selector": str(item.get("selector") or "").strip(),
+                        "selector": merged[0],
+                        "selectors": merged,
                         "timeout_ms": int(item.get("timeout_ms") or 20000),
                     }
                 )
@@ -3047,8 +3070,10 @@ def _to_executable_browser_steps(draft_steps: list[dict[str, Any]]) -> list[dict
             )
         elif action == "click_selector":
             selector = str(draft_step.get("selector") or "").strip()
-            if selector:
-                executable.append({"action": "click_selector", "selector": selector, "timeout_ms": 20000})
+            selectors = [str(item).strip() for item in list(draft_step.get("selectors") or []) if str(item).strip()]
+            merged = _filter_valid_teaching_selectors(([selector] if selector else []) + selectors)
+            if merged:
+                executable.append({"action": "click_selector", "selector": merged[0], "selectors": merged, "timeout_ms": 20000})
         elif action == "type_text":
             selector = str(draft_step.get("selector") or "").strip()
             if selector:
@@ -3153,7 +3178,12 @@ def _build_taught_action_plan(draft_steps: list[dict[str, Any]]) -> list[dict[st
                 plan_item = {
                     "action": action_type,
                     "selector": action_dict.get("selector"),
+                    "selectors": list(action_dict.get("selectors") or []),
+                    "locator_candidates": list(action_dict.get("locator_candidates") or []),
                     "label": action_dict.get("label"),
+                    "target_label": action_dict.get("target_label"),
+                    "target_type": action_dict.get("target_type"),
+                    "descriptors": list(action_dict.get("descriptors") or []),
                     "url": action_dict.get("url"),
                     "value": action_dict.get("value"),
                     "value_redacted": action_dict.get("value_redacted"),
@@ -3182,6 +3212,7 @@ def _build_taught_action_plan(draft_steps: list[dict[str, Any]]) -> list[dict[st
             {
                 "action": mapped_action,
                 "selector": step.get("selector"),
+                "selectors": list(step.get("selectors") or []),
                 "label": step.get("step_name") or step.get("name"),
                 "url": step.get("url"),
                 "value": step.get("value"),
@@ -3235,9 +3266,11 @@ def validate_taught_workflow_executable(draft: dict[str, Any]) -> dict[str, Any]
             continue
 
         if action_name in {"click", "click_selector", "submit"}:
-            if selector or label:
+            selectors = [str(item).strip() for item in list(action.get("selectors") or []) if str(item).strip()]
+            merged = _filter_valid_teaching_selectors(([selector] if selector else []) + selectors)
+            if merged or label:
                 executable_action_count += 1
-                if not selector and label:
+                if not merged and label:
                     warnings.append(f"Step {index} click uses label fallback because selector is missing.")
             else:
                 blocking_reasons.append(f"Step {index} click/submit action has no selector or label fallback.")
@@ -3301,6 +3334,363 @@ def _first_taught_navigation_url(action_plan: list[dict[str, Any]]) -> str | Non
             if url:
                 return url
     return None
+
+
+def _infer_step_label_from_selector(selector: str) -> str:
+    lowered = str(selector or "").lower()
+    if "email" in lowered:
+        return "Email field"
+    if "password" in lowered:
+        return "Password field"
+    if "sign in" in lowered or "signin" in lowered:
+        return "Sign In button"
+    return ""
+
+
+def _is_manual_step_for_sop(step: dict[str, Any]) -> bool:
+    action = str(step.get("action") or "").strip().lower()
+    if bool(step.get("manual_review_required")):
+        return True
+    return action in {"manual_step", "manual_approval", ""}
+
+
+def _is_runnable_step_for_sop(step: dict[str, Any]) -> bool:
+    action = str(step.get("action") or "").strip().lower()
+    selector = str(step.get("selector") or "").strip()
+    selectors = [str(item).strip() for item in list(step.get("selectors") or []) if str(item).strip()]
+    value_redacted = str(step.get("value_redacted") or "").strip().lower()
+
+    if _is_manual_step_for_sop(step):
+        return False
+    if action == "open_url":
+        return bool(str(step.get("url") or "").strip())
+    if action in {"wait_for_element", "wait"}:
+        return True
+    if action in {"click_selector", "click", "submit"}:
+        return bool(_filter_valid_teaching_selectors(([selector] if selector else []) + selectors))
+    if action in {"type_text", "type", "select_option", "select"}:
+        if value_redacted and value_redacted not in {"none", "null"}:
+            return False
+        return bool(selector)
+    return False
+
+
+def _sop_step_status(step: dict[str, Any]) -> str:
+    if _is_manual_step_for_sop(step):
+        return "Manual"
+    if step.get("confirmed") is False:
+        return "Needs confirmation"
+    if not _is_runnable_step_for_sop(step):
+        return "Needs confirmation"
+    return "Automation"
+
+
+def _step_sentence_for_sop(step: dict[str, Any]) -> str:
+    action = str(step.get("action") or "").strip().lower()
+    step_name = str(step.get("step_name") or step.get("name") or "Step").strip() or "Step"
+    description = str(step.get("description") or step.get("instruction") or "").strip()
+    selector = str(step.get("selector") or "").strip()
+    target_label = str(step.get("target_label") or "").strip()
+
+    if action == "open_url":
+        url = str(step.get("url") or "").strip()
+        return f"Open {url}." if url else f"Open the starting page for {step_name}."
+    if action in {"click_selector", "click", "submit"}:
+        label = target_label or _infer_step_label_from_selector(selector) or step_name
+        return f"Click {label}."
+    if action in {"type_text", "type"}:
+        label = _infer_step_label_from_selector(selector) or target_label or step_name
+        return f"Enter the required value in {label}."
+    if action in {"select_option", "select"}:
+        label = _infer_step_label_from_selector(selector) or target_label or step_name
+        option_value = str(step.get("value") or "").strip()
+        if option_value:
+            return f"Select '{option_value}' in {label}."
+        return f"Select the required option in {label}."
+    if action in {"wait_for_element", "wait"}:
+        return "Wait until the page is ready before continuing."
+    if description:
+        return description.rstrip(".") + "."
+    return f"Complete {step_name}."
+
+
+def _collect_captured_ui_hints(draft_steps: list[dict[str, Any]]) -> dict[str, list[str]]:
+    fields: list[str] = []
+    buttons: list[str] = []
+    pages: list[str] = []
+
+    for step in draft_steps:
+        action = str(step.get("action") or "").strip().lower()
+        selector = str(step.get("selector") or "").strip()
+        target_label = str(step.get("target_label") or "").strip()
+        step_name = str(step.get("step_name") or "").strip()
+
+        if action == "open_url":
+            url = str(step.get("url") or "").strip()
+            if url:
+                pages.append(url)
+
+        label_hint = target_label or _infer_step_label_from_selector(selector) or step_name
+        if action in {"type_text", "type", "select_option", "select"} and label_hint:
+            fields.append(label_hint)
+        if action in {"click_selector", "click", "submit"} and label_hint:
+            buttons.append(label_hint)
+
+    def _dedupe(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in values:
+            candidate = " ".join(str(item or "").split()).strip()
+            if not candidate:
+                continue
+            key = candidate.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(candidate)
+        return result
+
+    return {
+        "fields": _dedupe(fields),
+        "buttons": _dedupe(buttons),
+        "pages": _dedupe(pages),
+    }
+
+
+def _build_generated_workflow_sop_record(draft: dict[str, Any], workflow_id: str) -> dict[str, Any]:
+    draft_steps = sorted([dict(item or {}) for item in list(draft.get("steps") or [])], key=lambda item: int(item.get("step_order") or 0))
+    readiness = dict(draft.get("execution_readiness") or validate_taught_workflow_executable(draft))
+    start_url = _canonicalize_teach_url(str(readiness.get("start_url") or draft.get("start_url") or "").strip())
+    if not start_url:
+        start_url = _canonicalize_teach_url(str(_first_taught_navigation_url(_build_taught_action_plan(draft_steps)) or "").strip())
+
+    ui_hints = _collect_captured_ui_hints(draft_steps)
+    workflow_name = str(draft.get("published_workflow_name") or draft.get("workflow_name") or workflow_id).strip() or workflow_id
+    workflow_summary = str(draft.get("workflow_summary") or draft.get("goal") or draft.get("description") or "").strip()
+
+    text_blob = "\n".join(
+        [
+            str(workflow_name or ""),
+            str(workflow_summary or ""),
+            str(draft.get("description") or ""),
+            " ".join(str(item) for item in list(draft.get("common_failures") or [])),
+            " ".join(str(item) for item in list(draft.get("fallback_strategies") or [])),
+            " ".join(str(item.get("summary") or item.get("note") or "") for item in list(draft.get("training_memory") or []) if isinstance(item, dict)),
+        ]
+    ).lower()
+
+    is_trackvia_login = "trackvia" in text_blob or "trackvia" in str(start_url or "").lower()
+    mentions_email_password = any(term in text_blob for term in ["email and password", "email/password", "password login", "regular email"])
+    mentions_no_sso = any(term in text_blob for term in ["do not use sso", "don't use sso", "no sso", "single sign on", "sso"])
+    has_email_field = any("email" in field.lower() for field in ui_hints["fields"])
+    has_password_field = any("password" in field.lower() for field in ui_hints["fields"])
+    has_sign_in = any(("sign in" in button.lower() or "signin" in button.lower()) for button in ui_hints["buttons"])
+
+    prerequisites: list[str] = []
+    if start_url:
+        prerequisites.append(f"Access to the target application at {start_url}.")
+    if is_trackvia_login or mentions_email_password or has_email_field or has_password_field:
+        prerequisites.append("Authorized user provides credentials (username/email and password).")
+    prerequisites.append("Bill worker is online and idle.")
+
+    procedure_lines: list[str] = []
+    if start_url:
+        procedure_lines.append(f"1. [Automation] Open {start_url}.")
+
+    line_offset = len(procedure_lines)
+    if (is_trackvia_login or mentions_email_password) and (mentions_no_sso or has_sign_in):
+        procedure_lines.append(f"{line_offset + 1}. [Manual] Use regular email and password login. Do not use Single Sign On (SSO).")
+        line_offset += 1
+    if (is_trackvia_login or start_url) and has_email_field and has_password_field and has_sign_in:
+        procedure_lines.append(f"{line_offset + 1}. [Manual] Confirm Email field, Password field, and Sign In button are visible.")
+        line_offset += 1
+
+    skip_initial_navigation = bool(start_url)
+    step_number = 0
+    for step in draft_steps:
+        step_action = str(step.get("action") or "").strip().lower()
+        step_url = _canonicalize_teach_url(str(step.get("url") or "").strip())
+        if skip_initial_navigation and step_action == "open_url" and step_url and step_url == start_url:
+            skip_initial_navigation = False
+            continue
+
+        step_number += 1
+        status = _sop_step_status(step)
+        sentence = _step_sentence_for_sop(step)
+        procedure_lines.append(f"{line_offset + step_number}. [{status}] {sentence}")
+
+    automation_steps = [line for line in procedure_lines if "[Automation]" in line]
+    manual_steps = [line for line in procedure_lines if "[Manual]" in line]
+    needs_confirmation_steps = [line for line in procedure_lines if "[Needs confirmation]" in line]
+
+    if is_trackvia_login:
+        manual_steps.append("If MFA appears, pause and request code from an authorized user.")
+
+    common_issues: list[str] = []
+    for issue in list(draft.get("common_failures") or []):
+        issue_text = str(issue).strip()
+        if issue_text:
+            common_issues.append(issue_text)
+    for strategy in list(draft.get("fallback_strategies") or []):
+        strategy_text = str(strategy).strip()
+        if strategy_text:
+            common_issues.append(strategy_text)
+    for step in draft_steps:
+        recovery = str(step.get("recovery_strategy") or step.get("failure_behavior") or "").strip()
+        if recovery:
+            common_issues.append(recovery)
+    for reason in list(readiness.get("blocking_reasons") or []):
+        reason_text = str(reason).strip()
+        if reason_text:
+            common_issues.append(reason_text)
+
+    deduped_common_issues: list[str] = []
+    seen_issue_keys: set[str] = set()
+    for issue in common_issues:
+        key = issue.lower()
+        if key in seen_issue_keys:
+            continue
+        seen_issue_keys.add(key)
+        deduped_common_issues.append(issue)
+
+    readiness_status = "needs_more_teaching"
+    if bool(readiness.get("runnable")):
+        readiness_status = "runnable"
+    elif int(readiness.get("executable_action_count") or 0) == 0:
+        readiness_status = "manual_only"
+
+    last_validated_date = str(draft.get("updated_at") or draft.get("created_at") or "").strip() or None
+    success_criteria = (
+        "TrackVia dashboard or main app page loads."
+        if is_trackvia_login
+        else "The workflow reaches the expected destination page with no blocking errors."
+    )
+
+    notes: list[str] = [
+        "This SOP is generated only from taught workflow data and readiness metadata.",
+        "Credentials and secrets are never stored in the SOP. Authorized users provide them at runtime.",
+    ]
+    if not any("confirmed" in step for step in draft_steps):
+        notes.append("Per-step confirmation status was not stored on this draft; steps are labeled using runnable/manual evidence.")
+    if needs_confirmation_steps:
+        notes.append("Steps marked 'Needs confirmation' should be reviewed before broad execution.")
+
+    markdown_lines: list[str] = [
+        f"# SOP: {workflow_name}",
+        "",
+        "## Purpose",
+        workflow_summary or f"Execute the taught workflow '{workflow_name}' reliably.",
+        "",
+        "## Scope / When To Use",
+        f"Use this SOP when running the taught workflow '{workflow_name}' in Bill.",
+        "",
+        "## Required Access / Prerequisites",
+    ]
+    markdown_lines.extend([f"- {item}" for item in prerequisites])
+    markdown_lines.extend([
+        "",
+        "## Starting Page",
+        f"- {start_url or 'Not captured yet'}",
+        "",
+        "## Step-by-Step Procedure",
+    ])
+    markdown_lines.extend([f"{line}" for line in procedure_lines] if procedure_lines else ["1. [Needs confirmation] No taught steps were available."])
+    markdown_lines.extend([
+        "",
+        "## Bill Automation Steps",
+    ])
+    markdown_lines.extend([f"- {line}" for line in automation_steps] or ["- No fully automated steps captured yet."])
+    markdown_lines.extend([
+        "",
+        "## Human / Manual Steps",
+    ])
+    markdown_lines.extend([f"- {line}" for line in manual_steps] or ["- No manual-only steps captured."])
+    markdown_lines.extend([
+        "",
+        "## MFA / Security Notes",
+    ])
+    if is_trackvia_login or any(term in text_blob for term in ["mfa", "otp", "code"]):
+        markdown_lines.append("- If MFA appears, pause and request code from an authorized user.")
+    else:
+        markdown_lines.append("- If credentials or verification code are needed, an authorized user provides them at runtime.")
+    if mentions_email_password or is_trackvia_login:
+        markdown_lines.append("- Use regular email/password login flow when applicable.")
+    if mentions_no_sso or is_trackvia_login:
+        markdown_lines.append("- Do not use Single Sign On (SSO) unless this workflow is explicitly taught for SSO.")
+
+    markdown_lines.extend([
+        "",
+        "## Common Issues and Recovery",
+    ])
+    markdown_lines.extend([f"- {item}" for item in deduped_common_issues] or ["- No recovery notes captured yet."])
+    markdown_lines.extend([
+        "",
+        "## Success Criteria",
+        f"- {success_criteria}",
+        "",
+        "## Last Validated Date",
+        f"- {last_validated_date or 'Unknown'}",
+        "",
+        "## Workflow Readiness Status",
+        f"- Status: {readiness_status}",
+        f"- Runnable: {'Yes' if bool(readiness.get('runnable')) else 'No'}",
+        f"- Has starting page: {'Yes' if bool(readiness.get('has_start_url')) else 'No'}",
+    ])
+    for reason in list(readiness.get("blocking_reasons") or []):
+        markdown_lines.append(f"- Blocking reason: {reason}")
+    for warning in list(readiness.get("warnings") or []):
+        markdown_lines.append(f"- Warning: {warning}")
+
+    markdown_lines.extend([
+        "",
+        "## Notes / Assumptions",
+    ])
+    markdown_lines.extend([f"- {note}" for note in notes])
+
+    return {
+        "workflow_id": workflow_id,
+        "draft_id": str(draft.get("draft_id") or ""),
+        "workflow_name": workflow_name,
+        "readiness_status": readiness_status,
+        "runnable": bool(readiness.get("runnable")),
+        "has_start_url": bool(readiness.get("has_start_url")),
+        "last_validated_date": last_validated_date,
+        "generated_at": datetime.utcnow().isoformat(),
+        "markdown": "\n".join(markdown_lines).strip() + "\n",
+        "source_summary": {
+            "step_count": len(draft_steps),
+            "captured_fields": ui_hints["fields"][:10],
+            "captured_buttons": ui_hints["buttons"][:10],
+            "captured_pages": ui_hints["pages"][:5],
+            "manual_step_count": len(manual_steps),
+            "needs_confirmation_count": len(needs_confirmation_steps),
+            "workflow_summary_present": bool(workflow_summary),
+        },
+    }
+
+
+@app.get("/api/workflows/{workflow_id}/sop", response_model=WorkflowGeneratedSOPRecord)
+def generate_workflow_sop(workflow_id: str) -> WorkflowGeneratedSOPRecord:
+    draft = _resolve_approved_workflow_draft(workflow_id)
+    if draft is None:
+        _, by_draft_id = _find_workflow_draft(workflow_id)
+        draft = by_draft_id
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
+
+    record = _build_generated_workflow_sop_record(dict(draft), workflow_id=workflow_id)
+    return WorkflowGeneratedSOPRecord(**record)
+
+
+@app.post("/api/teaching/drafts/{draft_id}/generate-sop", response_model=WorkflowGeneratedSOPRecord)
+def generate_taught_draft_sop(draft_id: str) -> WorkflowGeneratedSOPRecord:
+    _, draft = _find_workflow_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Workflow draft not found")
+
+    workflow_id = str(draft.get("published_workflow_name") or draft.get("workflow_name") or draft_id)
+    record = _build_generated_workflow_sop_record(dict(draft), workflow_id=workflow_id)
+    return WorkflowGeneratedSOPRecord(**record)
 
 
 @app.post("/api/workflows/{workflow_id}/run-taught", response_model=TaskCreateResponse)
@@ -5656,9 +6046,49 @@ def submit_teach_session_answer(session_id: str, payload: dict = Body(default={}
     _, draft, resolved_draft_id = _resolve_teach_session_draft(session_id)
     if draft is None or not resolved_draft_id:
         raise HTTPException(status_code=404, detail="Teach session not found")
+
+    logger.info(
+        "TEACH_ANSWER_SESSION_RESOLVED session_id=%s draft_id=%s",
+        session_id,
+        resolved_draft_id,
+    )
+
+    prompt_id = str(payload.get("prompt_id") or "").strip()
+    step_order = int(payload.get("step_order") or 0)
+
+    # If caller did not provide an explicit prompt payload, try the current pending prompt.
+    if not prompt_id or step_order <= 0:
+        step, prompt = _next_pending_observation_prompt(draft)
+        if step is not None and prompt is not None:
+            prompt_id = str(prompt.get("prompt_id") or "").strip()
+            step_order = int(step.get("step_order") or 0)
+
+    if not prompt_id or step_order <= 0:
+        logger.info(
+            "TEACH_ANSWER_NO_ACTIVE_OBSERVATION_STEP session_id=%s draft_id=%s reason=no_pending_prompt",
+            session_id,
+            resolved_draft_id,
+        )
+        return {
+            "ok": True,
+            "saved": False,
+            "reason": "no_active_observation_step",
+            "message": "No active teaching question was waiting for an answer.",
+            "session_id": session_id,
+            "draft_id": resolved_draft_id,
+        }
+
+    logger.info(
+        "TEACH_ANSWER_OBSERVATION_STEP_FOUND session_id=%s draft_id=%s step_order=%s prompt_id=%s",
+        session_id,
+        resolved_draft_id,
+        step_order,
+        prompt_id,
+    )
+
     request = ObservationQuestionAnswerRequest(
-        prompt_id=str(payload.get("prompt_id") or ""),
-        step_order=int(payload.get("step_order") or 0),
+        prompt_id=prompt_id,
+        step_order=step_order,
         action="answer",
         answer=str(payload.get("answer") or ""),
         response_mode=str(payload.get("response_mode") or "text"),
@@ -5667,8 +6097,43 @@ def submit_teach_session_answer(session_id: str, payload: dict = Body(default={}
         question_frequency=payload.get("question_frequency"),
         system_context=dict(payload.get("system_context") or {}),
     )
-    result = answer_observation_question(resolved_draft_id, request)
-    return result.model_dump() if hasattr(result, "model_dump") else dict(result)
+    try:
+        result = answer_observation_question(resolved_draft_id, request)
+    except HTTPException as exc:
+        detail_text = str(exc.detail or "")
+        if exc.status_code == 404 and (
+            "Observation step not found" in detail_text
+            or "Observation prompt not found" in detail_text
+        ):
+            logger.info(
+                "TEACH_ANSWER_NO_ACTIVE_OBSERVATION_STEP session_id=%s draft_id=%s reason=%s",
+                session_id,
+                resolved_draft_id,
+                detail_text,
+            )
+            return {
+                "ok": True,
+                "saved": False,
+                "reason": "no_active_observation_step",
+                "message": "No active teaching question was waiting for an answer.",
+                "session_id": session_id,
+                "draft_id": resolved_draft_id,
+            }
+        raise
+
+    response_payload = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+    logger.info(
+        "TEACH_ANSWER_SAVED_TO_DRAFT session_id=%s draft_id=%s step_order=%s prompt_id=%s saved=%s status=%s",
+        session_id,
+        resolved_draft_id,
+        response_payload.get("step_order"),
+        response_payload.get("prompt_id"),
+        bool(response_payload.get("saved_answer")),
+        response_payload.get("status"),
+    )
+    response_payload.setdefault("ok", True)
+    response_payload.setdefault("saved", bool(response_payload.get("saved_answer")))
+    return response_payload
 
 
 @app.post("/api/teach-sessions/{session_id}/questions/skip")
@@ -7187,12 +7652,255 @@ def _fallback_click_selector(label: str) -> str | None:
     text = str(label or "").strip()
     if not text:
         return None
-    safe = " ".join(text.split())
+    safe = " ".join(text.split()).strip()
     if not safe:
         return None
-    if len(safe) > 80:
-        safe = safe[:80]
-    return f"role=button[name=\"{safe}\" i], text=\"{safe}\""
+    selectors = _build_click_selector_candidates(safe, "button", [], None)
+    valid = _filter_valid_teaching_selectors(selectors)
+    return valid[0] if valid else None
+
+
+_TEACH_DESCRIPTOR_TOKENS = {
+    "blue",
+    "green",
+    "red",
+    "large",
+    "small",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "main",
+    "primary",
+}
+
+_TEACH_TYPE_TOKENS = {
+    "button": "button",
+    "buttons": "button",
+    "field": "field",
+    "fields": "field",
+    "input": "field",
+    "textbox": "field",
+    "box": "field",
+    "link": "link",
+    "links": "link",
+}
+
+
+def _normalize_label_for_match(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+
+
+def _is_valid_teaching_selector(selector: str) -> bool:
+    candidate = str(selector or "").strip()
+    if not candidate:
+        return False
+    lowered = candidate.lower()
+    # Invalid mixed selector engine syntax that caused runtime parse errors.
+    if "role=" in lowered and ", text=" in lowered:
+        return False
+    if candidate.count('"') % 2 == 1:
+        return False
+    if candidate.count("'") % 2 == 1:
+        return False
+    return True
+
+
+def _filter_valid_teaching_selectors(selectors: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for selector in selectors:
+        candidate = str(selector or "").strip()
+        if not candidate:
+            continue
+        if not _is_valid_teaching_selector(candidate):
+            logger.info("TEACH_SELECTOR_VALIDATION_FAILED selector=%s", candidate[:240])
+            continue
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(candidate)
+    return output
+
+
+def _extract_click_target(message: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    text = str(message or "").strip().rstrip(".?!")
+    lower = " ".join(text.lower().split())
+    match = re.search(
+        r"\b(?:click|press|tap|select|choose)\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+and\b|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    raw_target = str(match.group(1) if match else "").strip().rstrip(".?!")
+    raw_target = re.split(r"\bselector\s*:\s*", raw_target, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    tokens = re.findall(r"[A-Za-z0-9]+", raw_target)
+    lowered_tokens = [token.lower() for token in tokens]
+    descriptors = [token for token in lowered_tokens if token in _TEACH_DESCRIPTOR_TOKENS]
+    target_type = "button"
+    for token in lowered_tokens:
+        mapped = _TEACH_TYPE_TOKENS.get(token)
+        if mapped:
+            target_type = mapped
+            break
+
+    label_tokens = [
+        token
+        for token in tokens
+        if token.lower() not in _TEACH_DESCRIPTOR_TOKENS and token.lower() not in _TEACH_TYPE_TOKENS
+    ]
+    label = " ".join(label_tokens).strip()
+    if label.lower() in {"that", "this", "it", "there"}:
+        label = ""
+
+    deictic_tokens = {"that", "this", "it", "there"}
+    if not label and any(token in lowered_tokens for token in deictic_tokens):
+        snap = dict(snapshot or {})
+        recent_label = str(snap.get("recent_click_label") or "").strip()
+        if recent_label:
+            label = recent_label
+            target_type = "button"
+        else:
+            visible_buttons = list(snap.get("visible_buttons") or snap.get("buttons") or [])
+            if visible_buttons:
+                first = visible_buttons[0]
+                if isinstance(first, dict):
+                    label = str(first.get("text") or first.get("aria_label") or first.get("label") or "").strip()
+                else:
+                    label = str(first or "").strip()
+                if label:
+                    target_type = "button"
+
+    if not label and "sign in" in lower:
+        label = "Sign In"
+        target_type = "button"
+    elif not label and any(token in lower for token in ("email", "password")):
+        if "email" in lower:
+            label = "Email"
+        elif "password" in lower:
+            label = "Password"
+        target_type = "field"
+
+    if label:
+        label = " ".join(label.split())
+        label = " ".join(word.capitalize() for word in label.split())
+
+    logger.info(
+        "TEACH_CLICK_TARGET_EXTRACTED raw_target=%s target_label=%s target_type=%s descriptors=%s",
+        raw_target[:160],
+        label[:120],
+        target_type,
+        "|".join(descriptors),
+    )
+    if descriptors:
+        logger.info(
+            "TEACH_CLICK_DESCRIPTOR_STRIPPED raw_target=%s stripped_label=%s descriptors=%s",
+            raw_target[:160],
+            label[:120],
+            "|".join(descriptors),
+        )
+
+    return {
+        "raw_target": raw_target,
+        "target_label": label,
+        "target_type": target_type,
+        "descriptors": descriptors,
+    }
+
+
+def _snapshot_button_match(snapshot: dict[str, Any], target_label: str) -> dict[str, Any] | None:
+    if not target_label:
+        return None
+    normalized_target = _normalize_label_for_match(target_label)
+    best: dict[str, Any] | None = None
+    best_score = -1
+    for item in list(snapshot.get("visible_buttons") or snapshot.get("buttons") or []):
+        entry = dict(item) if isinstance(item, dict) else {"text": str(item or "")}
+        text = str(entry.get("text") or entry.get("aria_label") or entry.get("label") or "").strip()
+        if not text:
+            continue
+        normalized_text = _normalize_label_for_match(text)
+        score = 0
+        if normalized_text == normalized_target:
+            score = 3
+        elif normalized_target and normalized_target in normalized_text:
+            score = 2
+        elif normalized_text and normalized_text in normalized_target:
+            score = 1
+        if score > best_score:
+            best_score = score
+            best = {
+                "text": text,
+                "selector": str(entry.get("selector") or entry.get("selector_hint") or "").strip() or None,
+            }
+    if best and best_score > 0:
+        logger.info(
+            "TEACH_CLICK_SNAPSHOT_TARGET_MATCHED target_label=%s snapshot_label=%s has_selector=%s",
+            target_label[:120],
+            str(best.get("text") or "")[:120],
+            bool(best.get("selector")),
+        )
+        return best
+    return None
+
+
+def _build_click_selector_candidates(
+    target_label: str,
+    target_type: str,
+    descriptors: list[str],
+    snapshot_match: dict[str, Any] | None,
+) -> list[str]:
+    selectors: list[str] = []
+    label = " ".join(str(target_label or "").split()).strip()
+    if snapshot_match:
+        snap_selector = str(snapshot_match.get("selector") or "").strip()
+        if snap_selector:
+            selectors.append(snap_selector)
+        snap_text = str(snapshot_match.get("text") or "").strip()
+        if snap_text:
+            label = snap_text
+    if not label:
+        return selectors
+
+    escaped = label.replace('"', '\\"')
+    regex = re.sub(r"\s+", r"\\s+", re.escape(label))
+
+    if target_type == "field":
+        selectors.extend(
+            [
+                f"input[aria-label*=\"{escaped}\" i]",
+                f"input[placeholder*=\"{escaped}\" i]",
+                f"textarea[aria-label*=\"{escaped}\" i]",
+                f"label:has-text(\"{escaped}\")",
+                f"text=/^\\s*{regex}\\s*$/i",
+            ]
+        )
+    elif target_type == "link":
+        selectors.extend(
+            [
+                f"a:has-text(\"{escaped}\")",
+                f"text=/^\\s*{regex}\\s*$/i",
+            ]
+        )
+    else:
+        selectors.extend(
+            [
+                f"button:has-text(\"{escaped}\")",
+                f"[role='button']:has-text(\"{escaped}\")",
+                f"a:has-text(\"{escaped}\")",
+                f"text=/^\\s*{regex}\\s*$/i",
+            ]
+        )
+
+    valid = _filter_valid_teaching_selectors(selectors)
+    logger.info(
+        "TEACH_SELECTOR_CANDIDATES_CREATED target_label=%s target_type=%s descriptors=%s count=%s",
+        label[:120],
+        target_type,
+        "|".join(descriptors),
+        len(valid),
+    )
+    return valid
 
 
 def _derive_domain_from_url(value: str) -> str:
@@ -7361,6 +8069,405 @@ def _extract_teaching_intents(message: str) -> list[str]:
     return intents
 
 
+def _is_observation_check_request(message: str) -> bool:
+    lowered = " ".join(str(message or "").lower().split())
+    if not lowered:
+        return False
+    patterns = (
+        r"\bconfirm what you see\b",
+        r"\bwhat do you see\b",
+        r"\bwhat fields do you see\b",
+        r"\bwhat buttons do you see\b",
+        r"\bdo you see\b",
+        r"\bread back (?:the )?current page\b",
+        r"\bobservation check\b",
+        r"\blist (?:the )?(?:fields|buttons|fields and buttons|buttons and fields)\b",
+        r"\byou should see\b",
+    )
+    return any(re.search(pattern, lowered, re.IGNORECASE) for pattern in patterns)
+
+
+def _extract_observation_check_targets(message: str) -> list[str]:
+    lowered = " ".join(str(message or "").lower().split())
+    targets: list[str] = []
+    checks: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("Email field", ("email field", "email input", " email ")),
+        ("Password field", ("password field", "password input", " password ")),
+        ("Sign In button", ("sign in button", "signin button", "blue sign in button", "sign in")),
+        ("Single Sign On link", ("single sign on", "sso", "single-sign-on")),
+    )
+    padded = f" {lowered} "
+    for label, hints in checks:
+        if any(hint in padded for hint in hints):
+            targets.append(label)
+    return targets
+
+
+def _format_snapshot_control_lists(snapshot: dict[str, Any]) -> dict[str, list[str]]:
+    def _uniq(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        output: list[str] = []
+        for item in items:
+            candidate = " ".join(str(item or "").split()).strip()
+            if not candidate:
+                continue
+            key = candidate.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append(candidate)
+        return output
+
+    fields: list[str] = []
+    for item in list(snapshot.get("visible_inputs") or snapshot.get("inputs") or []):
+        entry = dict(item) if isinstance(item, dict) else {"label": str(item or "")}
+        field_type = str(entry.get("type") or "").strip().lower()
+        label = (
+            str(entry.get("label") or "").strip()
+            or str(entry.get("placeholder") or "").strip()
+            or str(entry.get("name") or "").strip()
+        )
+        if label == "[redacted]":
+            if field_type == "email":
+                label = "Email field"
+            elif field_type == "password":
+                label = "Password field"
+            elif field_type:
+                label = f"{field_type.capitalize()} field"
+            else:
+                label = "Input field"
+        elif label:
+            if "field" not in label.lower() and "input" not in label.lower():
+                label = f"{label} field"
+        elif field_type:
+            label = f"{field_type.capitalize()} field"
+        if label:
+            fields.append(label)
+
+    buttons: list[str] = []
+    for item in list(snapshot.get("visible_buttons") or snapshot.get("buttons") or []):
+        entry = dict(item) if isinstance(item, dict) else {"text": str(item or "")}
+        text = str(entry.get("text") or entry.get("aria_label") or "").strip()
+        if text:
+            if "button" not in text.lower():
+                text = f"{text} button"
+            buttons.append(text)
+
+    links: list[str] = []
+    for item in list(snapshot.get("visible_links") or snapshot.get("links") or []):
+        entry = dict(item) if isinstance(item, dict) else {"text": str(item or "")}
+        text = str(entry.get("text") or entry.get("href") or "").strip()
+        if text:
+            links.append(text)
+
+    headings: list[str] = []
+    for item in list(snapshot.get("visible_headings") or snapshot.get("headings") or []):
+        entry = dict(item) if isinstance(item, dict) else {"text": str(item or "")}
+        text = str(entry.get("text") or "").strip()
+        if text:
+            headings.append(text)
+
+    return {
+        "fields": _uniq(fields),
+        "buttons": _uniq(buttons),
+        "links": _uniq(links),
+        "headings": _uniq(headings),
+    }
+
+
+def _observation_target_found(target: str, controls: dict[str, list[str]]) -> bool:
+    haystack = [
+        *controls.get("fields", []),
+        *controls.get("buttons", []),
+        *controls.get("links", []),
+        *controls.get("headings", []),
+    ]
+    normalized = " | ".join(item.lower() for item in haystack)
+    lowered_target = target.lower()
+    if lowered_target == "email field":
+        return "email" in normalized
+    if lowered_target == "password field":
+        return "password" in normalized
+    if lowered_target == "sign in button":
+        return "sign in" in normalized or "signin" in normalized
+    if lowered_target == "single sign on link":
+        return "single sign on" in normalized or "sso" in normalized
+    return lowered_target in normalized
+
+
+def _build_observation_check_reply(message: str, ts: dict[str, Any]) -> tuple[str, list[str], list[str], bool]:
+    snapshot = dict(ts.get("page_context_snapshot") or {})
+    invalid_reason = _teaching_context_invalid_reason(snapshot)
+    if invalid_reason:
+        snapshot = _teaching_waiting_snapshot()
+
+    controls = _format_snapshot_control_lists(snapshot)
+    requested_targets = _extract_observation_check_targets(message)
+
+    confirmed_items: list[str] = []
+    missing_items: list[str] = []
+    for target in requested_targets:
+        if _observation_target_found(target, controls):
+            confirmed_items.append(target)
+        else:
+            missing_items.append(target)
+
+    url_value = str(snapshot.get("url") or "").strip()
+    domain_value = str(snapshot.get("domain") or "").strip()
+    title_value = str(snapshot.get("title") or "").strip()
+
+    snapshot_found = bool(
+        url_value
+        or domain_value
+        or title_value
+        or controls["fields"]
+        or controls["buttons"]
+        or controls["links"]
+        or controls["headings"]
+    )
+
+    lines: list[str] = []
+    lines.append(f"I'm on {url_value or 'an unknown page'}.")
+    if domain_value:
+        lines.append(f"Domain: {domain_value}.")
+    if title_value:
+        lines.append(f"Page: {title_value}.")
+
+    lines.append("I can see:")
+    lines.append(f"- Fields: {', '.join(controls['fields'][:8]) if controls['fields'] else 'None detected'}")
+    lines.append(f"- Buttons: {', '.join(controls['buttons'][:8]) if controls['buttons'] else 'None detected'}")
+    if controls["links"]:
+        lines.append(f"- Links: {', '.join(controls['links'][:8])}")
+
+    if requested_targets:
+        if missing_items:
+            visible_now = controls["fields"][:4] + controls["buttons"][:4] + controls["links"][:4]
+            lines.append(
+                "I do not currently detect "
+                f"{', '.join(missing_items)}. "
+                f"I see: {', '.join(visible_now) if visible_now else 'no controls yet'}. "
+                "Try waiting, refreshing, or using the #/signin route."
+            )
+        else:
+            lines.append(
+                f"Yes, I see {', '.join(confirmed_items)}. "
+                "Do you want me to save this as the login page and continue with the email/password path?"
+            )
+    else:
+        lines.append("Do you want me to save this as the current page and continue to the next step?")
+
+    return "\n".join(lines), confirmed_items, missing_items, snapshot_found
+
+
+_AUTH_CLARIFICATION_KEY = "auth_method_sso"
+
+
+def _ensure_teaching_auth_state(ts: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    facts = dict(ts.get("teaching_facts") or {})
+    facts.setdefault("auth_method", None)
+    facts.setdefault("use_sso", None)
+    facts.setdefault("sso_allowed", None)
+    facts.setdefault("login_method_confirmed", False)
+    facts.setdefault("do_not_use_sso", False)
+
+    clarification_state = dict(ts.get("clarification_state") or {})
+    clarification_state.setdefault("asked_keys", [])
+    clarification_state.setdefault("answered_keys", [])
+    clarification_state.setdefault("last_asked_key", None)
+    clarification_state.setdefault("last_asked_turn", 0)
+
+    clarification_answers = dict(ts.get("clarification_answers") or {})
+
+    ts["teaching_facts"] = facts
+    ts["clarification_state"] = clarification_state
+    ts["clarification_answers"] = clarification_answers
+    return facts, clarification_state, clarification_answers
+
+
+def _detect_auth_clarification_answer(message: str) -> bool:
+    lowered = " ".join(str(message or "").lower().split())
+    if not lowered:
+        return False
+    explicit_no_sso_phrases = (
+        "do not use sso",
+        "don't use sso",
+        "do not use single sign on",
+        "dont use single sign on",
+        "ignore single sign on",
+        "ignore sso",
+        "stop asking about sso",
+        "no sso",
+        "sso not allowed",
+        "without sso",
+    )
+    email_password_phrases = (
+        "use regular email and password",
+        "use the regular email and password",
+        "regular email and password login",
+        "email and password login only",
+        "password login only",
+        "this workflow uses regular email and password",
+        "email/password login only",
+        "use email and password",
+    )
+    has_no_sso = any(phrase in lowered for phrase in explicit_no_sso_phrases)
+    has_email_password = any(phrase in lowered for phrase in email_password_phrases)
+    if has_no_sso and ("login" in lowered or "workflow" in lowered or "sign" in lowered):
+        return True
+    if has_email_password and ("sso" in lowered or "single sign on" in lowered):
+        return True
+    if has_email_password and "login" in lowered:
+        return True
+    return False
+
+
+def _save_auth_method_fact(ts: dict[str, Any], message: str, turn_index: int) -> None:
+    facts, clarification_state, clarification_answers = _ensure_teaching_auth_state(ts)
+    facts["auth_method"] = "email_password"
+    facts["use_sso"] = False
+    facts["sso_allowed"] = False
+    facts["do_not_use_sso"] = True
+    facts["login_method_confirmed"] = True
+
+    clarification_answers[_AUTH_CLARIFICATION_KEY] = {
+        "answered": True,
+        "value": "email_password",
+        "use_sso": False,
+        "sso_allowed": False,
+        "do_not_use_sso": True,
+        "answered_turn": int(turn_index),
+        "source": "teaching_conversation",
+        "message": str(message or "")[:500],
+    }
+
+    answered_keys = list(clarification_state.get("answered_keys") or [])
+    if _AUTH_CLARIFICATION_KEY not in answered_keys:
+        answered_keys.append(_AUTH_CLARIFICATION_KEY)
+    clarification_state["answered_keys"] = answered_keys
+
+    ts["auth_method"] = "email_password"
+    ts["use_sso"] = False
+    ts["sso_allowed"] = False
+    ts["do_not_use_sso"] = True
+    ts["login_method_confirmed"] = True
+
+
+def _is_auth_clarification_suppressed(ts: dict[str, Any]) -> bool:
+    facts, clarification_state, clarification_answers = _ensure_teaching_auth_state(ts)
+    answer = dict(clarification_answers.get(_AUTH_CLARIFICATION_KEY) or {})
+    if bool(answer.get("answered")):
+        return True
+    answered_keys = set(str(item) for item in list(clarification_state.get("answered_keys") or []))
+    if _AUTH_CLARIFICATION_KEY in answered_keys:
+        return True
+    login_method_confirmed = bool(facts.get("login_method_confirmed") or ts.get("login_method_confirmed"))
+    auth_method = str(facts.get("auth_method") or ts.get("auth_method") or "").strip().lower()
+    use_sso = facts.get("use_sso") if "use_sso" in facts else ts.get("use_sso")
+    sso_allowed = facts.get("sso_allowed") if "sso_allowed" in facts else ts.get("sso_allowed")
+    do_not_use_sso = bool(facts.get("do_not_use_sso") or ts.get("do_not_use_sso"))
+    return bool(
+        login_method_confirmed
+        or auth_method == "email_password"
+        or use_sso is False
+        or sso_allowed is False
+        or do_not_use_sso
+    )
+
+
+def _track_auth_clarification_question(ts: dict[str, Any], turn_index: int) -> None:
+    _, clarification_state, _ = _ensure_teaching_auth_state(ts)
+    asked_keys = list(clarification_state.get("asked_keys") or [])
+    if _AUTH_CLARIFICATION_KEY not in asked_keys:
+        asked_keys.append(_AUTH_CLARIFICATION_KEY)
+    clarification_state["asked_keys"] = asked_keys
+    clarification_state["last_asked_key"] = _AUTH_CLARIFICATION_KEY
+    clarification_state["last_asked_turn"] = int(turn_index)
+
+
+def _auth_clarification_duplicate_blocked(ts: dict[str, Any], turn_index: int) -> bool:
+    _, clarification_state, _ = _ensure_teaching_auth_state(ts)
+    last_key = str(clarification_state.get("last_asked_key") or "")
+    last_turn = int(clarification_state.get("last_asked_turn") or 0)
+    return last_key == _AUTH_CLARIFICATION_KEY and (int(turn_index) - last_turn) <= 1
+
+
+def _is_direct_action_instruction(message: str) -> bool:
+    lowered = " ".join(str(message or "").lower().split())
+    if not lowered:
+        return False
+    action_verbs = ("click", "press", "tap", "select", "type", "enter", "fill", "choose")
+    return any(re.search(rf"\b{verb}\b", lowered) for verb in action_verbs)
+
+
+def _build_direct_action_step(message: str, steps: list[dict], snapshot: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
+    title = _infer_step_title_from_text(message, steps)
+    observed_actions = _build_intent_observed_actions(
+        "navigation",
+        message,
+        extract_urls_from_message(message),
+        snapshot=snapshot,
+    )
+    if not observed_actions:
+        observed_actions = _build_intent_observed_actions(
+            None,
+            message,
+            extract_urls_from_message(message),
+            snapshot=snapshot,
+        )
+    lower = " ".join(str(message or "").lower().split())
+    ack = "Go ahead and click the Sign In button now. I'll watch and record it."
+    if any(token in lower for token in ("email field", "password field")):
+        ack = "Got it. I'll capture this as a field interaction step."
+    elif any(token in lower for token in ("type", "enter", "fill")):
+        ack = "Got it. I'll capture the input step and save it to this workflow."
+
+    step: dict[str, Any] = {
+        "id": str(uuid4()),
+        "order": len(steps) + 1,
+        "title": title,
+        "observed_actions": observed_actions,
+        "employee_explanation": message,
+        "bill_summary": title,
+        "bill_confidence": 0.82,
+        "pending_question": None,
+        "needs_reasoning": False,
+        "unanswered_question": False,
+        "confirmed": True,
+        "decision_rules": [],
+        "exceptions": [],
+        "required_inputs": [],
+        "inferred_action": "navigation" if observed_actions else "action",
+        "inferred_data": {},
+    }
+    if observed_actions:
+        first_action = dict(observed_actions[0])
+        action_type = str(first_action.get("type") or "").strip().lower()
+        action_label = str(first_action.get("target_label") or first_action.get("label") or "").strip()
+        if action_type == "click" and action_label:
+            if step["title"].strip().lower() in {"click that", "click this", "click it"}:
+                step["title"] = f"Click {action_label}"
+            step["bill_summary"] = f"Bill learned: click the {action_label} button."
+            ack = f"Go ahead and click the {action_label} button now. I'll watch and record it."
+            if "selector:" in lower:
+                step["bill_confidence"] = 0.95
+    if "sign in" in lower:
+        step["inferred_action"] = "navigation"
+        step["inferred_data"] = {"target": "sign in button"}
+        logger.info("TEACH_SIGN_IN_CLICK_STEP_CAPTURED message=%s", message[:300])
+    return step, ack
+
+
+def _should_suppress_auth_clarification_for_action(message: str, ts: dict[str, Any]) -> bool:
+    if not _is_direct_action_instruction(message):
+        return False
+    if _is_auth_clarification_suppressed(ts):
+        return True
+    lower = " ".join(str(message or "").lower().split())
+    if any(token in lower for token in ("click", "press", "tap", "select", "type", "enter", "fill", "choose")):
+        return True
+    return False
+
+
 def _select_primary_intent(intents: list[str]) -> str | None:
     if not intents:
         return None
@@ -7413,7 +8520,12 @@ def _select_teaching_ack(step_order: int, confidence: float) -> str:
     return _TEACHING_ACK_VARIANTS[(step_order - 1) % len(_TEACHING_ACK_VARIANTS)]
 
 
-def _build_intent_observed_actions(primary_intent: str | None, message: str, urls: list[str]) -> list[dict[str, Any]]:
+def _build_intent_observed_actions(
+    primary_intent: str | None,
+    message: str,
+    urls: list[str],
+    snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     lower = str(message or "").lower()
     if primary_intent == "navigation":
         return _build_text_navigation_observed_actions(message)
@@ -7429,14 +8541,32 @@ def _build_intent_observed_actions(primary_intent: str | None, message: str, url
                 "timestamp": datetime.utcnow().isoformat(),
             }
         ]
-    if "click" in lower or "tap" in lower or "press" in lower:
-        click_match = re.search(
-            r"\b(?:click|tap|press)\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+(?:button|link))?(?:\s+and\b|\s*$)",
-            str(message or "").strip(),
-            flags=re.IGNORECASE,
-        )
-        click_label = str(click_match.group(1) if click_match else "").strip().rstrip(".?!")
-        fallback_selector = _fallback_click_selector(click_label)
+    if "click" in lower or "tap" in lower or "press" in lower or "select" in lower or "choose" in lower:
+        click_target = _extract_click_target(message, snapshot=snapshot)
+        click_label = str(click_target.get("target_label") or "").strip()
+        target_type = str(click_target.get("target_type") or "button").strip().lower()
+        descriptors = list(click_target.get("descriptors") or [])
+        snap_match = _snapshot_button_match(dict(snapshot or {}), click_label) if target_type == "button" else None
+        explicit_selector_match = re.search(r"\bselector\s*:\s*([^\s]+)", str(message or ""), flags=re.IGNORECASE)
+        explicit_selector = str(explicit_selector_match.group(1) if explicit_selector_match else "").strip()
+        generated_selectors = _build_click_selector_candidates(click_label, target_type, descriptors, snap_match)
+        selectors = _filter_valid_teaching_selectors(([explicit_selector] if explicit_selector else []) + generated_selectors)
+
+        fallback_selector = selectors[0] if selectors else None
+        if not fallback_selector:
+            logger.info(
+                "TEACH_SELECTOR_VALIDATION_FAILED selector=%s",
+                str(click_target.get("raw_target") or "")[:200],
+            )
+
+        locator_candidates = [
+            {
+                "strategy": "snapshot_match" if idx == 0 and snap_match and str(snap_match.get("selector") or "") == selector else "selector",
+                "selector": selector,
+            }
+            for idx, selector in enumerate(selectors)
+        ]
+
         if click_label or fallback_selector:
             logger.info("TEACH_STEP_CREATED_CLICK label=%s selector_fallback=%s", click_label[:80], fallback_selector or "")
             return [
@@ -7444,7 +8574,12 @@ def _build_intent_observed_actions(primary_intent: str | None, message: str, url
                     "id": str(uuid4()),
                     "type": "click",
                     "label": click_label or None,
+                    "target_label": click_label or None,
+                    "target_type": target_type,
+                    "descriptors": descriptors,
                     "selector": fallback_selector,
+                    "selectors": selectors,
+                    "locator_candidates": locator_candidates,
                     "url": None,
                     "value_redacted": None,
                     "timestamp": datetime.utcnow().isoformat(),
@@ -7453,7 +8588,7 @@ def _build_intent_observed_actions(primary_intent: str | None, message: str, url
     return []
 
 
-def _analyze_teaching_message(message: str, existing_steps: list[dict]) -> dict[str, Any]:
+def _analyze_teaching_message(message: str, existing_steps: list[dict], snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
     step_order = len(existing_steps) + 1
     urls = extract_urls_from_message(message)
     intents = _extract_teaching_intents(message)
@@ -7462,7 +8597,7 @@ def _analyze_teaching_message(message: str, existing_steps: list[dict]) -> dict[
 
     title = _infer_step_title_from_text(message, existing_steps)
     bill_summary = _bill_summary_from_text(message, step_order)
-    observed_actions = _build_intent_observed_actions(primary_intent, message, urls)
+    observed_actions = _build_intent_observed_actions(primary_intent, message, urls, snapshot=snapshot)
     confidence = _teaching_confidence(primary_intent, message, has_url)
     followup = _compose_teaching_followup_question(primary_intent, message, has_url, step_order)
 
@@ -7709,21 +8844,41 @@ def _convert_teaching_steps_to_draft(steps: list[dict]) -> list[dict]:
                 step_payload.update({"action": "open_url", "url": canonical_url})
                 logger.info("TEACH_STEP_CREATED_NAVIGATE step_order=%s url=%s", next_order, canonical_url)
             elif action_type in {"click", "submit"}:
-                fallback_selector = _fallback_click_selector(str(action.get("label") or ""))
-                if selector:
-                    step_payload.update({"action": "click_selector", "selector": selector, "timeout_ms": 20000})
-                elif fallback_selector:
+                label = str(action.get("target_label") or action.get("label") or "").strip()
+                target_type = str(action.get("target_type") or "button").strip().lower()
+                descriptors = list(action.get("descriptors") or [])
+                existing_selectors = [str(item).strip() for item in list(action.get("selectors") or []) if str(item).strip()]
+                if selector and not _is_valid_teaching_selector(selector):
+                    logger.info("TEACH_SELECTOR_VALIDATION_FAILED selector=%s", selector[:240])
+                    selector = ""
+                candidate_selectors = _filter_valid_teaching_selectors(([selector] if selector else []) + existing_selectors)
+                if not candidate_selectors:
+                    candidate_selectors = _build_click_selector_candidates(label, target_type, descriptors, None)
+
+                if candidate_selectors and selector and selector not in candidate_selectors:
+                    logger.info(
+                        "TEACH_SELECTOR_REPAIRED original=%s repaired=%s",
+                        selector[:180],
+                        candidate_selectors[0][:180],
+                    )
+
+                if candidate_selectors:
                     step_payload.update(
                         {
                             "action": "click_selector",
-                            "selector": fallback_selector,
+                            "selector": candidate_selectors[0],
+                            "selectors": candidate_selectors,
                             "timeout_ms": 20000,
+                            "target_label": label or None,
+                            "target_type": target_type,
+                            "descriptors": descriptors,
                         }
                     )
                     logger.info(
-                        "TEACH_STEP_CREATED_CLICK step_order=%s selector_source=label_fallback label=%s",
+                        "TEACH_CLICK_STEP_SAVED_RUNNABLE step_order=%s selector=%s label=%s",
                         next_order,
-                        str(action.get("label") or "")[:80],
+                        candidate_selectors[0][:180],
+                        label[:80],
                     )
                 else:
                     step_payload.update(
@@ -7875,6 +9030,9 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         "steps": [],
     }
     message = (body.message or "").strip()
+    turn_index = int(ts.get("conversation_turn_index") or 0) + 1
+    ts["conversation_turn_index"] = turn_index
+    _ensure_teaching_auth_state(ts)
     steps: list[dict] = list(ts.get("steps") or [])
     current_status = ts.get("status", "intro")
     if current_status == "intro" or not ts.get("workflow_summary"):
@@ -7883,6 +9041,63 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         record["teaching_session"] = ts
         _teaching_startup_sessions[session_id] = record
         return TeachingSessionMessageResponse(reply="Got it. Where do we start?", teaching_session=TeachingSession.model_validate(ts))
+    if _is_observation_check_request(message):
+        logger.info(
+            "TEACH_OBSERVATION_CHECK_INTENT session_id=%s message=%s",
+            session_id,
+            message[:300],
+        )
+        reply, confirmed_items, missing_items, snapshot_found = _build_observation_check_reply(message, ts)
+        snapshot = dict(ts.get("page_context_snapshot") or {})
+        logger.info(
+            "TEACH_OBSERVATION_CHECK_SNAPSHOT_FOUND session_id=%s found=%s url=%s domain=%s",
+            session_id,
+            snapshot_found,
+            str(snapshot.get("url") or "")[:240],
+            str(snapshot.get("domain") or "")[:140],
+        )
+        logger.info(
+            "TEACH_OBSERVATION_CHECK_ITEMS_CONFIRMED session_id=%s items=%s",
+            session_id,
+            "|".join(confirmed_items) if confirmed_items else "",
+        )
+        logger.info(
+            "TEACH_OBSERVATION_CHECK_ITEMS_MISSING session_id=%s items=%s",
+            session_id,
+            "|".join(missing_items) if missing_items else "",
+        )
+        ts["steps"] = steps
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        return TeachingSessionMessageResponse(reply=reply, teaching_session=TeachingSession.model_validate(ts))
+    if _detect_auth_clarification_answer(message):
+        logger.info(
+            "TEACH_AUTH_CLARIFICATION_ANSWER_DETECTED session_id=%s turn=%s message=%s",
+            session_id,
+            turn_index,
+            message[:320],
+        )
+        _save_auth_method_fact(ts, message, turn_index)
+        logger.info(
+            "TEACH_AUTH_METHOD_FACT_SAVED session_id=%s auth_method=%s use_sso=%s sso_allowed=%s login_method_confirmed=%s",
+            session_id,
+            str(ts.get("auth_method") or ""),
+            ts.get("use_sso"),
+            ts.get("sso_allowed"),
+            ts.get("login_method_confirmed"),
+        )
+        logger.info(
+            "TEACH_SSO_SUPPRESSION_RULE_ACTIVE session_id=%s active=%s",
+            session_id,
+            _is_auth_clarification_suppressed(ts),
+        )
+        ts["steps"] = steps
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        return TeachingSessionMessageResponse(
+            reply="Got it. I'll use regular email and password login and ignore Single Sign On. Next, click the Email field so I can capture the username step.",
+            teaching_session=TeachingSession.model_validate(ts),
+        )
     if steps and _is_decision_rule(message):
         steps[-1].setdefault("decision_rules", []).append(message)
         ts["steps"] = steps
@@ -7900,7 +9115,27 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         record["teaching_session"] = ts
         _teaching_startup_sessions[session_id] = record
         return TeachingSessionMessageResponse(reply="I need a little more detail. What action should Bill perform or watch for?", teaching_session=TeachingSession.model_validate(ts))
-    analysis = _analyze_teaching_message(message, steps)
+    if _should_suppress_auth_clarification_for_action(message, ts):
+        logger.info(
+            "TEACH_AUTH_CLARIFICATION_SUPPRESSED_FOR_ACTION session_id=%s turn=%s message=%s",
+            session_id,
+            turn_index,
+            message[:320],
+        )
+        logger.info(
+            "TEACH_ACTION_HANDLED_BEFORE_AUTH_CLARIFICATION session_id=%s turn=%s message=%s",
+            session_id,
+            turn_index,
+            message[:320],
+        )
+        step, reply = _build_direct_action_step(message, steps, snapshot=dict(ts.get("page_context_snapshot") or {}))
+        steps.append(step)
+        ts["steps"] = steps
+        ts["status"] = "teaching"
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        return TeachingSessionMessageResponse(reply=reply, teaching_session=TeachingSession.model_validate(ts))
+    analysis = _analyze_teaching_message(message, steps, snapshot=dict(ts.get("page_context_snapshot") or {}))
     step_order = int(analysis["step_order"])
     title = str(analysis["title"])
     bill_summary = str(analysis["bill_summary"])
@@ -7914,6 +9149,36 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
     decision_rules = list(analysis.get("decision_rules") or [])
     exceptions = list(analysis.get("exceptions") or [])
     ack_prefix = str(analysis.get("ack_prefix") or "Got it.")
+
+    if isinstance(followup_question, str) and "does bill always use sso" in followup_question.lower():
+        if _is_auth_clarification_suppressed(ts):
+            logger.info(
+                "TEACH_AUTH_CLARIFICATION_SUPPRESSED_ALREADY_ANSWERED session_id=%s turn=%s",
+                session_id,
+                turn_index,
+            )
+            logger.info(
+                "TEACH_SSO_SUPPRESSION_RULE_ACTIVE session_id=%s active=true",
+                session_id,
+            )
+            followup_question = None
+            unanswered_question = False
+        elif _auth_clarification_duplicate_blocked(ts, turn_index):
+            logger.info(
+                "TEACH_AUTH_CLARIFICATION_DUPLICATE_BLOCKED session_id=%s turn=%s",
+                session_id,
+                turn_index,
+            )
+            followup_question = None
+            unanswered_question = False
+        else:
+            _track_auth_clarification_question(ts, turn_index)
+            logger.info(
+                "TEACH_AUTH_CLARIFICATION_QUESTION_GENERATED session_id=%s turn=%s key=%s",
+                session_id,
+                turn_index,
+                _AUTH_CLARIFICATION_KEY,
+            )
 
     new_step: dict = {
         "id": str(uuid4()), "order": step_order, "title": title, "observed_actions": observed_actions,
