@@ -147,9 +147,13 @@ type TeachingStartupState = {
 
 type BrowserAction = {
   id: string;
-  type: "click" | "type" | "navigate" | "select" | "submit";
+  type: "click" | "type" | "navigate" | "select" | "submit" | "focus";
+  source?: "browser" | "extension" | "manual";
   selector?: string;
+  selectors?: string[];
   label?: string;
+  target_label?: string;
+  target_type?: string;
   valueRedacted?: string;
   url?: string;
   timestamp: string;
@@ -179,6 +183,10 @@ type TeachingSession = {
   workflowSummary?: string;
   status: "intro" | "teaching" | "review" | "approved" | "ready" | "needs_more_teaching";
   steps: WorkflowStep[];
+  extensionConnectionStatus?: string | null;
+  extensionEventCount?: number;
+  lastExtensionEvent?: Record<string, unknown> | null;
+  extensionEvents?: Record<string, unknown>[];
   pageContextSnapshot?: {
     url?: string;
     title?: string;
@@ -194,6 +202,9 @@ type TeachingSession = {
     active_element?: { type?: string; label?: string } | null;
     recent_click_label?: string | null;
     recent_type_field?: string | null;
+    extension_connection_status?: string | null;
+    extension_event_count?: number;
+    last_extension_event?: Record<string, unknown> | null;
     modal_present?: boolean;
     modal_title?: string | null;
     captured_at?: number;
@@ -219,6 +230,10 @@ type TeachingSessionApiResponse = {
     workflow_name: string;
     workflow_summary?: string | null;
     status: "intro" | "teaching" | "review" | "approved";
+    extension_connection_status?: string | null;
+    extension_event_count?: number;
+    last_extension_event?: Record<string, unknown> | null;
+    extension_events?: Record<string, unknown>[];
     page_context_snapshot?: {
       url?: string;
       title?: string;
@@ -234,6 +249,9 @@ type TeachingSessionApiResponse = {
       active_element?: { type?: string; label?: string } | null;
       recent_click_label?: string | null;
       recent_type_field?: string | null;
+      extension_connection_status?: string | null;
+      extension_event_count?: number;
+      last_extension_event?: Record<string, unknown> | null;
       modal_present?: boolean;
       modal_title?: string | null;
       captured_at?: number;
@@ -244,9 +262,13 @@ type TeachingSessionApiResponse = {
       title: string;
       observed_actions?: Array<{
         id: string;
-        type: "click" | "type" | "navigate" | "select" | "submit";
+        type: "click" | "type" | "navigate" | "select" | "submit" | "focus";
+        source?: "browser" | "extension" | "manual";
         selector?: string | null;
+        selectors?: string[];
         label?: string | null;
+        target_label?: string | null;
+        target_type?: string | null;
         value_redacted?: string | null;
         url?: string | null;
         timestamp: string;
@@ -310,6 +332,14 @@ type TeachingSessionApiResponse = {
 const INVALID_TEACHING_CONTEXT_MARKERS = ["omnibox-popup", "top-chrome", "chrome://", "chrome-extension://", "devtools://", "about:", "edge://", "extension://"];
 const INVALID_TEACHING_CONTEXT_MESSAGE = "Bill is waiting for the real webpage tab.";
 
+const BILL_CAN_SEE_PANEL_COPY = {
+  heading: "Bill can currently see",
+  waitingMessage: "Bill is waiting for the real webpage tab.",
+  waitingBadge: "Waiting for real webpage tab",
+  invalidMarkers: ["omnibox-popup", "top-chrome"],
+  floatingPanelLabel: "Floating Chat Panel",
+} as const;
+
 function isInvalidTeachingContextSnapshot(snapshot: { url?: string; title?: string; domain?: string } | null | undefined): boolean {
   const urlValue = snapshot?.url || "";
   const titleValue = snapshot?.title || "";
@@ -364,6 +394,103 @@ type EmployeeReadiness = {
   reasons: string[];
   toneClass: string;
 };
+
+type ExtensionLearningReadiness = {
+  label: string;
+  reasons: string[];
+  toneClass: string;
+};
+
+type TeachingStepCardProps = {
+  step: WorkflowStep;
+  stepNumber?: number;
+  status: TeachingStepStatus;
+  formatObservedAction: (action: BrowserAction) => string;
+  compact?: boolean;
+};
+
+function TeachingStepCard({ step, stepNumber, status, formatObservedAction, compact = false }: TeachingStepCardProps) {
+  const hasExtensionEvidence = step.observedActions.some((action) => action.source === "extension");
+  const confidenceValue = Math.max(0, Math.min(1, step.billConfidence || 0));
+  const confidenceLabel = confidenceValue >= 0.8 ? "high" : confidenceValue >= 0.5 ? "medium" : "low";
+  const confidenceClass = confidenceValue >= 0.8
+    ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100"
+    : confidenceValue >= 0.5
+      ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
+      : "border-slate-500/50 bg-slate-800 text-slate-200";
+
+  return (
+    <article className={`rounded-xl border border-slate-700 bg-slate-950/70 text-sm ${compact ? "p-3" : "p-4"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {typeof stepNumber === "number" && (
+              <span className="text-xs uppercase tracking-[0.16em] text-slate-500">Step {stepNumber}</span>
+            )}
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${status.label === "Runnable" ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : status.label === "Needs clarification" ? "border-amber-400/40 bg-amber-500/10 text-amber-100" : "border-slate-500/50 bg-slate-800 text-slate-200"}`}>
+              {status.label}
+            </span>
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${step.confirmed ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : "border-amber-400/40 bg-amber-500/10 text-amber-100"}`}>
+              {step.confirmed ? "Confirmed" : "Unconfirmed"}
+            </span>
+            {hasExtensionEvidence && (
+              <span className="rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
+                Source: Chrome extension
+              </span>
+            )}
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${confidenceClass}`}>
+              Confidence: {confidenceLabel}
+            </span>
+          </div>
+          <h3 className="mt-2 truncate font-semibold text-white">{step.title}</h3>
+        </div>
+      </div>
+
+      <div className="mt-2 space-y-2">
+        <p className="text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
+        <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">Target</p>
+          <p className="mt-1 text-xs text-cyan-50">{step.observedActions[0]?.label || step.observedActions[0]?.selector || "Not captured yet"}</p>
+        </div>
+      </div>
+
+      <details className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+        <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-slate-400">Show technical info</summary>
+        <div className="mt-2 space-y-2 text-xs text-slate-300">
+          <p>Confidence: {(confidenceValue * 100).toFixed(0)}%</p>
+          <p>Employee explanation: {step.employeeExplanation || "Pending"}</p>
+          <p>Required data: {step.requiredInputs.join(", ") || "Pending"}</p>
+          <p>Decision rules: {step.decisionRules.join("; ") || "None yet"}</p>
+          <p>Exceptions: {step.exceptions.join("; ") || "None yet"}</p>
+          {step.pendingQuestion && <p>Pending question: {step.pendingQuestion}</p>}
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
+            {step.observedActions.length === 0 ? (
+              <p className="mt-1 text-slate-400">No browser actions captured yet.</p>
+            ) : (
+              <ul className="mt-1 space-y-1">
+                {step.observedActions.map((action) => (
+                  <li key={action.id}>{formatObservedAction(action)}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </details>
+    </article>
+  );
+}
+
+function summarizeExtensionEvent(event: Record<string, unknown> | null | undefined): string {
+  if (!event) {
+    return "No extension events yet";
+  }
+  return [
+    String(event.event_type ?? "").trim(),
+    String((event.target as Record<string, unknown> | undefined)?.target_label ?? "").trim(),
+    String(event.current_url ?? "").trim(),
+  ].filter(Boolean).join(" • ") || "Extension event captured";
+}
 
 type BrainCommandResponse = {
   recognized_intent?: string;
@@ -812,9 +939,13 @@ export default function Home() {
   const [teachingVoiceError, setTeachingVoiceError] = useState<string | null>(null);
   // Teaching startup state — tracks browser_opening → active/failed
   const [teachingStartupState, setTeachingStartupState] = useState<TeachingStartupState | null>(null);
+  const [extensionLearningSessionId, setExtensionLearningSessionId] = useState<string>("");
+  const [extensionLearningState, setExtensionLearningState] = useState<TeachingStartupState | null>(null);
   const teachingStartupPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const teachingStartupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const teachingStartupPollErrorCountRef = useRef<number>(0);
+  const extensionLearningPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const extensionLearningPollErrorCountRef = useRef<number>(0);
   const lastSpokenTeachingSessionIdRef = useRef<string>("");
   const lastGuidedTranscriptHashRef = useRef<string>("");
   const lastGuidedTranscriptAtRef = useRef<number>(0);
@@ -923,6 +1054,59 @@ export default function Home() {
     teachingStartupPollErrorCountRef.current = 0;
   }, []);
 
+  const stopExtensionLearningPoll = useCallback(() => {
+    if (extensionLearningPollRef.current !== null) {
+      clearInterval(extensionLearningPollRef.current);
+      extensionLearningPollRef.current = null;
+    }
+    extensionLearningPollErrorCountRef.current = 0;
+  }, []);
+
+  const startExtensionLearningPoll = useCallback(
+    (sessionId: string) => {
+      stopExtensionLearningPoll();
+      const apiBase = getApiBase();
+      const trimmedSessionId = String(sessionId || "").trim();
+      if (!apiBase || !trimmedSessionId) return;
+
+      extensionLearningPollErrorCountRef.current = 0;
+      setExtensionLearningSessionId(trimmedSessionId);
+
+      const fetchExtensionLearningState = async () => {
+        try {
+          const res = await fetch(`${apiBase}/api/teaching/session/${trimmedSessionId}/status`);
+          if (!res.ok) {
+            extensionLearningPollErrorCountRef.current += 1;
+            if (extensionLearningPollErrorCountRef.current >= TEACHING_STARTUP_MAX_POLL_ERRORS) {
+              stopExtensionLearningPoll();
+            }
+            return;
+          }
+          extensionLearningPollErrorCountRef.current = 0;
+          const data = (await res.json()) as TeachingStartupState;
+          setExtensionLearningState(data);
+          if (data.teaching_session) {
+            setGuidedTeachingFromSession(mapApiTeachingSession(data.teaching_session));
+          }
+          if (data.status === "failed") {
+            stopExtensionLearningPoll();
+          }
+        } catch {
+          extensionLearningPollErrorCountRef.current += 1;
+          if (extensionLearningPollErrorCountRef.current >= TEACHING_STARTUP_MAX_POLL_ERRORS) {
+            stopExtensionLearningPoll();
+          }
+        }
+      };
+
+      void fetchExtensionLearningState();
+      extensionLearningPollRef.current = setInterval(() => {
+        void fetchExtensionLearningState();
+      }, 2000);
+    },
+    [stopExtensionLearningPoll],
+  );
+
   const startTeachingStartupPoll = useCallback(
     (sessionId: string) => {
       stopTeachingStartupPoll();
@@ -1013,7 +1197,10 @@ export default function Home() {
   );
 
   // Stop polling when component unmounts
-  useEffect(() => () => stopTeachingStartupPoll(), [stopTeachingStartupPoll]);
+  useEffect(() => () => {
+    stopTeachingStartupPoll();
+    stopExtensionLearningPoll();
+  }, [stopExtensionLearningPoll, stopTeachingStartupPoll]);
 
   // ── Voice (Phase 4) ──────────────────────────────────────────────────────────
   const [autoSubmitVoiceCommands, setAutoSubmitVoiceCommands] = useState<boolean>(false);
@@ -1139,6 +1326,10 @@ export default function Home() {
         workflowSummary: input.workflow_summary ?? undefined,
         status: input.status,
         pageContextSnapshot: safeSnapshot,
+        extensionConnectionStatus: input.extension_connection_status ?? null,
+        extensionEventCount: Number(input.extension_event_count ?? 0),
+        lastExtensionEvent: input.last_extension_event ?? null,
+        extensionEvents: (input.extension_events ?? []) as Record<string, unknown>[],
       steps: (input.steps ?? []).map((step) => ({
         id: step.id,
         order: step.order,
@@ -1146,8 +1337,12 @@ export default function Home() {
         observedActions: (step.observed_actions ?? []).map((action) => ({
           id: action.id,
           type: action.type,
+          source: action.source ?? undefined,
           selector: action.selector ?? undefined,
+          selectors: action.selectors ?? undefined,
           label: action.label ?? undefined,
+          target_label: action.target_label ?? undefined,
+          target_type: action.target_type ?? undefined,
           valueRedacted: action.value_redacted ?? undefined,
           url: action.url ?? undefined,
           timestamp: action.timestamp,
@@ -1221,25 +1416,29 @@ export default function Home() {
   );
 
   const formatObservedAction = useCallback((action: BrowserAction): string => {
+    const sourcePrefix = action.source === "extension" ? "Extension observed" : action.source === "manual" ? "Manual note" : "Bill saw";
     if (action.type === "navigate") {
       try {
         const parsed = action.url ? new URL(action.url) : null;
         const path = parsed ? `${parsed.hostname}${parsed.pathname || "/"}` : action.url || "page";
-        return `Navigated to ${path}`;
+        return `${sourcePrefix}: navigated to ${path}`;
       } catch {
-        return `Navigated to ${action.url || "page"}`;
+        return `${sourcePrefix}: navigated to ${action.url || "page"}`;
       }
     }
     if (action.type === "type") {
-      return `Typed into ${action.label || "field"}`;
+      return `${sourcePrefix}: typed into ${action.target_label || action.label || "field"}`;
     }
     if (action.type === "select") {
-      return `Selected option in ${action.label || "field"}`;
+      return `${sourcePrefix}: selected option in ${action.target_label || action.label || "field"}`;
     }
     if (action.type === "submit") {
-      return `Submitted ${action.label || "form"}`;
+      return `${sourcePrefix}: submitted ${action.target_label || action.label || "form"}`;
     }
-    return `Clicked ${action.label || "element"}`;
+    if (action.type === "focus") {
+      return `${sourcePrefix}: focused ${action.target_label || action.label || "field"}`;
+    }
+    return `${sourcePrefix}: clicked ${action.target_label || action.label || "element"}`;
   }, []);
 
   const setGuidedTeachingFromSession = useCallback((session: TeachingSession) => {
@@ -1262,6 +1461,15 @@ export default function Home() {
     const allActions = session.steps.flatMap((step) => step.observedActions ?? []);
     const firstNavigation = allActions.find((action) => action.type === "navigate" && Boolean(action.url?.trim()));
     const hasStartUrl = Boolean(firstNavigation?.url);
+    const hasRunnableInteractiveAction = allActions.some((action) => {
+      if (action.type === "navigate") {
+        return Boolean(action.url?.trim());
+      }
+      if (action.type === "click" || action.type === "submit" || action.type === "focus" || action.type === "type") {
+        return Boolean(action.selector?.trim());
+      }
+      return false;
+    });
 
     if (session.steps.length === 0) {
       blockingReasons.push("No steps were captured yet.");
@@ -1291,7 +1499,7 @@ export default function Home() {
     }
 
     return {
-      runnable: blockingReasons.length === 0,
+      runnable: blockingReasons.length === 0 && Boolean(hasStartUrl || hasRunnableInteractiveAction),
       has_start_url: hasStartUrl,
       start_url: firstNavigation?.url ?? null,
       blocking_reasons: blockingReasons,
@@ -1362,7 +1570,7 @@ export default function Home() {
         continue;
       }
 
-      if (action.type === "click" || action.type === "submit") {
+      if (action.type === "click" || action.type === "submit" || action.type === "focus") {
         if ((action.selector ?? "").trim()) {
           hasRunnable = true;
         } else if ((action.label ?? "").trim()) {
@@ -1373,7 +1581,18 @@ export default function Home() {
         continue;
       }
 
-      if (action.type === "type" || action.type === "select") {
+      if (action.type === "type") {
+        if ((action.selector ?? "").trim()) {
+          hasRunnable = true;
+        } else if ((action.label ?? "").trim()) {
+          hasAmbiguity = true;
+        } else {
+          hasManualConstraint = true;
+        }
+        continue;
+      }
+
+      if (action.type === "select") {
         if ((action.selector ?? "").trim() && !action.valueRedacted) {
           hasRunnable = true;
         } else if (action.valueRedacted) {
@@ -1451,6 +1670,17 @@ export default function Home() {
     return Array.from(new Set([...(visible.length ? visible : fallback)])).slice(0, 8);
   }, [guidedTeachingSession?.pageContextSnapshot]);
 
+  const extensionConnectionStatus = guidedTeachingSession?.extensionConnectionStatus
+    ?? guidedTeachingSession?.pageContextSnapshot?.extension_connection_status
+    ?? "not paired";
+  const extensionEventCount = guidedTeachingSession?.extensionEventCount
+    ?? guidedTeachingSession?.pageContextSnapshot?.extension_event_count
+    ?? 0;
+  const latestExtensionEvent = (guidedTeachingSession?.lastExtensionEvent
+    ?? guidedTeachingSession?.pageContextSnapshot?.last_extension_event
+    ?? null) as Record<string, unknown> | null;
+  const latestExtensionEventSummary = summarizeExtensionEvent(latestExtensionEvent);
+
   const stepStatusSummary = useMemo(() => {
     const steps = guidedTeachingSession?.steps ?? [];
     let runnable = 0;
@@ -1464,6 +1694,57 @@ export default function Home() {
     }
     return { runnable, manualOnly, needsClarification, total: steps.length };
   }, [explainStepStatus, guidedTeachingSession?.steps]);
+
+  const extensionLearningSession = useMemo(() => {
+    if (!extensionLearningState?.teaching_session) return null;
+    return mapApiTeachingSession(extensionLearningState.teaching_session);
+  }, [extensionLearningState, mapApiTeachingSession]);
+
+  const extensionLearningStepStatusSummary = useMemo(() => {
+    const steps = extensionLearningSession?.steps ?? [];
+    let runnable = 0;
+    let manualOnly = 0;
+    let needsClarification = 0;
+    for (const step of steps) {
+      const status = explainStepStatus(step);
+      if (status.label === "Runnable") runnable += 1;
+      if (status.label === "Manual-only") manualOnly += 1;
+      if (status.label === "Needs clarification") needsClarification += 1;
+    }
+    return { runnable, manualOnly, needsClarification, total: steps.length };
+  }, [explainStepStatus, extensionLearningSession?.steps]);
+
+  const extensionLearningReadiness = useMemo(() => {
+    if (!extensionLearningSession) return null;
+    const hasStart = Boolean(extensionLearningSession.pageContextSnapshot?.url || extensionLearningSession.pageContextSnapshot?.domain);
+    const hasExtensionEvents = (extensionLearningSession.extensionEventCount ?? 0) > 0;
+    const hasRunnableStep = extensionLearningStepStatusSummary.runnable > 0;
+    const reasons: string[] = [];
+
+    if (!hasExtensionEvents) {
+      reasons.push("Waiting for extension events.");
+    }
+    if (!hasStart) {
+      reasons.push("Waiting for a captured page context.");
+    }
+    if (!hasRunnableStep) {
+      reasons.push("Bill needs at least one runnable step before testing.");
+    }
+
+    return {
+      label: hasRunnableStep && hasStart ? "Ready to test" : "Still learning",
+      reasons,
+      toneClass: hasRunnableStep && hasStart ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100" : "border-amber-400/40 bg-amber-500/10 text-amber-100",
+    } satisfies ExtensionLearningReadiness;
+  }, [extensionLearningSession, extensionLearningStepStatusSummary]);
+
+  const extensionLearningVisible = Boolean(extensionLearningSessionId.trim() || extensionLearningSession || extensionLearningState);
+  const extensionLearningWorkerStatus = onlineWorkers.length > 0 ? "online" : "offline or unavailable";
+  const extensionLearningConnectionStatus = extensionLearningSession?.extensionConnectionStatus
+    ?? (extensionLearningSession?.extensionEventCount ? "watching" : "not paired");
+  const extensionLearningLatestEvent = (extensionLearningSession?.lastExtensionEvent
+    ?? extensionLearningSession?.pageContextSnapshot?.last_extension_event
+    ?? null) as Record<string, unknown> | null;
 
   const employeeReadiness = useMemo((): EmployeeReadiness => {
     const readiness = guidedTeachingEffectiveReadiness;
@@ -4293,6 +4574,116 @@ export default function Home() {
                 onStartTeaching={startTeachingFromCommandCenter}
               />
 
+              {extensionLearningVisible && (
+                <section className="rounded-2xl border border-cyan-500/25 bg-slate-900/80 p-5 shadow-lg shadow-cyan-950/20">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Extension Learning Session</p>
+                      <h2 className="mt-1 text-lg font-semibold text-slate-50">Review captured extension learning</h2>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-[11px] font-semibold">
+                      <span className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2 py-1 text-cyan-100">Extension status: {extensionLearningConnectionStatus}</span>
+                      <span className="rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-slate-200">Worker status: {extensionLearningWorkerStatus}</span>
+                    </div>
+                  </div>
+
+                  <p className="mt-3 max-w-4xl text-sm text-slate-300">
+                    Bill is receiving extension learning events, but the worker is offline. You can review captured learning now. Start the worker to open full Teaching Mode or test the workflow.
+                  </p>
+
+                  <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+                    <label className="block">
+                      <span className="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-400">Teaching session ID</span>
+                      <input
+                        value={extensionLearningSessionId}
+                        onChange={(event) => setExtensionLearningSessionId(event.target.value)}
+                        placeholder="Paste the active session id"
+                        className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void startExtensionLearningPoll(extensionLearningSessionId)}
+                      disabled={!extensionLearningSessionId.trim()}
+                      className="self-end rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Load captured steps
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        stopExtensionLearningPoll();
+                        setExtensionLearningState(null);
+                        setExtensionLearningSessionId("");
+                      }}
+                      className="self-end rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-200"
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  {extensionLearningSession ? (
+                    <>
+                      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+                        <section className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-xs uppercase tracking-[0.16em] text-cyan-300">Captured summary</p>
+                            <span className="text-[11px] text-slate-400">Extension events: {extensionLearningSession.extensionEventCount ?? 0}</span>
+                          </div>
+                          <div className="mt-3 space-y-2 text-sm text-slate-300">
+                            <p><span className="text-slate-400">Latest extension event:</span> {summarizeExtensionEvent(extensionLearningLatestEvent)}</p>
+                            <p><span className="text-slate-400">Captured steps:</span> {extensionLearningStepStatusSummary.total} total, {extensionLearningStepStatusSummary.runnable} runnable, {extensionLearningStepStatusSummary.manualOnly} manual-only, {extensionLearningStepStatusSummary.needsClarification} need clarification</p>
+                            <p><span className="text-slate-400">Bill summary:</span> {extensionLearningSession.workflowSummary || "Waiting for more learning"}</p>
+                          </div>
+                        </section>
+
+                        <section className={`rounded-2xl border p-4 ${extensionLearningReadiness?.toneClass || "border-slate-800 bg-slate-950/60 text-slate-200"}`}>
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-xs uppercase tracking-[0.16em]">Readiness</p>
+                            <span className="text-[11px] font-semibold">{extensionLearningReadiness?.label || "Unknown"}</span>
+                          </div>
+                          <p className="mt-2 text-sm font-semibold">{extensionLearningReadiness?.label || "Unknown"}</p>
+                          <ul className="mt-2 space-y-1 text-xs">
+                            {(extensionLearningReadiness?.reasons ?? ["Waiting for extension events."]).slice(0, 3).map((reason, index) => (
+                              <li key={`extension-readiness-${index}`}>{reason}</li>
+                            ))}
+                          </ul>
+                          <div className="mt-3 rounded-lg border border-slate-200/10 bg-slate-950/30 px-3 py-2 text-xs text-slate-300">
+                            <p><span className="text-slate-400">URL:</span> {extensionLearningSession.pageContextSnapshot?.url || "Waiting for page context"}</p>
+                            <p><span className="text-slate-400">Buttons:</span> {(extensionLearningSession.pageContextSnapshot?.visible_buttons?.length ?? 0) || (extensionLearningSession.pageContextSnapshot?.buttons?.length ?? 0)}</p>
+                            <p><span className="text-slate-400">Fields:</span> {(extensionLearningSession.pageContextSnapshot?.visible_inputs?.length ?? 0) || (extensionLearningSession.pageContextSnapshot?.inputs?.length ?? 0)}</p>
+                            <p><span className="text-slate-400">Links:</span> {(extensionLearningSession.pageContextSnapshot?.visible_links?.length ?? 0) || (extensionLearningSession.pageContextSnapshot?.links?.length ?? 0)}</p>
+                          </div>
+                        </section>
+                      </div>
+
+                      <div className="mt-4 space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Captured steps</p>
+                          <span className="text-xs text-slate-400">Source: Chrome extension</span>
+                        </div>
+                        <div className="space-y-3">
+                          {extensionLearningSession.steps.map((step) => (
+                            <TeachingStepCard
+                              key={step.id}
+                              step={step}
+                              stepNumber={step.order}
+                              status={explainStepStatus(step)}
+                              formatObservedAction={formatObservedAction}
+                              compact
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : extensionLearningSessionId.trim() ? (
+                    <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/70 px-3 py-3 text-sm text-slate-300">
+                      No extension steps have been loaded for this session yet.
+                    </div>
+                  ) : null}
+                </section>
+              )}
+
               {/* Recent Activity + Active Tasks row */}
               <div className="grid gap-6 md:grid-cols-2">
                 <RecentActivityPanel alerts={alerts} />
@@ -4682,33 +5073,22 @@ export default function Home() {
                           const status = explainStepStatus(step);
                           const isEditing = editingStepId === step.id;
                           return (
-                            <article key={step.id} className="rounded-xl border border-slate-700 bg-slate-950/70 p-3 text-sm">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-xs uppercase tracking-[0.16em] text-slate-500">Step {step.order}</span>
-                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${status.label === "Runnable" ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : status.label === "Needs clarification" ? "border-amber-400/40 bg-amber-500/10 text-amber-100" : "border-slate-500/50 bg-slate-800 text-slate-200"}`}>
-                                      {status.label}
-                                    </span>
-                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${step.confirmed ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : "border-amber-400/40 bg-amber-500/10 text-amber-100"}`}>
-                                      {step.confirmed ? "Confirmed" : "Unconfirmed"}
-                                    </span>
-                                  </div>
-                                  {isEditing ? (
-                                    <input
-                                      value={editingStepState.title}
-                                      onChange={(event) => setEditingStepState((current) => ({ ...current, title: event.target.value }))}
-                                      className="mt-2 w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"
-                                      placeholder="Step title"
-                                    />
-                                  ) : (
-                                    <h3 className="mt-2 truncate font-semibold text-white">{step.title}</h3>
-                                  )}
-                                </div>
-                              </div>
+                            <article key={step.id} className="space-y-3 rounded-xl border border-slate-700 bg-slate-950/70 p-3 text-sm">
+                              <TeachingStepCard
+                                step={step}
+                                stepNumber={step.order}
+                                status={status}
+                                formatObservedAction={formatObservedAction}
+                              />
 
                               {isEditing ? (
-                                <div className="mt-2 space-y-2">
+                                <div className="space-y-2">
+                                  <input
+                                    value={editingStepState.title}
+                                    onChange={(event) => setEditingStepState((current) => ({ ...current, title: event.target.value }))}
+                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"
+                                    placeholder="Step title"
+                                  />
                                   <textarea
                                     value={editingStepState.employeeExplanation}
                                     onChange={(event) => setEditingStepState((current) => ({ ...current, employeeExplanation: event.target.value }))}
@@ -4751,15 +5131,7 @@ export default function Home() {
                                     </>
                                   )}
                                 </div>
-                              ) : (
-                                <div className="mt-2 space-y-2">
-                                  <p className="text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
-                                  <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
-                                    <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">Target</p>
-                                    <p className="mt-1 text-xs text-cyan-50">{step.observedActions[0]?.label || step.observedActions[0]?.selector || "Not captured yet"}</p>
-                                  </div>
-                                </div>
-                              )}
+                              ) : null}
 
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {isEditing ? (
@@ -4830,30 +5202,6 @@ export default function Home() {
                                   </>
                                 )}
                               </div>
-
-                              <details className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                                <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-slate-400">Show technical info</summary>
-                                <div className="mt-2 space-y-2 text-xs text-slate-300">
-                                  <p>Confidence: {(Math.max(0, Math.min(1, step.billConfidence || 0)) * 100).toFixed(0)}%</p>
-                                  <p>Employee explanation: {step.employeeExplanation || "Pending"}</p>
-                                  <p>Required data: {step.requiredInputs.join(", ") || "Pending"}</p>
-                                  <p>Decision rules: {step.decisionRules.join("; ") || "None yet"}</p>
-                                  <p>Exceptions: {step.exceptions.join("; ") || "None yet"}</p>
-                                  {step.pendingQuestion && <p>Pending question: {step.pendingQuestion}</p>}
-                                  <div>
-                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
-                                    {step.observedActions.length === 0 ? (
-                                      <p className="mt-1 text-slate-400">No browser actions captured yet.</p>
-                                    ) : (
-                                      <ul className="mt-1 space-y-1">
-                                        {step.observedActions.map((action) => (
-                                          <li key={action.id}>{formatObservedAction(action)}</li>
-                                        ))}
-                                      </ul>
-                                    )}
-                                  </div>
-                                </div>
-                              </details>
                             </article>
                           );
                         })
@@ -4885,6 +5233,9 @@ export default function Home() {
                     <div className="mt-3 space-y-2 text-xs text-emerald-50">
                       <p><span className="text-emerald-200/80">Starting page:</span> {canonicalStartUrl ? "Saved" : "Missing"}</p>
                       <p><span className="text-emerald-200/80">Current page:</span> {guidedTeachingSession.pageContextSnapshot?.domain || guidedTeachingSession.pageContextSnapshot?.url || "Waiting for page"}</p>
+                      <p><span className="text-emerald-200/80">Extension status:</span> {extensionConnectionStatus}</p>
+                      <p><span className="text-emerald-200/80">Extension events:</span> {extensionEventCount}</p>
+                      <p><span className="text-emerald-200/80">Last extension event:</span> {latestExtensionEventSummary}</p>
                       <p><span className="text-emerald-200/80">Detected controls:</span> {capturedButtons.length + capturedFields.length + capturedLinks.length} total</p>
                       <p><span className="text-emerald-200/80">Top controls:</span> {capturedButtons.slice(0, 2).join(", ") || "None yet"}</p>
                       <p><span className="text-emerald-200/80">Steps captured:</span> {stepStatusSummary.runnable} runnable, {stepStatusSummary.manualOnly} manual-only, {stepStatusSummary.needsClarification} need clarification</p>
