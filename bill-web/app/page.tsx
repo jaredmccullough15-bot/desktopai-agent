@@ -941,6 +941,7 @@ export default function Home() {
   const [teachingStartupState, setTeachingStartupState] = useState<TeachingStartupState | null>(null);
   const [extensionLearningSessionId, setExtensionLearningSessionId] = useState<string>("");
   const [extensionLearningState, setExtensionLearningState] = useState<TeachingStartupState | null>(null);
+  const extensionLearningBootstrapRef = useRef(false);
   const teachingStartupPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const teachingStartupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const teachingStartupPollErrorCountRef = useRef<number>(0);
@@ -1107,6 +1108,17 @@ export default function Home() {
     [stopExtensionLearningPoll],
   );
 
+
+  useEffect(() => {
+    if (extensionLearningBootstrapRef.current) return;
+    extensionLearningBootstrapRef.current = true;
+
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get("extension_session_id")?.trim() || params.get("teaching_session_id")?.trim() || "";
+    if (sessionId) {
+      void startExtensionLearningPoll(sessionId);
+    }
+  }, [startExtensionLearningPoll]);
   const startTeachingStartupPoll = useCallback(
     (sessionId: string) => {
       stopTeachingStartupPoll();
