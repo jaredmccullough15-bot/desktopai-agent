@@ -182,6 +182,10 @@ type TeachingSession = {
   workflowName: string;
   workflowSummary?: string;
   status: "intro" | "teaching" | "review" | "approved" | "ready" | "needs_more_teaching";
+  startUrl?: string;
+  observedStartUrl?: string;
+  suggestedStartUrl?: string;
+  observedCurrentPage?: string;
   steps: WorkflowStep[];
   extensionConnectionStatus?: string | null;
   extensionEventCount?: number;
@@ -230,6 +234,10 @@ type TeachingSessionApiResponse = {
     workflow_name: string;
     workflow_summary?: string | null;
     status: "intro" | "teaching" | "review" | "approved";
+    start_url?: string | null;
+    observed_start_url?: string | null;
+    suggested_start_url?: string | null;
+    observed_current_page?: string | null;
     extension_connection_status?: string | null;
     extension_event_count?: number;
     last_extension_event?: Record<string, unknown> | null;
@@ -346,6 +354,33 @@ function isInvalidTeachingContextSnapshot(snapshot: { url?: string; title?: stri
   const domainValue = snapshot?.domain || "";
   const lowered = `${urlValue} ${titleValue} ${domainValue}`.toLowerCase();
   return INVALID_TEACHING_CONTEXT_MARKERS.some((marker) => lowered.includes(marker));
+}
+
+function canonicalizeTeachingUrl(urlValue: string | null | undefined): string {
+  const raw = String(urlValue || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    const params = new URLSearchParams(parsed.search);
+    const filtered = new URLSearchParams();
+    for (const [key, value] of params.entries()) {
+      const lowered = key.toLowerCase();
+      const isTrackingParam =
+        lowered === "_gl"
+        || lowered === "gclid"
+        || lowered === "fbclid"
+        || lowered.startsWith("utm_")
+        || lowered === "_ga"
+        || lowered.startsWith("_ga_");
+      if (!isTrackingParam) {
+        filtered.append(key, value);
+      }
+    }
+    parsed.search = filtered.toString() ? `?${filtered.toString()}` : "";
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
 }
 
 type TeachingReviewSummary = {
@@ -1337,6 +1372,10 @@ export default function Home() {
         workflowName: input.workflow_name,
         workflowSummary: input.workflow_summary ?? undefined,
         status: input.status,
+        startUrl: input.start_url ?? undefined,
+        observedStartUrl: input.observed_start_url ?? undefined,
+        suggestedStartUrl: input.suggested_start_url ?? undefined,
+        observedCurrentPage: input.observed_current_page ?? undefined,
         pageContextSnapshot: safeSnapshot,
         extensionConnectionStatus: input.extension_connection_status ?? null,
         extensionEventCount: Number(input.extension_event_count ?? 0),
@@ -1471,8 +1510,8 @@ export default function Home() {
     const blockingReasons: string[] = [];
     const executionWarnings: string[] = [];
     const allActions = session.steps.flatMap((step) => step.observedActions ?? []);
-    const firstNavigation = allActions.find((action) => action.type === "navigate" && Boolean(action.url?.trim()));
-    const hasStartUrl = Boolean(firstNavigation?.url);
+    const confirmedStartUrl = canonicalizeTeachingUrl(session.startUrl);
+    const hasStartUrl = Boolean(confirmedStartUrl);
     const hasRunnableInteractiveAction = allActions.some((action) => {
       if (action.type === "navigate") {
         return Boolean(action.url?.trim());
@@ -1513,7 +1552,7 @@ export default function Home() {
     return {
       runnable: blockingReasons.length === 0 && Boolean(hasStartUrl || hasRunnableInteractiveAction),
       has_start_url: hasStartUrl,
-      start_url: firstNavigation?.url ?? null,
+      start_url: confirmedStartUrl || null,
       blocking_reasons: blockingReasons,
       execution_warnings: executionWarnings,
     };
@@ -1647,11 +1686,26 @@ export default function Home() {
     if (!guidedTeachingSession) return "";
     const fromReadiness = String(guidedTeachingEffectiveReadiness?.start_url || "").trim();
     if (fromReadiness) return fromReadiness;
-    const firstNavigation = guidedTeachingSession.steps
-      .flatMap((step) => step.observedActions ?? [])
-      .find((action) => action.type === "navigate" && Boolean(action.url?.trim()));
-    return String(firstNavigation?.url || "").trim();
+    const fromSession = canonicalizeTeachingUrl(guidedTeachingSession.startUrl);
+    if (fromSession) return fromSession;
+    return "";
   }, [guidedTeachingEffectiveReadiness?.start_url, guidedTeachingSession]);
+
+  const suggestedStartUrl = useMemo(() => {
+    if (!guidedTeachingSession) return "";
+    const explicitSuggestion = canonicalizeTeachingUrl(guidedTeachingSession.suggestedStartUrl);
+    if (explicitSuggestion) return explicitSuggestion;
+    const fromSnapshot = canonicalizeTeachingUrl(guidedTeachingSession.pageContextSnapshot?.url);
+    if (fromSnapshot && fromSnapshot !== canonicalStartUrl) return fromSnapshot;
+    return "";
+  }, [canonicalStartUrl, guidedTeachingSession]);
+
+  const observedCurrentPage = useMemo(() => {
+    const fromSession = String(guidedTeachingSession?.observedCurrentPage || "").trim();
+    if (fromSession) return fromSession;
+    const snapshot = guidedTeachingSession?.pageContextSnapshot;
+    return String(snapshot?.url || snapshot?.domain || "").trim();
+  }, [guidedTeachingSession]);
 
   const capturedButtons = useMemo(() => {
     const snapshot = guidedTeachingSession?.pageContextSnapshot;
@@ -1763,6 +1817,7 @@ export default function Home() {
     const reasons: string[] = [];
     const hasStart = Boolean(readiness?.has_start_url || canonicalStartUrl);
     const hasRunnableStep = stepStatusSummary.runnable > 0;
+    const hasExtensionContext = Boolean(extensionEventCount > 0 || guidedTeachingSession?.extensionConnectionStatus === "paired");
 
     if (readiness?.runnable) {
       reasons.push("Bill has a starting page and at least one runnable step.");
@@ -1780,6 +1835,9 @@ export default function Home() {
       reasons.push("Bill still needs a starting page.");
     }
     if (!hasRunnableStep) {
+      if (hasStart && hasExtensionContext) {
+        reasons.push("Bill sees the page. Click a button or field to create the first step.");
+      }
       reasons.push("Bill needs at least one runnable step before testing.");
     }
     if ((readiness?.blocking_reasons ?? []).length > 0) {
@@ -1799,13 +1857,14 @@ export default function Home() {
       reasons,
       toneClass: "border-rose-400/40 bg-rose-500/10 text-rose-100",
     };
-  }, [canonicalStartUrl, guidedTeachingEffectiveReadiness, stepStatusSummary.manualOnly, stepStatusSummary.runnable]);
+  }, [canonicalStartUrl, extensionEventCount, guidedTeachingEffectiveReadiness, guidedTeachingSession?.extensionConnectionStatus, stepStatusSummary.manualOnly, stepStatusSummary.runnable]);
 
   const teachingCoach = useMemo(() => {
     const session = guidedTeachingSession;
     const hasPurpose = Boolean(session?.workflowSummary?.trim());
     const hasStart = Boolean(canonicalStartUrl);
     const hasSnapshot = Boolean(session?.pageContextSnapshot?.url || session?.pageContextSnapshot?.domain);
+    const hasExtensionContext = Boolean((session?.extensionEventCount ?? 0) > 0 || session?.extensionConnectionStatus === "paired");
     const latestStep =
       !session || session.steps.length === 0
         ? null
@@ -1842,7 +1901,9 @@ export default function Home() {
     if ((session?.steps.length ?? 0) === 0) {
       return {
         phase: "Teach first action",
-        guidance: "Bill sees the page. Tell Bill what to click or type next.",
+        guidance: hasExtensionContext
+          ? "Bill sees the page. Click a button or field to create the first step."
+          : "Bill sees the page. Tell Bill what to click or type next.",
         nextAction: "Capture the first click or field entry.",
         examplePhrase: "Click the Sign In button.",
       };
@@ -2165,6 +2226,46 @@ export default function Home() {
     mapApiTeachingSession,
     setGuidedTeachingFromSession,
   ]);
+
+  const confirmCurrentPageAsStartingPage = useCallback(async () => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    const candidateUrl = observedCurrentPage || suggestedStartUrl;
+    if (!candidateUrl) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        { role: "assistant", message: "I can't confirm a starting page yet because no page URL is visible." },
+      ]);
+      return;
+    }
+    setGuidedTeachingBusy(true);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const response = await fetch(`${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/confirm-start-page`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: candidateUrl }),
+      });
+      const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Confirm starting page failed (${response.status})`);
+      }
+      applyGuidedTeachingApiResponse(body);
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't save the starting page yet: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [applyGuidedTeachingApiResponse, guidedTeachingBusy, guidedTeachingSession, observedCurrentPage, suggestedStartUrl]);
 
   const teachingHotkeyEnabled =
     Boolean(guidedTeachingSession) &&
@@ -5243,14 +5344,25 @@ export default function Home() {
                       <span className="text-[11px] text-emerald-100/80">Compact summary</span>
                     </div>
                     <div className="mt-3 space-y-2 text-xs text-emerald-50">
-                      <p><span className="text-emerald-200/80">Starting page:</span> {canonicalStartUrl ? "Saved" : "Missing"}</p>
-                      <p><span className="text-emerald-200/80">Current page:</span> {guidedTeachingSession.pageContextSnapshot?.domain || guidedTeachingSession.pageContextSnapshot?.url || "Waiting for page"}</p>
+                      <p><span className="text-emerald-200/80">Current page:</span> {observedCurrentPage || "Waiting for page"}</p>
+                      <p><span className="text-emerald-200/80">Starting page:</span> {canonicalStartUrl || "Not confirmed yet"}</p>
+                      <p><span className="text-emerald-200/80">Suggested starting page:</span> {suggestedStartUrl || "None"}</p>
                       <p><span className="text-emerald-200/80">Extension status:</span> {extensionConnectionStatus}</p>
                       <p><span className="text-emerald-200/80">Extension events:</span> {extensionEventCount}</p>
                       <p><span className="text-emerald-200/80">Last extension event:</span> {latestExtensionEventSummary}</p>
                       <p><span className="text-emerald-200/80">Detected controls:</span> {capturedButtons.length + capturedFields.length + capturedLinks.length} total</p>
                       <p><span className="text-emerald-200/80">Top controls:</span> {capturedButtons.slice(0, 2).join(", ") || "None yet"}</p>
                       <p><span className="text-emerald-200/80">Steps captured:</span> {stepStatusSummary.runnable} runnable, {stepStatusSummary.manualOnly} manual-only, {stepStatusSummary.needsClarification} need clarification</p>
+                      {!canonicalStartUrl && (observedCurrentPage || suggestedStartUrl) ? (
+                        <button
+                          type="button"
+                          onClick={() => void confirmCurrentPageAsStartingPage()}
+                          disabled={guidedTeachingBusy}
+                          className="inline-flex items-center rounded-md border border-emerald-300/40 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-semibold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Use current page as starting page
+                        </button>
+                      ) : null}
                     </div>
                     <details className="mt-3 rounded-lg border border-emerald-400/20 bg-slate-950/30 px-3 py-2">
                       <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-emerald-100/80">Show technical info</summary>
