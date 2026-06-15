@@ -140,6 +140,14 @@ type TeachingStartupState = {
   overlay_enabled?: boolean;
   voice_prompt_text?: string;
   teaching_session?: TeachingSessionApiResponse["teaching_session"] | null;
+  start_url?: string | null;
+  suggested_start_url?: string | null;
+  observed_current_page?: string | null;
+  extension_connection_status?: string | null;
+  extension_event_count?: number;
+  latest_extension_event?: Record<string, unknown> | null;
+  steps?: TeachingSessionApiResponse["teaching_session"]["steps"];
+  page_context_snapshot?: TeachingSessionApiResponse["teaching_session"]["page_context_snapshot"];
   copilot_notice?: string | null;
   copilot_interpretation?: string | null;
   copilot_question?: string | null;
@@ -623,6 +631,12 @@ type WorkflowLearningDraft = {
     blocking_reasons?: string[];
     warnings?: string[];
   };
+  created_by_user_id?: string | null;
+  created_by_name?: string | null;
+  last_updated_by_user_id?: string | null;
+  last_updated_by_name?: string | null;
+  approved_by_user_id?: string | null;
+  approved_by_name?: string | null;
 };
 
 type ChatEntry = {
@@ -640,6 +654,12 @@ type WorkflowRecord = {
   compatible_worker_types: string[];
   procedure_name?: string | null;
   published_static_procedure?: boolean;
+  created_by_user_id?: string | null;
+  created_by_name?: string | null;
+  last_updated_by_user_id?: string | null;
+  last_updated_by_name?: string | null;
+  approved_by_user_id?: string | null;
+  approved_by_name?: string | null;
 };
 
 const STATIC_PROCEDURE_WORKFLOWS = new Set<string>(["smart_sherpa_sync", "marketplace_workflow"]);
@@ -657,6 +677,40 @@ type BrainAuditEntry = {
   queued_task_id?: string | null;
   before_execution?: string;
   after_execution?: string;
+};
+
+type BillUserRole = "admin" | "teacher" | "runner" | "viewer";
+
+type BillUserRecord = {
+  id: string;
+  tenant_id?: string | null;
+  email: string;
+  name: string;
+  role: BillUserRole;
+  status: string;
+  last_login_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type BillLoginResponse = {
+  user: BillUserRecord;
+  session_expires_at: string;
+};
+
+type BillCurrentUserResponse = {
+  user: BillUserRecord;
+};
+
+type BillAuditLogRecord = {
+  id: number;
+  event_type: string;
+  actor_user_name?: string | null;
+  actor_role?: string | null;
+  request_method?: string | null;
+  request_path?: string | null;
+  status_code?: number | null;
+  created_at: string;
 };
 
 type ActionFeedback = {
@@ -889,6 +943,22 @@ const isEditableTarget = (target: EventTarget | null): boolean => {
 };
 
 export default function Home() {
+  const [currentUser, setCurrentUser] = useState<BillUserRecord | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<string | null>(null);
+  const [adminUsers, setAdminUsers] = useState<BillUserRecord[]>([]);
+  const [adminAuditLogs, setAdminAuditLogs] = useState<BillAuditLogRecord[]>([]);
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState<BillUserRole>("viewer");
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<TaskCreateResponse | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -1119,7 +1189,7 @@ export default function Home() {
             return;
           }
           extensionLearningPollErrorCountRef.current = 0;
-          const data = (await res.json()) as TeachingStartupState;
+          const data = normalizeTeachingStatus((await res.json()) as TeachingStartupState);
           setExtensionLearningState(data);
           if (data.teaching_session) {
             setGuidedTeachingFromSession(mapApiTeachingSession(data.teaching_session));
@@ -1200,7 +1270,7 @@ export default function Home() {
             return;
           }
           teachingStartupPollErrorCountRef.current = 0;
-          const data = (await res.json()) as TeachingStartupState;
+          const data = normalizeTeachingStatus((await res.json()) as TeachingStartupState);
           logTeachOverlay("startup status poll", {
             session_id: sessionId,
             status: data.status,
@@ -1414,6 +1484,31 @@ export default function Home() {
     },
     [],
   );
+
+  const normalizeTeachingStatus = useCallback((status: TeachingStartupState): TeachingStartupState => {
+    const nested = status.teaching_session;
+    const normalizedSession: TeachingSessionApiResponse["teaching_session"] = {
+      session_id: nested?.session_id ?? status.session_id,
+      workflow_name: nested?.workflow_name ?? status.workflow_name,
+      workflow_summary: nested?.workflow_summary ?? null,
+      status: nested?.status ?? "teaching",
+      start_url: nested?.start_url ?? status.start_url ?? null,
+      observed_start_url: nested?.observed_start_url ?? null,
+      suggested_start_url: nested?.suggested_start_url ?? status.suggested_start_url ?? null,
+      observed_current_page: nested?.observed_current_page ?? status.observed_current_page ?? null,
+      extension_connection_status: nested?.extension_connection_status ?? status.extension_connection_status ?? null,
+      extension_event_count: nested?.extension_event_count ?? status.extension_event_count ?? 0,
+      last_extension_event: nested?.last_extension_event ?? status.latest_extension_event ?? null,
+      extension_events: nested?.extension_events ?? [],
+      page_context_snapshot: nested?.page_context_snapshot ?? status.page_context_snapshot ?? null,
+      steps: nested?.steps ?? status.steps ?? [],
+    };
+
+    return {
+      ...status,
+      teaching_session: normalizedSession,
+    };
+  }, []);
 
   const applyGuidedTeachingApiResponse = useCallback(
     (body: TeachingSessionApiResponse) => {
@@ -2741,17 +2836,167 @@ export default function Home() {
     }
   };
 
-  const fetchJson = async <T,>(url: string): Promise<T> => {
+  const setLoggedOutState = useCallback((message?: string) => {
+    setCurrentUser(null);
+    setSessionExpiresAt(null);
+    setAuthChecking(false);
+    setAuthNotice(message ?? "Please log in to continue.");
+  }, []);
+
+  const readErrorDetail = async (response: Response): Promise<string> => {
+    try {
+      const payload = (await response.clone().json()) as { detail?: string; error?: string; message?: string };
+      return payload.detail ?? payload.error ?? payload.message ?? `HTTP ${response.status}`;
+    } catch {
+      return `HTTP ${response.status}`;
+    }
+  };
+
+  const apiFetch = useCallback(
+    async (
+      url: string,
+      init?: RequestInit & { allowUnauthorized?: boolean },
+    ): Promise<Response> => {
+      const { allowUnauthorized = false, ...requestInit } = init ?? {};
+      const response = await fetch(url, {
+        cache: "no-store",
+        credentials: "include",
+        ...requestInit,
+      });
+      if (response.status === 401 && !allowUnauthorized) {
+        setLoggedOutState("Session expired. Please log in again.");
+      }
+      return response;
+    },
+    [setLoggedOutState],
+  );
+
+  const fetchJson = async <T,>(
+    url: string,
+    init?: RequestInit & { allowUnauthorized?: boolean },
+  ): Promise<T> => {
     console.log(`[auth-proxy] fetching ${url}`);
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await apiFetch(url, init);
     console.log(`[auth-proxy] response ${response.status} for ${url}`);
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      throw new Error(await readErrorDetail(response));
     }
 
     return (await response.json()) as T;
   };
+
+  const loadCurrentUser = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      setAuthError("NEXT_PUBLIC_API_BASE is not set. Login is unavailable.");
+      setAuthChecking(false);
+      return;
+    }
+
+    try {
+      const response = await apiFetch(`${apiBase}/api/auth/me`, { allowUnauthorized: true });
+      if (response.status === 401) {
+        setCurrentUser(null);
+        setSessionExpiresAt(null);
+        setAuthNotice("Please log in to continue.");
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      const payload = (await response.json()) as BillCurrentUserResponse;
+      setCurrentUser(payload.user);
+      setAuthError(null);
+      setAuthNotice(null);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Unable to validate login session");
+    } finally {
+      setAuthChecking(false);
+    }
+  }, [apiFetch]);
+
+  const loadAdminPanels = useCallback(async () => {
+    if (currentUser?.role !== "admin") {
+      setAdminUsers([]);
+      setAdminAuditLogs([]);
+      setAdminError(null);
+      return;
+    }
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      return;
+    }
+
+    setAdminBusy(true);
+    setAdminError(null);
+    try {
+      const [users, audits] = await Promise.all([
+        fetchJson<BillUserRecord[]>(`${apiBase}/api/admin/users?limit=100`),
+        fetchJson<BillAuditLogRecord[]>(`${apiBase}/api/admin/audit-logs?limit=50`),
+      ]);
+      setAdminUsers(Array.isArray(users) ? users : []);
+      setAdminAuditLogs(Array.isArray(audits) ? audits : []);
+    } catch (error) {
+      setAdminError(error instanceof Error ? error.message : "Admin panel failed to load");
+    } finally {
+      setAdminBusy(false);
+    }
+  }, [currentUser?.role]);
+
+  const submitLogin = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      setAuthError("NEXT_PUBLIC_API_BASE is not set. Login is unavailable.");
+      return;
+    }
+    if (!loginEmail.trim() || !loginPassword.trim()) {
+      setAuthError("Email and password are required.");
+      return;
+    }
+
+    setLoginBusy(true);
+    setAuthError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: loginEmail.trim(),
+          password: loginPassword,
+        }),
+        allowUnauthorized: true,
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      const payload = (await response.json()) as BillLoginResponse;
+      setCurrentUser(payload.user);
+      setSessionExpiresAt(payload.session_expires_at);
+      setAuthNotice(null);
+      setLoginPassword("");
+      setAuthChecking(false);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Login failed");
+    } finally {
+      setLoginBusy(false);
+    }
+  }, [apiFetch, loginEmail, loginPassword]);
+
+  const submitLogout = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (apiBase) {
+      try {
+        await apiFetch(`${apiBase}/api/auth/logout`, {
+          method: "POST",
+          allowUnauthorized: true,
+        });
+      } catch {
+        // no-op: client state is authoritative for UI logout
+      }
+    }
+    setLoggedOutState("Logged out.");
+  }, [apiFetch, setLoggedOutState]);
 
   const loadDashboardData = async () => {
     setErrors({});
@@ -3020,22 +3265,42 @@ export default function Home() {
   };
 
   useEffect(() => {
+    void loadCurrentUser();
+  }, [loadCurrentUser]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
     void loadDashboardData();
     const interval = setInterval(() => {
       void loadDashboardData();
     }, 3000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
     void loadBrainPanels();
     const interval = setInterval(() => {
       void loadBrainPanels();
     }, 7000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (currentUser?.role !== "admin") {
+      setAdminUsers([]);
+      setAdminAuditLogs([]);
+      setAdminError(null);
+      return;
+    }
+    void loadAdminPanels();
+  }, [currentUser?.role, loadAdminPanels]);
 
   const submitTask = async (body: Record<string, unknown>) => {
     setLoading(true);
@@ -3052,7 +3317,7 @@ export default function Home() {
         ? { ...body, target_machine_uuid: targetMachineUuid }
         : body;
       console.log(`[dashboard] Fetching URL: ${taskCreateUrl}`);
-      const res = await fetch(taskCreateUrl, {
+      const res = await apiFetch(taskCreateUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody)
@@ -3061,7 +3326,7 @@ export default function Home() {
       const data = (await res.json()) as TaskCreateResponse;
       setResponse(data);
       if (!res.ok) {
-        setActionError(`Request failed: ${res.status}`);
+        setActionError(await readErrorDetail(res));
       } else {
         await loadDashboardData();
       }
@@ -4035,7 +4300,9 @@ export default function Home() {
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approved_by: "bill-web-operator" }),
+        body: JSON.stringify({
+          approved_by: currentUser?.name || currentUser?.email || "bill-web-operator",
+        }),
       });
       const body = (await response.json()) as WorkflowLearningDraft | { detail?: unknown };
       if (!response.ok) {
@@ -4634,6 +4901,130 @@ export default function Home() {
           ? "border-slate-500/50 bg-slate-800/70"
           : "border-amber-500/40 bg-amber-500/10";
 
+  const createAdminUser = useCallback(async () => {
+    if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
+      setAdminError("Name, email, and password are required.");
+      return;
+    }
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      return;
+    }
+
+    setAdminBusy(true);
+    setAdminError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/admin/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newUserName.trim(),
+          email: newUserEmail.trim().toLowerCase(),
+          password: newUserPassword,
+          role: newUserRole,
+          status: "active",
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      setNewUserName("");
+      setNewUserEmail("");
+      setNewUserPassword("");
+      setNewUserRole("viewer");
+      await loadAdminPanels();
+    } catch (error) {
+      setAdminError(error instanceof Error ? error.message : "Unable to create user");
+    } finally {
+      setAdminBusy(false);
+    }
+  }, [apiFetch, loadAdminPanels, newUserEmail, newUserName, newUserPassword, newUserRole]);
+
+  const updateAdminUser = useCallback(
+    async (userId: string, changes: Partial<Pick<BillUserRecord, "role" | "status">>) => {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        return;
+      }
+      setAdminBusy(true);
+      setAdminError(null);
+      try {
+        const response = await apiFetch(`${apiBase}/api/admin/users/${userId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(changes),
+        });
+        if (!response.ok) {
+          throw new Error(await readErrorDetail(response));
+        }
+        await loadAdminPanels();
+      } catch (error) {
+        setAdminError(error instanceof Error ? error.message : "Unable to update user");
+      } finally {
+        setAdminBusy(false);
+      }
+    },
+    [apiFetch, loadAdminPanels],
+  );
+
+  if (authChecking) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#070a11] px-4 text-slate-100">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 px-6 py-5 text-sm text-slate-300">
+          Checking login session...
+        </div>
+      </main>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#070a11] px-4 text-slate-100">
+        <section className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/85 p-6 shadow-xl shadow-cyan-950/30">
+          <h1 className="text-xl font-semibold text-slate-50">Bill Login</h1>
+          <p className="mt-2 text-sm text-slate-300">Sign in to access dashboard, teaching, and workflow controls.</p>
+          {authNotice && (
+            <p className="mt-3 rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{authNotice}</p>
+          )}
+          {authError && (
+            <p className="mt-3 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{authError}</p>
+          )}
+          <div className="mt-4 space-y-3">
+            <input
+              value={loginEmail}
+              onChange={(event) => setLoginEmail(event.target.value)}
+              placeholder="Email"
+              autoComplete="username"
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+            />
+            <input
+              type="password"
+              value={loginPassword}
+              onChange={(event) => setLoginPassword(event.target.value)}
+              placeholder="Password"
+              autoComplete="current-password"
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void submitLogin();
+                }
+              }}
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+            />
+            <button
+              type="button"
+              onClick={() => void submitLogin()}
+              disabled={loginBusy}
+              className="w-full rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loginBusy ? "Signing in..." : "Sign in"}
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-[#070a11] text-slate-100">
 
@@ -4650,10 +5041,130 @@ export default function Home() {
             completed24h={successfulTasks.length}
           />
 
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm">
+            <div className="text-slate-200">
+              <span className="font-semibold text-slate-50">{currentUser.name}</span>
+              <span className="mx-2 text-slate-500">•</span>
+              <span className="uppercase tracking-wide text-cyan-200">{currentUser.role}</span>
+              <span className="mx-2 text-slate-500">•</span>
+              <span className="text-slate-400">{currentUser.email}</span>
+              {sessionExpiresAt && (
+                <span className="ml-3 text-xs text-slate-500">Session expires: {toDisplayTime(sessionExpiresAt)}</span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => void submitLogout()}
+              className={BUTTON_SECONDARY}
+            >
+              Log out
+            </button>
+          </div>
+
           {errors.config && (
             <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
               {errors.config}
             </div>
+          )}
+
+          {currentUser.role === "admin" && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">User & Audit Admin</h2>
+                <button type="button" onClick={() => void loadAdminPanels()} className={BUTTON_SECONDARY} disabled={adminBusy}>
+                  {adminBusy ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+              {adminError && (
+                <p className="mt-3 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{adminError}</p>
+              )}
+              <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Create User</p>
+                  <div className="mt-2 grid gap-2 md:grid-cols-2">
+                    <input value={newUserName} onChange={(event) => setNewUserName(event.target.value)} placeholder="Name" className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+                    <input value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} placeholder="Email" className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+                    <input type="password" value={newUserPassword} onChange={(event) => setNewUserPassword(event.target.value)} placeholder="Password" className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+                    <select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value as BillUserRole)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100">
+                      <option value="viewer">viewer</option>
+                      <option value="runner">runner</option>
+                      <option value="teacher">teacher</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </div>
+                  <button type="button" onClick={() => void createAdminUser()} disabled={adminBusy} className="mt-3 rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50">
+                    Create user
+                  </button>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Recent Audit Events</p>
+                  <div className="mt-2 max-h-44 overflow-auto text-xs text-slate-300">
+                    {adminAuditLogs.length === 0 ? (
+                      <p className="text-slate-500">No audit entries loaded.</p>
+                    ) : (
+                      <table className="w-full text-left">
+                        <thead className="text-slate-500">
+                          <tr>
+                            <th className="py-1 pr-2">Time</th>
+                            <th className="py-1 pr-2">Event</th>
+                            <th className="py-1 pr-2">Actor</th>
+                            <th className="py-1">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {adminAuditLogs.slice(0, 25).map((entry) => (
+                            <tr key={entry.id} className="border-t border-slate-800/70">
+                              <td className="py-1 pr-2 text-slate-400">{toDisplayTime(entry.created_at)}</td>
+                              <td className="py-1 pr-2">{entry.event_type}</td>
+                              <td className="py-1 pr-2">{entry.actor_user_name || "system"}</td>
+                              <td className="py-1">{entry.status_code ?? "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                <p className="mb-2 text-xs uppercase tracking-[0.14em] text-slate-400">Users</p>
+                <table className="min-w-full text-left text-xs text-slate-200">
+                  <thead className="text-slate-500">
+                    <tr>
+                      <th className="py-1 pr-2">Name</th>
+                      <th className="py-1 pr-2">Email</th>
+                      <th className="py-1 pr-2">Role</th>
+                      <th className="py-1 pr-2">Status</th>
+                      <th className="py-1 pr-2">Last login</th>
+                      <th className="py-1">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminUsers.map((user) => (
+                      <tr key={user.id} className="border-t border-slate-800/70">
+                        <td className="py-1 pr-2">{user.name}</td>
+                        <td className="py-1 pr-2 text-slate-400">{user.email}</td>
+                        <td className="py-1 pr-2">{user.role}</td>
+                        <td className="py-1 pr-2">{user.status}</td>
+                        <td className="py-1 pr-2 text-slate-400">{toDisplayTime(user.last_login_at ?? undefined)}</td>
+                        <td className="py-1">
+                          <div className="flex flex-wrap gap-2">
+                            <button type="button" disabled={adminBusy} className={BUTTON_ACCENT_GHOST} onClick={() => void updateAdminUser(user.id, { status: user.status === "active" ? "inactive" : "active" })}>
+                              {user.status === "active" ? "Deactivate" : "Activate"}
+                            </button>
+                            <button type="button" disabled={adminBusy || user.role === "admin"} className={BUTTON_SECONDARY} onClick={() => void updateAdminUser(user.id, { role: "admin" })}>
+                              Promote to admin
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           )}
 
           {/* Main grid: left content + right workers panel */}
@@ -5353,7 +5864,7 @@ export default function Home() {
                       <p><span className="text-emerald-200/80">Detected controls:</span> {capturedButtons.length + capturedFields.length + capturedLinks.length} total</p>
                       <p><span className="text-emerald-200/80">Top controls:</span> {capturedButtons.slice(0, 2).join(", ") || "None yet"}</p>
                       <p><span className="text-emerald-200/80">Steps captured:</span> {stepStatusSummary.runnable} runnable, {stepStatusSummary.manualOnly} manual-only, {stepStatusSummary.needsClarification} need clarification</p>
-                      {!canonicalStartUrl && (observedCurrentPage || suggestedStartUrl) ? (
+                      {!canonicalStartUrl && suggestedStartUrl ? (
                         <button
                           type="button"
                           onClick={() => void confirmCurrentPageAsStartingPage()}

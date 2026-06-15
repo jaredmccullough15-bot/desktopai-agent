@@ -62,6 +62,13 @@ export async function DELETE(
   return proxyRequest(request, params.path, "DELETE");
 }
 
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: { path: string[] } }
+) {
+  return proxyRequest(request, params.path, "PATCH");
+}
+
 async function proxyRequest(
   request: NextRequest,
   pathSegments: string[],
@@ -78,6 +85,8 @@ async function proxyRequest(
   }
   const authHeader = request.headers.get("authorization");
   if (authHeader) headers.set("authorization", authHeader);
+  const cookieHeader = request.headers.get("cookie");
+  if (cookieHeader) headers.set("cookie", cookieHeader);
 
   const dashboardApiKey = (process.env.BILL_CORE_DASHBOARD_API_KEY ?? "").trim();
   if (dashboardApiKey) {
@@ -114,10 +123,15 @@ async function proxyRequest(
     });
     const data = await response.arrayBuffer();
     console.log(`[auth-proxy] Response: status=${response.status}, path=${path}, method=${method}`);
-    return new NextResponse(data, {
+    const nextResponse = new NextResponse(data, {
       status: response.status,
       headers: { "Content-Type": response.headers.get("Content-Type") || "application/octet-stream" },
     });
+    const backendSetCookie = response.headers.get("set-cookie");
+    if (backendSetCookie) {
+      nextResponse.headers.set("set-cookie", backendSetCookie);
+    }
+    return nextResponse;
   } catch (err) {
     console.error(`[auth-proxy] Proxy error: ${String(err)}, path=${path}, method=${method}`);
     return NextResponse.json({ error: "Proxy error", detail: String(err) }, { status: 502 });
