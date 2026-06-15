@@ -14,6 +14,7 @@ logger = logging.getLogger("bill-core.build-eb-zip")
 
 REQUIRED_ROOT_FILES = [
     "main.py",
+    "user_auth.py",
     "teaching_copilot_service.py",  # Teaching Co-Pilot API/service layer
     "Procfile",
     "requirements.txt",

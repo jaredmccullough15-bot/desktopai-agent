@@ -13,6 +13,7 @@ from pathlib import Path
 
 REQUIRED_FILES = [
     "main.py",
+    "user_auth.py",
     "teaching_copilot_service.py",
     "schemas.py",
     "structured_logging.py",

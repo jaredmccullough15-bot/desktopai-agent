@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 
 from error_explainer import (
     classify_error,
@@ -41,9 +41,18 @@ from timeout_recovery import (
     get_or_create_recovery_state,
     clear_recovery_state,
 )
+from db import SessionLocal
+from auth import enforce_request_auth
 from schemas import (
     BrainCommandRequest,
     BrainCommandResponse,
+    BillAuditLogRecord,
+    BillCreateUserRequest,
+    BillCurrentUserResponse,
+    BillLoginRequest,
+    BillLoginResponse,
+    BillUserRecord,
+    BillUpdateUserRequest,
     ConversationPreferenceRecord,
     ConversationPreferenceUpdateRequest,
     GuidedExecutionAnswerRequest,
@@ -68,6 +77,12 @@ from schemas import (
     WorkerDeployRequest,
     WorkerDeployResponse,
     WorkerReleaseRecord,
+    WorkerReleasePublicRecord,
+    WorkerReleaseAdminRecord,
+    WorkerReleaseCreateRequest,
+    WorkerReleaseMarkCurrentRequest,
+    WorkerReleaseDisableRequest,
+    WorkerDownloadUrlResponse,
     WorkerUpdateInstruction,
     WorkerUpdateCheckResponse,
     WorkerHeartbeatRequest,
@@ -96,6 +111,7 @@ from schemas import (
     TeachingStartupStatusRequest,
     BrowserAction,
     TeachingSessionActionRequest,
+    TeachingExtensionEventRequest,
     WorkflowStep,
     TeachingSession,
     TeachingSessionMessageRequest,
@@ -103,6 +119,19 @@ from schemas import (
     TeachingSessionReviewStepSummary,
     TeachingSessionReviewSummary,
     TeachingSessionReviewResponse,
+)
+from user_auth import (
+    build_user_record,
+    create_user_account,
+    get_current_identity,
+    get_request_user,
+    list_audit_logs,
+    login_user,
+    logout_user,
+    record_audit_event,
+    resolve_current_user,
+    require_user_role,
+    user_has_role,
 )
 
 # ---------------------------------------------------------------------------
@@ -189,6 +218,150 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("bill-core")
+
+
+_PUBLIC_AUTH_PATH_PREFIXES = (
+    "/health",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/api/auth/",
+)
+
+
+def _is_public_auth_path(path: str) -> bool:
+    return path.startswith(_PUBLIC_AUTH_PATH_PREFIXES)
+
+
+def _is_worker_api_path(path: str, method: str) -> bool:
+    upper_method = method.upper()
+    if (
+        upper_method == "POST"
+        and path.startswith("/api/teaching/session/")
+        and path.endswith("/status")
+    ):
+        return True
+    if path == "/api/tasks/paused-for-human-recovery":
+        return True
+    if path.startswith("/api/tasks/") and path.endswith("/recovery-action-completed"):
+        return True
+    return False
+
+
+def _path_requires_user_auth(path: str, method: str) -> bool:
+    if not path.startswith("/api/"):
+        return False
+    if _is_public_auth_path(path):
+        return False
+    if _is_worker_api_path(path, method):
+        return False
+    # Extension callbacks may run without browser cookies; they are attributed to session context.
+    if path.startswith("/api/teaching/session/") and path.endswith("/extension-events"):
+        return False
+    return True
+
+
+def _required_roles_for_path(path: str, method: str) -> set[str] | None:
+    upper_method = method.upper()
+    if path.startswith("/api/admin/"):
+        return {"admin"}
+    if path.startswith("/api/brain/workflow-learning/drafts"):
+        if upper_method in {"POST", "PUT", "PATCH", "DELETE"}:
+            return {"teacher", "admin"}
+    if path.startswith("/api/workflows/") and path.endswith("/run-taught"):
+        return {"runner", "teacher", "admin"}
+    if path == "/api/tasks" and upper_method == "POST":
+        return {"runner", "teacher", "admin"}
+    if path.startswith("/api/procedures/") and path.endswith("/run"):
+        return {"runner", "teacher", "admin"}
+    return None
+
+
+def _infer_audit_event(request: Request, status_code: int) -> str | None:
+    path = request.url.path or "/"
+    method = request.method.upper()
+
+    if path == "/api/auth/login":
+        return "login_success" if status_code < 400 else "login_failed"
+    if path == "/api/auth/logout":
+        return "logout"
+    if path.startswith("/api/teaching/session/") and path.endswith("/extension-events"):
+        return "extension_event_received"
+    if path.startswith("/api/teaching/session/") and path.endswith("/confirm-start-page"):
+        return "confirm_starting_page"
+    if path.startswith("/api/brain/workflow-learning/drafts/") and path.endswith("/teach-session/start"):
+        return "start_teaching_session"
+    if path.startswith("/api/brain/workflow-learning/drafts/") and path.endswith("/test"):
+        return "workflow_test_started"
+    if path.startswith("/api/brain/workflow-learning/drafts/") and path.endswith("/publish"):
+        return "workflow_approved"
+    if path.startswith("/api/brain/workflow-learning/drafts/") and path.endswith("/steps/append"):
+        return "teach_step_created"
+    if path.startswith("/api/brain/workflow-learning/drafts/") and path.endswith("/teach"):
+        return "teach_step_edited"
+    if path == "/api/brain/workflow-learning/drafts" and method == "POST":
+        return "workflow_created"
+    if path.startswith("/api/brain/workflow-learning/drafts/") and method in {"PUT", "PATCH", "DELETE"}:
+        return "workflow_updated"
+    if path.startswith("/api/workflows/") and path.endswith("/sop"):
+        return "sop_generated"
+    if path.startswith("/api/workflows/") and path.endswith("/run-taught"):
+        return "workflow_run_started"
+    if path.startswith("/api/admin/users"):
+        if method == "POST":
+            return "user_created"
+        if method in {"PUT", "PATCH"}:
+            return "user_updated"
+    if path.startswith("/api/admin/audit-logs"):
+        return None
+    return None
+
+
+def _auth_error_response(status_code: int, detail: str, code: str | None = None) -> JSONResponse:
+    content: dict[str, Any] = {"detail": detail}
+    if code:
+        content["code"] = code
+    return JSONResponse(status_code=status_code, content=content)
+
+
+@app.middleware("http")
+async def bill_request_middleware(request: Request, call_next):
+    path = request.url.path or "/"
+    if not _is_public_auth_path(path):
+        try:
+            resolve_current_user(request)
+        except Exception:
+            pass
+        if getattr(request.state, "current_user", None) is None:
+            try:
+                enforce_request_auth(request)
+            except HTTPException as exc:
+                return _auth_error_response(exc.status_code, str(exc.detail))
+
+    if _path_requires_user_auth(path, request.method):
+        current_user = get_request_user(request)
+        if current_user is None:
+            return _auth_error_response(401, "Login required")
+        required_roles = _required_roles_for_path(path, request.method)
+        if required_roles and not user_has_role(current_user, required_roles):
+            return _auth_error_response(403, "You do not have permission to perform this action")
+
+    response = await call_next(request)
+
+    if path.startswith("/api/"):
+        try:
+            event_type = _infer_audit_event(request, response.status_code)
+            if event_type:
+                record_audit_event(
+                    event_type,
+                    request=request,
+                    status_code=response.status_code,
+                    source="middleware",
+                )
+        except Exception:
+            pass
+
+    return response
 
 # ---------------------------------------------------------------------------
 # Startup validation (reliability check — no business logic changes)
@@ -493,6 +666,445 @@ def log_server_binding() -> None:
     active = _get_active_release()
     if active:
         logger.info("Active worker release: v%s id=%s channel=%s", active["version"], active["id"], active["channel"])
+
+
+@app.post("/api/auth/login", response_model=BillLoginResponse)
+def auth_login(payload: BillLoginRequest, request: Request, response: Response) -> BillLoginResponse:
+    try:
+        result = login_user(payload.email, payload.password, request)
+    except HTTPException:
+        record_audit_event(
+            "login_failed",
+            request=request,
+            details={"email": str(payload.email or "").strip().lower()},
+            target_type="user",
+            target_id=str(payload.email or "").strip().lower(),
+            status_code=401,
+            source="auth",
+            redacted_payload={"email": str(payload.email or "").strip().lower()},
+        )
+        raise
+    response.set_cookie(
+        key="bill_core_session",
+        value=result.session_token,
+        httponly=True,
+        samesite="lax",
+        secure=_is_truthy_env(os.getenv("BILL_CORE_SESSION_COOKIE_SECURE", "false")),
+        path="/",
+        expires=int(result.session_expires_at.timestamp()),
+    )
+    return BillLoginResponse(
+        user=BillUserRecord(**result.user),
+        session_expires_at=result.session_expires_at.isoformat(),
+    )
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request, response: Response) -> dict[str, Any]:
+    logout_user(request)
+    response.delete_cookie("bill_core_session", path="/")
+    return {"logged_out": True}
+
+
+@app.get("/api/auth/me", response_model=BillCurrentUserResponse)
+def auth_me(request: Request) -> BillCurrentUserResponse:
+    user = get_request_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Login required")
+    return BillCurrentUserResponse(user=BillUserRecord(**user))
+
+
+@app.get("/api/admin/users", response_model=list[BillUserRecord])
+def admin_list_users(request: Request, limit: int = 100) -> list[BillUserRecord]:
+    require_user_role(request, {"admin"})
+    safe_limit = max(1, min(limit, 500))
+    from models_db import UserAccount
+
+    with SessionLocal() as session:
+        rows = session.query(UserAccount).order_by(UserAccount.created_at.desc()).limit(safe_limit).all()
+        return [BillUserRecord(**build_user_record(row)) for row in rows]
+
+
+@app.post("/api/admin/users", response_model=BillUserRecord)
+def admin_create_user(request: Request, payload: BillCreateUserRequest) -> BillUserRecord:
+    require_user_role(request, {"admin"})
+    user = create_user_account(payload.model_dump())
+    record_audit_event(
+        "user_created",
+        request=request,
+        details={"email": user.get("email"), "role": user.get("role")},
+        target_type="user",
+        target_id=user.get("id"),
+        status_code=200,
+        source="admin",
+    )
+    return BillUserRecord(**user)
+
+
+@app.patch("/api/admin/users/{user_id}", response_model=BillUserRecord)
+def admin_update_user(request: Request, user_id: str, payload: BillUpdateUserRequest) -> BillUserRecord:
+    require_user_role(request, {"admin"})
+    from models_db import UserAccount
+
+    with SessionLocal() as session:
+        user_row = session.get(UserAccount, user_id)
+        if user_row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        if payload.name is not None:
+            user_row.name = payload.name.strip() or user_row.name
+        if payload.email is not None:
+            user_row.email = payload.email.strip().lower() or user_row.email
+        if payload.role is not None:
+            user_row.role = payload.role
+        if payload.status is not None:
+            user_row.status = payload.status.strip().lower() or user_row.status
+        if payload.password is not None:
+            from user_auth import hash_password
+
+            salt_hex, password_hash = hash_password(payload.password)
+            user_row.password_salt = salt_hex
+            user_row.password_hash = password_hash
+        user_row.updated_at = datetime.utcnow()
+        session.commit()
+        user_record = build_user_record(user_row)
+
+    record_audit_event(
+        "user_updated",
+        request=request,
+        details={"user_id": user_id},
+        target_type="user",
+        target_id=user_id,
+        status_code=200,
+        source="admin",
+    )
+    return BillUserRecord(**user_record)
+
+
+@app.get("/api/admin/audit-logs", response_model=list[BillAuditLogRecord])
+def admin_list_audit_logs(request: Request, limit: int = 100) -> list[BillAuditLogRecord]:
+    require_user_role(request, {"admin"})
+    records = list_audit_logs(limit=limit)
+    return [BillAuditLogRecord(**item) for item in records]
+
+
+# ---------------------------------------------------------------------------
+# Worker Download Center — /api/worker-releases
+# ---------------------------------------------------------------------------
+
+_DOWNLOAD_ALLOWED_ROLES = {"admin", "teacher", "runner"}
+_ADMIN_ONLY_ROLES = {"admin"}
+
+
+def _worker_release_to_public(r: dict) -> WorkerReleasePublicRecord:
+    return WorkerReleasePublicRecord(
+        id=str(r.get("id") or ""),
+        version=str(r.get("version") or ""),
+        upload_time=str(r.get("upload_time") or ""),
+        release_notes=r.get("release_notes"),
+        package_filename=str(r.get("package_filename") or ""),
+        package_sha256=r.get("package_sha256"),
+        file_size_bytes=r.get("file_size_bytes"),
+        status=str(r.get("status") or ("current" if r.get("is_active") else "draft")),
+        released_by_name=r.get("released_by_name"),
+        download_count=int(r.get("download_count") or 0),
+    )
+
+
+def _worker_release_to_admin(r: dict) -> WorkerReleaseAdminRecord:
+    return WorkerReleaseAdminRecord(
+        id=str(r.get("id") or ""),
+        version=str(r.get("version") or ""),
+        upload_time=str(r.get("upload_time") or ""),
+        release_notes=r.get("release_notes"),
+        package_filename=str(r.get("package_filename") or ""),
+        package_sha256=r.get("package_sha256"),
+        file_size_bytes=r.get("file_size_bytes"),
+        status=str(r.get("status") or ("current" if r.get("is_active") else "draft")),
+        released_by_name=r.get("released_by_name"),
+        released_by_user_id=r.get("released_by_user_id"),
+        channel=str(r.get("channel") or "stable"),
+        download_count=int(r.get("download_count") or 0),
+    )
+
+
+def _resolve_release_package_path(release: dict) -> Path | None:
+    """Return absolute path to the release package if it passes safety checks."""
+    filename = str(release.get("package_filename") or "").strip()
+    if not filename:
+        return None
+    # Block path traversal: filename must be a bare name with no directory parts.
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        return None
+    target = (WORKER_PACKAGES_DIR / filename).resolve()
+    # Confirm target is strictly inside WORKER_PACKAGES_DIR.
+    try:
+        target.relative_to(WORKER_PACKAGES_DIR.resolve())
+    except ValueError:
+        return None
+    return target
+
+
+@app.get("/api/worker-releases/current", response_model=WorkerReleasePublicRecord)
+def get_current_worker_release(request: Request) -> WorkerReleasePublicRecord:
+    """Return the current worker release metadata for authorized users."""
+    user = require_user_role(request, _DOWNLOAD_ALLOWED_ROLES)
+    active = _get_active_release()
+    if active is None:
+        raise HTTPException(status_code=404, detail="No current worker release is available. Ask an admin.")
+    record_audit_event(
+        "worker_release_download_requested",
+        request=request,
+        details={
+            "release_id": active.get("id"),
+            "version": active.get("version"),
+            "package_filename": active.get("package_filename"),
+            "action": "view_current",
+        },
+        target_type="worker_release",
+        target_id=str(active.get("id") or ""),
+        status_code=200,
+        source="worker_download_center",
+    )
+    return _worker_release_to_public(active)
+
+
+@app.get("/api/worker-releases", response_model=list[WorkerReleaseAdminRecord])
+def list_worker_releases(request: Request) -> list[WorkerReleaseAdminRecord]:
+    """Admin-only list of all worker releases."""
+    require_user_role(request, _ADMIN_ONLY_ROLES)
+    with _releases_lock:
+        releases = list(worker_releases)
+    return [_worker_release_to_admin(r) for r in releases]
+
+
+@app.post("/api/worker-releases", response_model=WorkerReleaseAdminRecord, status_code=201)
+def create_worker_release(request: Request, payload: WorkerReleaseCreateRequest) -> WorkerReleaseAdminRecord:
+    """Admin-only: register a new worker release by metadata.
+
+    The file must already be present in WORKER_PACKAGES_DIR.
+    SHA-256 and file size are calculated automatically.
+    """
+    user = require_user_role(request, _ADMIN_ONLY_ROLES)
+
+    filename = str(payload.package_filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="package_filename is required")
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid package_filename")
+
+    file_path = (WORKER_PACKAGES_DIR / filename).resolve()
+    try:
+        file_path.relative_to(WORKER_PACKAGES_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid package_filename")
+
+    if not file_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Package file '{filename}' not found in worker-packages directory.",
+        )
+
+    sha256 = _sha256_file(file_path)
+    file_size = file_path.stat().st_size
+
+    release_id = str(uuid4())
+    now_iso = datetime.utcnow().isoformat()
+    new_release: dict[str, Any] = {
+        "id": release_id,
+        "version": str(payload.version or "").strip(),
+        "channel": str(payload.channel or "stable").strip(),
+        "is_active": False,
+        "status": "draft",
+        "package_filename": filename,
+        "package_sha256": sha256,
+        "file_size_bytes": file_size,
+        "release_notes": payload.release_notes,
+        "upload_time": now_iso,
+        "released_by_user_id": user.get("id"),
+        "released_by_name": user.get("name"),
+        "download_count": 0,
+    }
+
+    with _releases_lock:
+        worker_releases.append(new_release)
+        _save_worker_releases()
+
+    record_audit_event(
+        "worker_release_created",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version": new_release["version"],
+            "package_filename": filename,
+            "sha256": sha256,
+        },
+        target_type="worker_release",
+        target_id=release_id,
+        status_code=201,
+        source="worker_download_center",
+    )
+    return _worker_release_to_admin(new_release)
+
+
+@app.post("/api/worker-releases/{release_id}/mark-current", response_model=WorkerReleaseAdminRecord)
+def mark_worker_release_current(
+    request: Request, release_id: str, payload: WorkerReleaseMarkCurrentRequest
+) -> WorkerReleaseAdminRecord:
+    """Admin-only: mark a release as the current good build."""
+    require_user_role(request, _ADMIN_ONLY_ROLES)
+    with _releases_lock:
+        target = next((r for r in worker_releases if r.get("id") == release_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Worker release not found")
+        if str(target.get("status") or "") == "disabled":
+            raise HTTPException(status_code=409, detail="Cannot mark a disabled release as current")
+        # Clear current flag from all others, then set on this one.
+        for r in worker_releases:
+            if r.get("id") != release_id and r.get("is_active"):
+                r["is_active"] = False
+                r["status"] = "deprecated"
+        target["is_active"] = True
+        target["status"] = "current"
+        _save_worker_releases()
+
+    record_audit_event(
+        "worker_release_marked_current",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version": target.get("version"),
+            "package_filename": target.get("package_filename"),
+        },
+        target_type="worker_release",
+        target_id=release_id,
+        status_code=200,
+        source="worker_download_center",
+    )
+    return _worker_release_to_admin(target)
+
+
+@app.post("/api/worker-releases/{release_id}/disable", response_model=WorkerReleaseAdminRecord)
+def disable_worker_release(
+    request: Request, release_id: str, payload: WorkerReleaseDisableRequest
+) -> WorkerReleaseAdminRecord:
+    """Admin-only: disable a worker release so it cannot be downloaded."""
+    require_user_role(request, _ADMIN_ONLY_ROLES)
+    with _releases_lock:
+        target = next((r for r in worker_releases if r.get("id") == release_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Worker release not found")
+        target["is_active"] = False
+        target["status"] = "disabled"
+        _save_worker_releases()
+
+    record_audit_event(
+        "worker_release_disabled",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version": target.get("version"),
+        },
+        target_type="worker_release",
+        target_id=release_id,
+        status_code=200,
+        source="worker_download_center",
+    )
+    return _worker_release_to_admin(target)
+
+
+@app.get("/api/worker-releases/{release_id}/download")
+def download_worker_release(request: Request, release_id: str) -> FileResponse:
+    """Download a worker release package. Requires login and download role."""
+    user = get_request_user(request)
+    if user is None:
+        record_audit_event(
+            "worker_release_download_denied",
+            request=request,
+            details={"release_id": release_id, "reason": "unauthenticated"},
+            target_type="worker_release",
+            target_id=release_id,
+            status_code=401,
+            source="worker_download_center",
+        )
+        raise HTTPException(status_code=401, detail="Login required")
+
+    if not user_has_role(user, _DOWNLOAD_ALLOWED_ROLES):
+        record_audit_event(
+            "worker_release_download_denied",
+            request=request,
+            details={
+                "release_id": release_id,
+                "reason": "insufficient_role",
+                "user_role": user.get("role"),
+            },
+            target_type="worker_release",
+            target_id=release_id,
+            status_code=403,
+            source="worker_download_center",
+        )
+        raise HTTPException(status_code=403, detail="You do not have permission to download the Bill Worker.")
+
+    with _releases_lock:
+        target = next((r for r in worker_releases if r.get("id") == release_id), None)
+
+    if target is None:
+        raise HTTPException(status_code=404, detail="Worker release not found")
+
+    release_status = str(target.get("status") or "")
+    is_admin = user_has_role(user, _ADMIN_ONLY_ROLES)
+    if release_status == "disabled" and not is_admin:
+        record_audit_event(
+            "worker_release_download_denied",
+            request=request,
+            details={
+                "release_id": release_id,
+                "reason": "release_disabled",
+                "version": target.get("version"),
+            },
+            target_type="worker_release",
+            target_id=release_id,
+            status_code=403,
+            source="worker_download_center",
+        )
+        raise HTTPException(status_code=403, detail="This worker release has been disabled.")
+
+    file_path = _resolve_release_package_path(target)
+    if file_path is None:
+        raise HTTPException(status_code=400, detail="Release has an invalid package filename.")
+    if not file_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Package file not found on server. Contact an admin.",
+        )
+
+    # Increment download counter.
+    with _releases_lock:
+        try:
+            target["download_count"] = int(target.get("download_count") or 0) + 1
+            _save_worker_releases()
+        except Exception:
+            pass
+
+    record_audit_event(
+        "worker_release_download_completed",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version": target.get("version"),
+            "package_filename": target.get("package_filename"),
+            "user_role": user.get("role"),
+        },
+        target_type="worker_release",
+        target_id=release_id,
+        status_code=200,
+        source="worker_download_center",
+    )
+
+    return FileResponse(
+        path=str(file_path),
+        filename=target.get("package_filename") or file_path.name,
+        media_type="application/zip",
+    )
 
 
 def _version_key(version: str) -> tuple[int, ...]:
@@ -1942,6 +2554,13 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
     if not isinstance(step, dict):
         step = {}
 
+    identity = get_current_identity() or {}
+    current_user = identity.get("user") if isinstance(identity, dict) else None
+    current_user_id = current_user.get("id") if isinstance(current_user, dict) else None
+    current_user_name = current_user.get("name") if isinstance(current_user, dict) else None
+    current_user_role = current_user.get("role") if isinstance(current_user, dict) else None
+    current_timestamp = datetime.utcnow().isoformat()
+
     action = str(step.get("action") or "manual_step").strip() or "manual_step"
     selector = str(step.get("selector") or "").strip()
     url = str(step.get("url") or "").strip()
@@ -2083,6 +2702,18 @@ def _normalize_step(step: Any, default_order: int) -> dict[str, Any]:
         "observation_questions": observation_questions,
         "observation_answers": observation_answers,
         "known_step": bool(step.get("known_step", False)),
+        "created_by_user_id": step.get("created_by_user_id") or current_user_id,
+        "created_by_name": step.get("created_by_name") or current_user_name,
+        "created_at": step.get("created_at") or current_timestamp,
+        "taught_by_user_id": step.get("taught_by_user_id") or (current_user_id if current_user_role in {"teacher", "admin"} else None),
+        "taught_by_name": step.get("taught_by_name") or (current_user_name if current_user_role in {"teacher", "admin"} else None),
+        "taught_at": step.get("taught_at") or (current_timestamp if current_user_role in {"teacher", "admin"} else None),
+        "last_updated_by_user_id": step.get("last_updated_by_user_id") or current_user_id,
+        "last_updated_by_name": step.get("last_updated_by_name") or current_user_name,
+        "last_updated_at": step.get("last_updated_at") or current_timestamp,
+        "captured_by_user_id": step.get("captured_by_user_id") or current_user_id,
+        "captured_by_name": step.get("captured_by_name") or current_user_name,
+        "captured_at": step.get("captured_at") or current_timestamp,
     }
 
 
@@ -3679,6 +4310,14 @@ def generate_workflow_sop(workflow_id: str) -> WorkflowGeneratedSOPRecord:
         raise HTTPException(status_code=404, detail="Workflow draft not found")
 
     record = _build_generated_workflow_sop_record(dict(draft), workflow_id=workflow_id)
+    record_audit_event(
+        "sop_generated",
+        details={"workflow_id": workflow_id, "draft_id": str(draft.get("draft_id") or "")},
+        target_type="workflow",
+        target_id=workflow_id,
+        status_code=200,
+        source="workflow",
+    )
     return WorkflowGeneratedSOPRecord(**record)
 
 
@@ -3690,6 +4329,14 @@ def generate_taught_draft_sop(draft_id: str) -> WorkflowGeneratedSOPRecord:
 
     workflow_id = str(draft.get("published_workflow_name") or draft.get("workflow_name") or draft_id)
     record = _build_generated_workflow_sop_record(dict(draft), workflow_id=workflow_id)
+    record_audit_event(
+        "sop_generated",
+        details={"workflow_id": workflow_id, "draft_id": draft_id},
+        target_type="workflow_draft",
+        target_id=draft_id,
+        status_code=200,
+        source="workflow",
+    )
     return WorkflowGeneratedSOPRecord(**record)
 
 
@@ -3737,7 +4384,16 @@ def run_taught_workflow(workflow_id: str, payload: ProcedureRunRequest) -> TaskC
     if isinstance(payload.payload, dict) and payload.payload:
         runtime_payload["runtime_payload"] = dict(payload.payload)
 
-    return _create_task_record(runtime_payload)
+    task = _create_task_record(runtime_payload)
+    record_audit_event(
+        "workflow_run_started",
+        details={"workflow_id": workflow_id, "task_id": task.id},
+        target_type="workflow",
+        target_id=workflow_id,
+        status_code=200,
+        source="workflow",
+    )
+    return task
 
 
 def _is_published_workflow(workflow_name: str | None) -> bool:
@@ -5497,6 +6153,15 @@ def list_workflow_learning_drafts(limit: int = 100, review_status: str | None = 
 @app.post("/api/brain/workflow-learning/drafts", response_model=WorkflowLearningDraftRecord)
 def create_workflow_learning_draft(payload: WorkflowLearningCreateRequest) -> WorkflowLearningDraftRecord:
     draft = _build_workflow_draft(payload)
+    identity = get_current_identity() or {}
+    user = identity.get("user") if isinstance(identity, dict) else None
+    if isinstance(user, dict):
+        draft["created_by_user_id"] = user.get("id")
+        draft["created_by_name"] = user.get("name")
+        draft["created_by_role"] = user.get("role")
+        draft["last_updated_by_user_id"] = user.get("id")
+        draft["last_updated_by_name"] = user.get("name")
+        draft["last_updated_by_role"] = user.get("role")
     workflow_learning_drafts.append(draft)
     _save_workflow_learning_drafts()
     _record_operational_memory(
@@ -5504,6 +6169,14 @@ def create_workflow_learning_draft(payload: WorkflowLearningCreateRequest) -> Wo
         f"Created workflow learning draft {draft.get('draft_id')} for {draft.get('workflow_name')}",
         details={"draft_id": draft.get("draft_id"), "workflow_name": draft.get("workflow_name"), "path": draft.get("learning_path")},
         tags=["workflow_learning", "draft"],
+    )
+    record_audit_event(
+        "workflow_created",
+        details={"draft_id": draft.get("draft_id"), "workflow_name": draft.get("workflow_name")},
+        target_type="workflow_draft",
+        target_id=str(draft.get("draft_id") or ""),
+        status_code=200,
+        source="workflow_learning",
     )
     return WorkflowLearningDraftRecord(**draft)
 
@@ -5524,8 +6197,25 @@ def update_workflow_learning_draft_status(draft_id: str, payload: WorkflowDraftS
     if payload.reviewer_notes is not None:
         updated["reviewer_notes"] = payload.reviewer_notes
     updated["updated_at"] = datetime.utcnow().isoformat()
+    identity = get_current_identity() or {}
+    user = identity.get("user") if isinstance(identity, dict) else None
+    if isinstance(user, dict):
+        updated["last_updated_by_user_id"] = user.get("id")
+        updated["last_updated_by_name"] = user.get("name")
+        updated["last_updated_by_role"] = user.get("role")
+        if next_status == "approved":
+            updated["approved_by_user_id"] = user.get("id")
+            updated["approved_by_name"] = user.get("name")
     workflow_learning_drafts[idx] = updated
     _save_workflow_learning_drafts()
+    record_audit_event(
+        "workflow_updated",
+        details={"draft_id": draft_id, "review_status": next_status},
+        target_type="workflow_draft",
+        target_id=draft_id,
+        status_code=200,
+        source="workflow_learning",
+    )
     return WorkflowLearningDraftRecord(**updated)
 
 
@@ -5542,6 +6232,14 @@ def delete_workflow_learning_draft(draft_id: str) -> dict[str, str]:
         f"Deleted workflow learning draft {draft_id}",
         details={"draft_id": draft_id, "workflow_name": removed.get("workflow_name")},
         tags=["workflow_learning", "draft", "delete"],
+    )
+    record_audit_event(
+        "workflow_updated",
+        details={"draft_id": draft_id, "workflow_name": removed.get("workflow_name"), "deleted": True},
+        target_type="workflow_draft",
+        target_id=draft_id,
+        status_code=200,
+        source="workflow_learning",
     )
     return {"deleted_draft_id": draft_id}
 
@@ -5604,6 +6302,12 @@ def update_workflow_learning_draft_structure(
         updated["common_failures"] = [str(x).strip() for x in payload.common_failures if str(x).strip()]
 
     updated["updated_at"] = datetime.utcnow().isoformat()
+    identity = get_current_identity() or {}
+    user = identity.get("user") if isinstance(identity, dict) else None
+    if isinstance(user, dict):
+        updated["last_updated_by_user_id"] = user.get("id")
+        updated["last_updated_by_name"] = user.get("name")
+        updated["last_updated_by_role"] = user.get("role")
     workflow_learning_drafts[idx] = updated
     _save_workflow_learning_drafts()
     _record_operational_memory(
@@ -5611,6 +6315,14 @@ def update_workflow_learning_draft_structure(
         f"Updated structured learning details for draft {draft_id}",
         details={"draft_id": draft_id, "workflow_name": updated.get("workflow_name")},
         tags=["workflow_learning", "draft", "structure"],
+    )
+    record_audit_event(
+        "workflow_updated",
+        details={"draft_id": draft_id, "structure": True},
+        target_type="workflow_draft",
+        target_id=draft_id,
+        status_code=200,
+        source="workflow_learning",
     )
     return WorkflowLearningDraftRecord(**updated)
 
@@ -5673,6 +6385,12 @@ def submit_workflow_teaching_answers(
 
     answer_dicts = [a.dict() if hasattr(a, "dict") else dict(a) for a in (payload.answers or [])]
     updated = _apply_step_teaching_answers(draft, int(payload.step_order), answer_dicts)
+    identity = get_current_identity() or {}
+    user = identity.get("user") if isinstance(identity, dict) else None
+    if isinstance(user, dict):
+        updated["last_updated_by_user_id"] = user.get("id")
+        updated["last_updated_by_name"] = user.get("name")
+        updated["last_updated_by_role"] = user.get("role")
     workflow_learning_drafts[idx] = updated
     _save_workflow_learning_drafts()
     _record_operational_memory(
@@ -5680,6 +6398,14 @@ def submit_workflow_teaching_answers(
         f"Teaching answers applied to step {payload.step_order} of draft {draft_id}",
         details={"draft_id": draft_id, "step_order": payload.step_order},
         tags=["workflow_learning", "teaching"],
+    )
+    record_audit_event(
+        "teach_step_edited",
+        details={"draft_id": draft_id, "step_order": payload.step_order},
+        target_type="workflow_draft",
+        target_id=draft_id,
+        status_code=200,
+        source="workflow_learning",
     )
 
     if bool(updated.get("teaching_complete")):
@@ -5842,6 +6568,14 @@ def append_observed_step(draft_id: str, payload: AppendStepRequest) -> WorkflowL
 
     workflow_learning_drafts[idx] = updated
     _save_workflow_learning_drafts()
+    record_audit_event(
+        "teach_step_created",
+        details={"draft_id": draft_id, "step_order": next_order, "action": payload.action},
+        target_type="workflow_step",
+        target_id=str(normalized.get("id") or normalized.get("step_name") or next_order),
+        status_code=200,
+        source="workflow_learning",
+    )
     return WorkflowLearningDraftRecord(**updated)
 
 
@@ -6269,34 +7003,29 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
     target_machine_uuid = str(payload.target_machine_uuid or "").strip()
     teach_session_id = str(uuid4())
 
-    _teaching_startup_sessions[teach_session_id] = {
-        "session_id": teach_session_id,
-        "task_id": "",
-        "draft_id": draft_id,
-        "workflow_name": str(draft.get("workflow_name") or ""),
-        "target_machine_uuid": target_machine_uuid,
-        "target_machine_name": "",
-        "status": "browser_opening",
-        "message": "",
-        "overlay_enabled": True,
-        "voice_prompt_text": "",
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
-        "teaching_session": {
-            "session_id": teach_session_id,
-            "workflow_name": str(draft.get("workflow_name") or ""),
-            "workflow_summary": None,
-            "status": "intro",
-            "steps": [],
-        },
-    }
-
     if payload.start_url.strip():
         start_url = payload.start_url.strip()
         if not start_url.startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="start_url must begin with http:// or https://")
     else:
         start_url = ""
+
+    _teaching_startup_sessions[teach_session_id] = {
+        "session_id": teach_session_id,
+        "task_id": "",
+        "draft_id": draft_id,
+        "target_machine_uuid": target_machine_uuid,
+        "api_base": worker_api_base,
+        "start_url": start_url,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    identity = get_current_identity() or {}
+    user = identity.get("user") if isinstance(identity, dict) else None
+    if isinstance(user, dict):
+        _teaching_startup_sessions[teach_session_id]["created_by_user_id"] = user.get("id")
+        _teaching_startup_sessions[teach_session_id]["created_by_name"] = user.get("name")
+        _teaching_startup_sessions[teach_session_id]["created_by_role"] = user.get("role")
 
     # ── Route to worker machine ──────────────────────────────────────────────
     if target_machine_uuid:
@@ -6310,12 +7039,10 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
             "api_base": worker_api_base,
             "start_url": start_url,
             "target_machine_uuid": target_machine_uuid,
-            "session_id": teach_session_id,
         }
         logger.info(
-            "TEACH_SESSION_ID_CHAIN start_endpoint draft_id=%s session_id=%s target_machine_uuid=%s api_base=%s start_url=%s requested_api_base=%s",
+            "teach_session task payload prepared: draft_id=%s target_machine_uuid=%s api_base=%s start_url=%s requested_api_base=%s",
             draft_id,
-            teach_session_id,
             target_machine_uuid,
             task_payload.get("api_base"),
             task_payload.get("start_url"),
@@ -6323,19 +7050,22 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
         )
         result = _create_task_record(task_payload)
         _teaching_startup_sessions[teach_session_id]["task_id"] = result.id
+        _teaching_startup_sessions[teach_session_id]["status"] = "queued"
         _record_operational_memory(
             "teach_session_queued",
             f"Teach session task queued for draft {draft_id} on worker {target_machine_uuid}",
-            details={"draft_id": draft_id, "task_id": result.id, "machine_uuid": target_machine_uuid, "session_id": teach_session_id},
+            details={"draft_id": draft_id, "task_id": result.id, "machine_uuid": target_machine_uuid},
             tags=["workflow_learning", "teach_session"],
         )
-        return {
-            "status": "queued",
-            "task_id": result.id,
-            "draft_id": draft_id,
-            "target_machine_uuid": target_machine_uuid,
-            "session_id": teach_session_id,
-        }
+        record_audit_event(
+            "start_teaching_session",
+            details={"draft_id": draft_id, "session_id": teach_session_id, "target_machine_uuid": target_machine_uuid},
+            target_type="teaching_session",
+            target_id=teach_session_id,
+            status_code=200,
+            source="workflow_learning",
+        )
+        return {"status": "queued", "task_id": result.id, "draft_id": draft_id, "target_machine_uuid": target_machine_uuid}
 
     # ── Legacy: spawn locally on the server ─────────────────────────────────
     script_path = os.path.join(
@@ -6407,6 +7137,14 @@ def start_teach_session(draft_id: str, payload: TeachSessionStartRequest) -> dic
             details={"draft_id": draft_id, "pid": proc.pid, "log_file": log_file_path, "session_id": teach_session_id},
             tags=["workflow_learning", "teach_session"],
         )
+        record_audit_event(
+            "start_teaching_session",
+            details={"draft_id": draft_id, "session_id": teach_session_id, "pid": proc.pid},
+            target_type="teaching_session",
+            target_id=teach_session_id,
+            status_code=200,
+            source="workflow_learning",
+        )
         return {
             "status": "started",
             "pid": proc.pid,
@@ -6444,6 +7182,12 @@ def test_workflow_learning_draft(draft_id: str, payload: WorkflowDraftTestReques
     updated = dict(draft)
     updated["review_status"] = "testing"
     updated["updated_at"] = datetime.utcnow().isoformat()
+    identity = get_current_identity() or {}
+    user = identity.get("user") if isinstance(identity, dict) else None
+    if isinstance(user, dict):
+        updated["last_updated_by_user_id"] = user.get("id")
+        updated["last_updated_by_name"] = user.get("name")
+        updated["last_updated_by_role"] = user.get("role")
     workflow_learning_drafts[idx] = updated
     _save_workflow_learning_drafts()
     _record_operational_memory(
@@ -6451,6 +7195,14 @@ def test_workflow_learning_draft(draft_id: str, payload: WorkflowDraftTestReques
         f"Queued guided test for draft {draft_id}",
         details={"draft_id": draft_id, "task_id": task.id},
         tags=["workflow_learning", "testing"],
+    )
+    record_audit_event(
+        "workflow_test_started",
+        details={"draft_id": draft_id, "task_id": task.id},
+        target_type="workflow_draft",
+        target_id=draft_id,
+        status_code=200,
+        source="workflow_learning",
     )
     return task
 
@@ -6490,6 +7242,12 @@ def publish_workflow_learning_draft(draft_id: str, payload: WorkflowDraftPublish
         safe_for_unattended=bool(draft.get("safe_for_unattended", False)),
         compatible_worker_types=["interactive_visible", "headless_background"],
         procedure_name=workflow_name,
+        created_by_user_id=str(draft.get("created_by_user_id") or "") or None,
+        created_by_name=str(draft.get("created_by_name") or "") or None,
+        last_updated_by_user_id=str(draft.get("last_updated_by_user_id") or "") or None,
+        last_updated_by_name=str(draft.get("last_updated_by_name") or "") or None,
+        approved_by_user_id=str(draft.get("approved_by_user_id") or "") or None,
+        approved_by_name=str(draft.get("approved_by_name") or "") or None,
     )
 
     existing_idx = next((i for i, item in enumerate(WORKFLOW_REGISTRY) if item.workflow_name == workflow_name), None)
@@ -6529,6 +7287,16 @@ def publish_workflow_learning_draft(draft_id: str, payload: WorkflowDraftPublish
     updated["published_workflow_name"] = workflow_name
     updated["execution_readiness"] = readiness
     updated["updated_at"] = datetime.utcnow().isoformat()
+    identity = get_current_identity() or {}
+    user = identity.get("user") if isinstance(identity, dict) else None
+    if isinstance(user, dict):
+        updated["last_updated_by_user_id"] = user.get("id")
+        updated["last_updated_by_name"] = user.get("name")
+        updated["last_updated_by_role"] = user.get("role")
+        updated["approved_by_user_id"] = user.get("id")
+        updated["approved_by_name"] = user.get("name")
+        updated["published_by_user_id"] = user.get("id")
+        updated["published_by_name"] = user.get("name")
     notes = [str(updated.get("reviewer_notes") or "").strip()]
     if payload.approved_by:
         notes.append(f"published_by={payload.approved_by}")
@@ -6543,6 +7311,14 @@ def publish_workflow_learning_draft(draft_id: str, payload: WorkflowDraftPublish
         f"Published learned workflow {workflow_name} from draft {draft_id}",
         details={"draft_id": draft_id, "workflow_name": workflow_name},
         tags=["workflow_learning", "published", "review_required"],
+    )
+    record_audit_event(
+        "workflow_approved",
+        details={"draft_id": draft_id, "workflow_name": workflow_name},
+        target_type="workflow_draft",
+        target_id=draft_id,
+        status_code=200,
+        source="workflow_learning",
     )
     return WorkflowLearningDraftRecord(**updated)
 
@@ -8457,6 +9233,44 @@ def _build_direct_action_step(message: str, steps: list[dict], snapshot: dict[st
     return step, ack
 
 
+def _build_ambiguous_click_reply(message: str, snapshot: dict[str, Any] | None = None) -> str | None:
+    lowered = " ".join(str(message or "").lower().split())
+    if not any(token in lowered for token in ("click that button", "click this button", "click it", "press that", "press this")):
+        return None
+
+    snap = dict(snapshot or {})
+    recent_label = str(snap.get("recent_click_label") or "").strip()
+    if recent_label:
+        return None
+
+    button_labels: list[str] = []
+    for item in list(snap.get("visible_buttons") or snap.get("buttons") or []):
+        if isinstance(item, dict):
+            label = str(item.get("text") or item.get("aria_label") or item.get("label") or "").strip()
+        else:
+            label = str(item or "").strip()
+        if label:
+            button_labels.append(label)
+
+    link_labels: list[str] = []
+    for item in list(snap.get("visible_links") or snap.get("links") or []):
+        if isinstance(item, dict):
+            label = str(item.get("text") or item.get("href") or "").strip()
+        else:
+            label = str(item or "").strip()
+        if label:
+            link_labels.append(label)
+
+    unique_buttons = list(dict.fromkeys(button_labels))
+    unique_links = list(dict.fromkeys(link_labels))
+    if len(unique_buttons) + len(unique_links) <= 1:
+        return None
+
+    if unique_buttons and unique_links:
+        return f"Which button do you mean? Do you mean the {unique_buttons[0]} button or the {unique_links[0]} link?"
+    return f"Which button do you mean? I currently see: {', '.join(unique_buttons[:3])}."
+
+
 def _should_suppress_auth_clarification_for_action(message: str, ts: dict[str, Any]) -> bool:
     if not _is_direct_action_instruction(message):
         return False
@@ -8967,6 +9781,11 @@ def _build_teaching_startup_state(session_id: str) -> TeachingStartupState:
     ts = record.get("teaching_session")
     parsed_ts: TeachingSession | None = None
     if isinstance(ts, dict):
+        explicit_start_url = _canonicalize_teach_url(str(record.get("start_url") or "").strip())
+        if explicit_start_url and not str(ts.get("start_url") or "").strip():
+            ts["start_url"] = explicit_start_url
+            ts.setdefault("observed_start_url", explicit_start_url)
+            ts.setdefault("suggested_start_url", explicit_start_url)
         _clear_invalid_teaching_context_if_needed(ts, session_id=session_id)
         record["teaching_session"] = ts
         try:
@@ -8986,6 +9805,63 @@ def _build_teaching_startup_state(session_id: str) -> TeachingStartupState:
         voice_prompt_text=record.get("voice_prompt_text", ""),
         teaching_session=parsed_ts,
     )
+
+
+def _extract_first_url_from_text(text: str) -> str:
+    match = re.search(r"https?://[^\s)\]>'\"]+", text or "", flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return str(match.group(0) or "").strip()
+
+
+def _is_start_page_confirmation_message(message: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not normalized:
+        return False
+    has_save = any(token in normalized for token in ("save", "set", "use"))
+    has_start = "starting page" in normalized or "start page" in normalized or "start url" in normalized
+    has_current = "this current" in normalized or "this page" in normalized or "current page" in normalized
+    return bool((has_save and has_start) or (has_current and has_start))
+
+
+def _persist_confirmed_start_url_to_draft(record: dict[str, Any], canonical_url: str, observed_url: str) -> None:
+    draft_id = str(record.get("draft_id") or "").strip()
+    if not draft_id or not canonical_url:
+        return
+    idx, draft = _find_workflow_draft(draft_id)
+    if draft is None or idx is None:
+        return
+    updated = dict(draft)
+    if not str(updated.get("start_url") or "").strip():
+        updated["start_url"] = canonical_url
+        updated["observed_start_url"] = observed_url or canonical_url
+        updated["updated_at"] = datetime.utcnow().isoformat()
+        workflow_learning_drafts[idx] = updated
+        _save_workflow_learning_drafts()
+
+
+def _confirm_teaching_start_url(
+    session_id: str,
+    record: dict[str, Any],
+    ts: dict[str, Any],
+    observed_url: str,
+    source: str,
+) -> str:
+    canonical_url = _canonicalize_teach_url(observed_url)
+    if not canonical_url:
+        return ""
+    ts["start_url"] = canonical_url
+    ts["observed_start_url"] = observed_url or canonical_url
+    ts.setdefault("suggested_start_url", canonical_url)
+    _persist_confirmed_start_url_to_draft(record, canonical_url=canonical_url, observed_url=observed_url or canonical_url)
+    logger.info(
+        "TEACH_START_URL_CONFIRMED_BY_USER session_id=%s observed_url=%s canonical_url=%s source=%s",
+        session_id,
+        observed_url[:400],
+        canonical_url,
+        source,
+    )
+    return canonical_url
 
 
 # ---------------------------------------------------------------------------
@@ -9034,6 +9910,34 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
     ts["conversation_turn_index"] = turn_index
     _ensure_teaching_auth_state(ts)
     steps: list[dict] = list(ts.get("steps") or [])
+
+    if _is_start_page_confirmation_message(message):
+        explicit_url = _extract_first_url_from_text(message)
+        candidate_url = (
+            explicit_url
+            or str(ts.get("suggested_start_url") or "").strip()
+            or str((ts.get("page_context_snapshot") or {}).get("url") or "").strip()
+        )
+        confirmed_url = _confirm_teaching_start_url(
+            session_id=session_id,
+            record=record,
+            ts=ts,
+            observed_url=candidate_url,
+            source="conversation",
+        )
+        ts["steps"] = steps
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        if confirmed_url:
+            return TeachingSessionMessageResponse(
+                reply=f"Done. I saved {confirmed_url} as the starting page.",
+                teaching_session=TeachingSession.model_validate(ts),
+            )
+        return TeachingSessionMessageResponse(
+            reply="I couldn't find a page URL to save yet. Open the page first, then say 'save this as the starting page'.",
+            teaching_session=TeachingSession.model_validate(ts),
+        )
+
     current_status = ts.get("status", "intro")
     if current_status == "intro" or not ts.get("workflow_summary"):
         ts["workflow_summary"] = message
@@ -9115,6 +10019,12 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         record["teaching_session"] = ts
         _teaching_startup_sessions[session_id] = record
         return TeachingSessionMessageResponse(reply="I need a little more detail. What action should Bill perform or watch for?", teaching_session=TeachingSession.model_validate(ts))
+    ambiguous_click_reply = _build_ambiguous_click_reply(message, snapshot=dict(ts.get("page_context_snapshot") or {}))
+    if ambiguous_click_reply:
+        ts["steps"] = steps
+        record["teaching_session"] = ts
+        _teaching_startup_sessions[session_id] = record
+        return TeachingSessionMessageResponse(reply=ambiguous_click_reply, teaching_session=TeachingSession.model_validate(ts))
     if _should_suppress_auth_clarification_for_action(message, ts):
         logger.info(
             "TEACH_AUTH_CLARIFICATION_SUPPRESSED_FOR_ACTION session_id=%s turn=%s message=%s",
@@ -9222,6 +10132,27 @@ def confirm_teaching_step(session_id: str, step_id: str) -> TeachingSessionMessa
         if step.get("id") == step_id:
             step["confirmed"] = True
             step["unanswered_question"] = False
+            if not str(ts.get("start_url") or "").strip():
+                observed_actions = list(step.get("observed_actions") or [])
+                first_navigation_url = ""
+                for action in observed_actions:
+                    if str(action.get("type") or "").strip().lower() == "navigate":
+                        first_navigation_url = str(action.get("url") or "").strip()
+                        if first_navigation_url:
+                            break
+                canonical_url = _canonicalize_teach_url(first_navigation_url)
+                if canonical_url:
+                    ts["start_url"] = canonical_url
+                    ts["observed_start_url"] = first_navigation_url or canonical_url
+                    ts.setdefault("suggested_start_url", canonical_url)
+                    _persist_confirmed_start_url_to_draft(record, canonical_url=canonical_url, observed_url=first_navigation_url or canonical_url)
+                    logger.info(
+                        "TEACH_START_URL_CONFIRMED_FROM_NAV_STEP session_id=%s step_id=%s observed_url=%s canonical_url=%s",
+                        session_id,
+                        step_id,
+                        first_navigation_url[:400],
+                        canonical_url,
+                    )
             matched = True
             break
     if not matched:
@@ -9383,28 +10314,26 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
         raise HTTPException(status_code=404, detail="No teaching session in record")
     steps: list[dict] = list(ts.get("steps") or [])
     action_dict = body.action.model_dump()
-    _SENSITIVE_LABELS = ("password", "mfa", "pin", "ssn", "social", "token", "secret", "otp", "code")
+    _SENSITIVE_LABELS = ("password", "mfa", "pin", "ssn", "social", "token", "secret", "otp", "code", "dob", "birth")
+    action_type = str(action_dict.get("type") or "").strip().lower()
     label = (action_dict.get("label") or "").lower()
-    if body.action.type == "type":
+    if action_type == "type":
         action_dict["value_redacted"] = "[redacted]"
+        action_dict["selector"] = None
+        action_dict["selectors"] = []
     if any(s in label for s in _SENSITIVE_LABELS):
         action_dict["label"] = "[sensitive]"
         action_dict["selector"] = None
+        action_dict["selectors"] = []
         action_dict["value_redacted"] = "[redacted]"
     if str(action_dict.get("type") or "").strip().lower() == "navigate":
         observed_url = str(action_dict.get("url") or "").strip()
         canonical_url = _canonicalize_teach_url(observed_url)
         action_dict["url"] = canonical_url
+        ts["observed_current_page"] = observed_url or canonical_url
         if canonical_url and not str(ts.get("start_url") or "").strip():
-            ts["start_url"] = canonical_url
-            ts["observed_start_url"] = observed_url or canonical_url
-            logger.info(
-                "TEACH_START_URL_CAPTURED session_id=%s observed_url=%s canonical_url=%s source=action",
-                session_id,
-                observed_url[:400],
-                canonical_url,
-            )
-    if str(action_dict.get("type") or "").strip().lower() in {"click", "submit"}:
+            ts["suggested_start_url"] = canonical_url
+    if action_type in {"click", "submit"}:
         logger.info(
             "TEACH_STEP_CREATED_CLICK session_id=%s selector=%s label=%s",
             session_id,
@@ -9432,10 +10361,31 @@ def teaching_session_record_action(session_id: str, body: TeachingSessionActionR
         steps.append(temp_step)
         target_step = temp_step
     target_step.setdefault("observed_actions", []).append(action_dict)
+
+    copilot_notice: str | None = None
+    copilot_interpretation: str | None = None
+    copilot_question: str | None = None
+    if action_type == "click" and "sign in" in label:
+        copilot_notice = "I saw you click Sign In."
+        copilot_interpretation = "This likely submits the login form."
+        question_key = "sign_in_click_login_confirmation"
+        if str(ts.get("copilot_last_question_key") or "") != question_key:
+            copilot_question = "Is this click always required, and how do we confirm you are logged in?"
+            ts["copilot_last_question_key"] = question_key
+
+    ts["copilot_notice"] = copilot_notice
+    ts["copilot_interpretation"] = copilot_interpretation
+    ts["copilot_question"] = copilot_question
     ts["steps"] = steps
     record["teaching_session"] = ts
     _teaching_startup_sessions[session_id] = record
-    return TeachingSessionMessageResponse(reply="Action captured.", teaching_session=TeachingSession.model_validate(ts))
+    return TeachingSessionMessageResponse(
+        reply="Action captured.",
+        copilot_notice=copilot_notice,
+        copilot_interpretation=copilot_interpretation,
+        copilot_question=copilot_question,
+        teaching_session=TeachingSession.model_validate(ts),
+    )
 
 
 def _normalize_teaching_context_snapshot(body: dict[str, Any] | None) -> dict[str, Any]:
@@ -9450,7 +10400,10 @@ def _normalize_teaching_context_snapshot(body: dict[str, Any] | None) -> dict[st
                 str(item.get("type") or ""),
             ]
         ).lower()
-        return any(token in joined for token in ("password", "passcode", "otp", "mfa", "token", "secret", "email"))
+        return any(
+            token in joined
+            for token in ("password", "passcode", "otp", "mfa", "token", "secret", "ssn", "social", "dob", "birth")
+        )
 
     raw_visible_buttons = list(payload.get("visible_buttons") or payload.get("buttons") or [])[:20]
     raw_visible_inputs = list(payload.get("visible_inputs") or payload.get("inputs") or [])[:20]
@@ -9465,13 +10418,16 @@ def _normalize_teaching_context_snapshot(body: dict[str, Any] | None) -> dict[st
     visible_inputs: list[dict[str, Any]] = []
     for item in raw_visible_inputs:
         entry = dict(item or {})
-        if _is_sensitive_field(entry):
-            entry["label"] = "[redacted]"
+        # Teaching snapshots should never expose concrete field identity values.
+        entry["label"] = "[redacted]"
+        if "placeholder" in entry:
             entry["placeholder"] = "[redacted]"
-            if "name" in entry:
-                entry["name"] = "[redacted]"
-            if "selector_hint" in entry:
-                entry["selector_hint"] = None
+        if "name" in entry:
+            entry["name"] = "[redacted]"
+        if "selector_hint" in entry:
+            entry["selector_hint"] = None
+        if _is_sensitive_field(entry):
+            entry["sensitive"] = True
         visible_inputs.append(entry)
 
     active_element = payload.get("active_element")
@@ -9620,6 +10576,322 @@ def _clear_invalid_teaching_context_if_needed(ts: dict[str, Any], session_id: st
         ts["page_context_history"] = cleaned_history[-5:]
 
 
+def _normalize_teaching_extension_snapshot(body: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(body or {})
+
+    def _is_sensitive_extension_field(item: dict[str, Any]) -> bool:
+        joined = " ".join(
+            [
+                str(item.get("label") or ""),
+                str(item.get("placeholder") or ""),
+                str(item.get("name") or ""),
+                str(item.get("type") or ""),
+                str(item.get("target_label") or ""),
+                str(item.get("target_type") or ""),
+            ]
+        ).lower()
+        return any(
+            token in joined
+            for token in ("password", "passcode", "mfa", "otp", "token", "secret", "ssn", "social", "dob", "birth", "code")
+        )
+
+    def _safe_sensitive_label(item: dict[str, Any]) -> str:
+        lowered = " ".join(
+            [
+                str(item.get("label") or ""),
+                str(item.get("placeholder") or ""),
+                str(item.get("name") or ""),
+                str(item.get("type") or ""),
+                str(item.get("target_label") or ""),
+            ]
+        ).lower()
+        if "password" in lowered or "passcode" in lowered:
+            return "Password field"
+        if "mfa" in lowered or "otp" in lowered or "code" in lowered or "token" in lowered:
+            return "MFA code field"
+        if "ssn" in lowered or "social" in lowered:
+            return "SSN field"
+        if "dob" in lowered or "birth" in lowered:
+            return "DOB field"
+        return "Sensitive field"
+
+    def _clean_list(values: Any, limit: int = 20) -> list[dict[str, Any]]:
+        items = list(values or [])[:limit]
+        cleaned: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, dict):
+                cleaned.append(dict(item))
+            else:
+                cleaned.append({"text": str(item or "")})
+        return cleaned
+
+    raw_visible_fields = _clean_list(payload.get("visible_fields") or payload.get("fields"), 20)
+    visible_fields: list[dict[str, Any]] = []
+    for item in raw_visible_fields:
+        field = {
+            "label": str(item.get("label") or "").strip() or None,
+            "placeholder": str(item.get("placeholder") or "").strip() or None,
+            "type": str(item.get("type") or item.get("target_type") or "").strip().lower() or None,
+            "name": str(item.get("name") or "").strip() or None,
+            "selector_hint": str(item.get("selector_hint") or "").strip() or None,
+        }
+        if _is_sensitive_extension_field(item):
+            field = {
+                "label": _safe_sensitive_label(item),
+                "type": field.get("type") or "input",
+                "target_type": "field",
+                "value_redacted": True,
+                "sensitive": True,
+                "selector_hint": None,
+            }
+        visible_fields.append(field)
+    visible_buttons = _clean_list(payload.get("visible_buttons") or payload.get("buttons"), 20)
+    visible_links = _clean_list(payload.get("visible_links") or payload.get("links"), 20)
+    visible_headings = _clean_list(payload.get("visible_headings") or payload.get("headings"), 10)
+
+    current_url = str(payload.get("current_url") or payload.get("url") or "")
+    page_context = {
+        "url": current_url[:2048],
+        "title": str(payload.get("page_title") or payload.get("title") or "")[:300],
+        "domain": str(payload.get("domain") or "")[:255] or _derive_domain_from_url(current_url),
+        "visible_buttons": visible_buttons,
+        "visible_inputs": visible_fields,
+        "visible_fields": visible_fields,
+        "visible_links": visible_links,
+        "visible_headings": visible_headings,
+        "buttons": [str(item.get("text") or item.get("aria_label") or item.get("label") or "").strip() for item in visible_buttons if str(item.get("text") or item.get("aria_label") or item.get("label") or "").strip()],
+        "inputs": [dict(item) for item in visible_fields],
+        "links": [str(item.get("text") or item.get("href") or "").strip() for item in visible_links if str(item.get("text") or item.get("href") or "").strip()],
+        "headings": [str(item.get("text") or "").strip() for item in visible_headings if str(item.get("text") or "").strip()],
+        "active_element": payload.get("active_element"),
+        "page_changed": bool(payload.get("page_changed")),
+        "reason": str(payload.get("reason") or "extension_event")[:80],
+        "captured_at": str(payload.get("captured_at") or datetime.utcnow().isoformat()),
+    }
+    return page_context
+
+
+def _build_extension_observation_action(event: dict[str, Any]) -> dict[str, Any] | None:
+    event_type = str(event.get("event_type") or "").strip().lower()
+    if event_type == "context":
+        return None
+
+    target = dict(event.get("target") or {})
+    target_label = str(target.get("target_label") or target.get("visible_text") or target.get("aria_label") or target.get("placeholder") or target.get("name") or target.get("element_id") or "").strip()
+    target_type = str(target.get("target_type") or "").strip().lower()
+    selectors = [str(item).strip() for item in list(target.get("selectors") or target.get("selector_candidates") or []) if str(item).strip()]
+    selector = selectors[0] if selectors else None
+
+    sensitive_joined = " ".join([target_label, target_type]).lower()
+    is_sensitive_target = any(
+        token in sensitive_joined
+        for token in ("password", "passcode", "mfa", "otp", "token", "secret", "ssn", "social", "dob", "birth", "code")
+    )
+
+    if is_sensitive_target:
+        selector = None
+        selectors = []
+        if "password" in sensitive_joined or "passcode" in sensitive_joined:
+            target_label = "Password field"
+        elif "mfa" in sensitive_joined or "otp" in sensitive_joined or "code" in sensitive_joined or "token" in sensitive_joined:
+            target_label = "MFA code field"
+        elif "ssn" in sensitive_joined or "social" in sensitive_joined:
+            target_label = "SSN field"
+        elif "dob" in sensitive_joined or "birth" in sensitive_joined:
+            target_label = "DOB field"
+        else:
+            target_label = "Sensitive field"
+
+    action_type = event_type
+    if action_type == "input":
+        action_type = "type"
+    elif action_type == "change":
+        action_type = "select" if target_type in {"select", "dropdown"} else "type"
+
+    return {
+        "id": str(uuid4()),
+        "type": action_type,
+        "source": "extension",
+        "selector": selector,
+        "selectors": selectors,
+        "locator_candidates": [],
+        "label": target_label or None,
+        "target_label": target_label or None,
+        "target_type": target_type or None,
+        "descriptors": [],
+        "value_redacted": "[redacted]" if action_type in {"type", "select"} or is_sensitive_target else None,
+        "url": str(event.get("current_url") or "").strip() or None,
+        "timestamp": str(event.get("captured_at") or datetime.utcnow().isoformat()),
+    }
+
+
+def _sanitize_teaching_extension_event(event: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(event or {})
+
+    cleaned_visible_fields: list[dict[str, Any]] = []
+    for item in list(sanitized.get("visible_fields") or sanitized.get("fields") or []):
+        field = dict(item) if isinstance(item, dict) else {"label": str(item or "")}
+        joined_field = " ".join(
+            [
+                str(field.get("label") or ""),
+                str(field.get("placeholder") or ""),
+                str(field.get("name") or ""),
+                str(field.get("type") or ""),
+            ]
+        ).lower()
+        sensitive_field = any(
+            token in joined_field
+            for token in ("password", "passcode", "mfa", "otp", "token", "secret", "ssn", "social", "dob", "birth", "code")
+        )
+        if sensitive_field:
+            generic_label = "Sensitive field"
+            if "password" in joined_field or "passcode" in joined_field:
+                generic_label = "Password field"
+            elif "mfa" in joined_field or "otp" in joined_field or "code" in joined_field or "token" in joined_field:
+                generic_label = "MFA code field"
+            elif "ssn" in joined_field or "social" in joined_field:
+                generic_label = "SSN field"
+            elif "dob" in joined_field or "birth" in joined_field:
+                generic_label = "DOB field"
+            cleaned_visible_fields.append(
+                {
+                    "label": generic_label,
+                    "type": str(field.get("type") or "input").lower(),
+                    "value_redacted": True,
+                    "sensitive": True,
+                }
+            )
+            continue
+
+        cleaned_visible_fields.append(
+            {
+                "label": str(field.get("label") or "") or None,
+                "placeholder": str(field.get("placeholder") or "") or None,
+                "type": str(field.get("type") or "") or None,
+                "name": str(field.get("name") or "") or None,
+            }
+        )
+
+    if cleaned_visible_fields:
+        sanitized["visible_fields"] = cleaned_visible_fields
+
+    target = dict(sanitized.get("target") or {})
+    target_label = str(target.get("target_label") or target.get("visible_text") or target.get("aria_label") or target.get("placeholder") or target.get("name") or "").strip()
+    target_type = str(target.get("target_type") or "").strip().lower()
+    joined = f"{target_label} {target_type}".lower()
+    looks_sensitive = any(
+        token in joined
+        for token in ("password", "passcode", "mfa", "otp", "token", "secret", "ssn", "social", "dob", "birth", "code")
+    )
+
+    if looks_sensitive:
+        generic_label = "Sensitive field"
+        if "password" in joined or "passcode" in joined:
+            generic_label = "Password field"
+        elif "mfa" in joined or "otp" in joined or "code" in joined or "token" in joined:
+            generic_label = "MFA code field"
+        elif "ssn" in joined or "social" in joined:
+            generic_label = "SSN field"
+        elif "dob" in joined or "birth" in joined:
+            generic_label = "DOB field"
+
+        target = {
+            "target_type": target_type or "field",
+            "target_label": generic_label,
+            "value_redacted": True,
+            "selectors": [],
+            "selector_candidates": [],
+        }
+    else:
+        target = {
+            "target_type": target_type or None,
+            "target_label": target_label or None,
+        }
+
+    sanitized["target"] = target
+    return sanitized
+
+
+def _record_teaching_session_observation(
+    session_id: str,
+    record: dict[str, Any],
+    ts: dict[str, Any],
+    action_dict: dict[str, Any],
+    step_id: str | None = None,
+    source: str = "browser",
+    high_confidence: bool = False,
+) -> TeachingSessionMessageResponse:
+    steps: list[dict[str, Any]] = list(ts.get("steps") or [])
+    action = dict(action_dict)
+    action.setdefault("source", source)
+    action_type = str(action.get("type") or "").strip().lower()
+    sensitive_labels = ("password", "mfa", "pin", "ssn", "social", "token", "secret", "otp", "code")
+    label = (str(action.get("label") or "") + " " + str(action.get("target_label") or "")).lower()
+    if action_type == "type":
+        action["value_redacted"] = "[redacted]"
+    if any(token in label for token in sensitive_labels):
+        action["label"] = "[sensitive]"
+        action["selector"] = None
+        action["value_redacted"] = "[redacted]"
+    if action_type == "navigate":
+        observed_url = str(action.get("url") or "").strip()
+        canonical_url = _canonicalize_teach_url(observed_url)
+        action["url"] = canonical_url
+        ts["observed_current_page"] = observed_url or canonical_url
+        if canonical_url and not str(ts.get("start_url") or "").strip():
+            ts["suggested_start_url"] = canonical_url
+    if action_type in {"click", "submit", "focus"}:
+        logger.info(
+            "TEACH_STEP_CREATED_OBSERVED_ACTION session_id=%s selector=%s label=%s source=%s",
+            session_id,
+            str(action.get("selector") or "")[:120],
+            str(action.get("label") or action.get("target_label") or "")[:120],
+            source,
+        )
+
+    target_step: dict[str, Any] | None = None
+    if step_id:
+        for step in steps:
+            if step.get("id") == step_id:
+                target_step = step
+                break
+    if target_step is None:
+        for step in reversed(steps):
+            if not step.get("confirmed"):
+                target_step = step
+                break
+    if target_step is None:
+        label_text = str(action.get("target_label") or action.get("label") or "").strip()
+        title = "Observed browser activity"
+        if source == "extension" and label_text:
+            prefix = {"click": "Click", "focus": "Focus", "type": "Type", "select": "Select", "submit": "Submit"}.get(action_type, "Observe")
+            title = f"{prefix} {label_text}"
+        temp_step: dict[str, Any] = {
+            "id": str(uuid4()),
+            "order": len(steps) + 1,
+            "title": title,
+            "observed_actions": [],
+            "employee_explanation": None,
+            "bill_summary": title if source == "extension" and label_text else "",
+            "bill_confidence": 0.9 if high_confidence or source == "extension" else 0.5,
+            "pending_question": None,
+            "needs_reasoning": False,
+            "unanswered_question": False,
+            "confirmed": False,
+            "decision_rules": [],
+            "exceptions": [],
+            "required_inputs": [],
+        }
+        steps.append(temp_step)
+        target_step = temp_step
+
+    target_step.setdefault("observed_actions", []).append(action)
+    ts["steps"] = steps
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    return TeachingSessionMessageResponse(reply="Action captured.", teaching_session=TeachingSession.model_validate(ts))
+
+
 @app.post("/api/teaching/session/{session_id}/context", response_model=TeachingSessionMessageResponse)
 @app.post("/api/teaching/session/{session_id}/page-context", response_model=TeachingSessionMessageResponse)
 def teaching_session_record_context(session_id: str, body: dict = Body(default={})) -> TeachingSessionMessageResponse:
@@ -9664,26 +10936,9 @@ def teaching_session_record_context(session_id: str, body: dict = Body(default={
 
             observed_url = str(snapshot.get("url") or "").strip()
             canonical_url = _canonicalize_teach_url(observed_url)
+            ts["observed_current_page"] = observed_url or canonical_url
             if canonical_url and not str(ts.get("start_url") or "").strip():
-                ts["start_url"] = canonical_url
-                ts["observed_start_url"] = observed_url or canonical_url
-                logger.info(
-                    "TEACH_START_URL_CAPTURED session_id=%s observed_url=%s canonical_url=%s source=context",
-                    session_id,
-                    observed_url[:400],
-                    canonical_url,
-                )
-                draft_id = str(record.get("draft_id") or "").strip()
-                if draft_id:
-                    idx, draft = _find_workflow_draft(draft_id)
-                    if draft is not None and idx is not None:
-                        updated = dict(draft)
-                        if not str(updated.get("start_url") or "").strip():
-                            updated["start_url"] = canonical_url
-                            updated["observed_start_url"] = observed_url or canonical_url
-                            updated["updated_at"] = datetime.utcnow().isoformat()
-                            workflow_learning_drafts[idx] = updated
-                            _save_workflow_learning_drafts()
+                ts["suggested_start_url"] = canonical_url
             reply = "Context captured."
     except Exception:
         # Never block capture loop on context parsing/storage edge cases.
@@ -9696,6 +10951,203 @@ def teaching_session_record_context(session_id: str, body: dict = Body(default={
     record["teaching_session"] = ts
     _teaching_startup_sessions[session_id] = record
     return TeachingSessionMessageResponse(reply="Context captured.", teaching_session=TeachingSession.model_validate(ts))
+
+
+@app.post("/api/teaching/session/{session_id}/extension-events", response_model=TeachingSessionMessageResponse)
+def teaching_session_record_extension_event(session_id: str, body: TeachingExtensionEventRequest) -> TeachingSessionMessageResponse:
+    if session_id not in _teaching_startup_sessions:
+        logger.error(
+            "event=teaching_extension_session_not_found session_id=%s endpoint=extension-events",
+            session_id,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail={"detail": "Teaching session not found", "session_id": session_id},
+        )
+
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    if not ts:
+        raise HTTPException(status_code=404, detail="No teaching session in record")
+
+    event = _sanitize_teaching_extension_event(body.model_dump())
+    event["captured_at"] = event.get("captured_at") or datetime.utcnow().isoformat()
+    event["source"] = "extension"
+    event["paired_session_id"] = session_id
+    record_audit_event(
+        "extension_event_received",
+        details={
+            "session_id": session_id,
+            "event_type": str(event.get("event_type") or ""),
+            "draft_id": str(record.get("draft_id") or ""),
+        },
+        target_type="teaching_session",
+        target_id=session_id,
+        status_code=200,
+        source="extension",
+        redacted_payload=event,
+    )
+    logger.info(
+        "TEACH_EXTENSION_CONTEXT_RECEIVED session_id=%s event_type=%s url=%s domain=%s",
+        session_id,
+        str(event.get("event_type") or "")[:40],
+        str(event.get("current_url") or event.get("url") or "")[:400],
+        str(event.get("domain") or "")[:200],
+    )
+
+    snapshot = _normalize_teaching_extension_snapshot(event)
+    invalid_marker = _teaching_context_invalid_reason(snapshot)
+    if invalid_marker:
+        snapshot = _teaching_waiting_snapshot(reason=f"extension_invalid_target_filtered:{invalid_marker}")
+
+    extension_events = list(ts.get("extension_events") or [])
+    extension_events.append(event)
+    ts["extension_events"] = extension_events[-100:]
+    ts["extension_event_count"] = len(extension_events)
+    ts["extension_connection_status"] = "paired"
+    ts["last_extension_event"] = event
+
+    if snapshot.get("url") or snapshot.get("domain"):
+        observed_url = str(snapshot.get("url") or "").strip()
+        ts["observed_current_page"] = observed_url or str(snapshot.get("domain") or "").strip()
+        logger.info(
+            "TEACH_EXTENSION_CONTEXT_OBSERVED_PAGE session_id=%s observed_current_page=%s domain=%s",
+            session_id,
+            observed_url[:400],
+            str(snapshot.get("domain") or "")[:200],
+        )
+
+        ts["page_context_snapshot"] = snapshot
+        history = list(ts.get("page_context_history") or [])
+        history.append(snapshot)
+        ts["page_context_history"] = history[-5:]
+
+        if str(event.get("event_type") or "").strip().lower() == "context":
+            button_count = len(list(snapshot.get("visible_buttons") or snapshot.get("buttons") or []))
+            input_count = len(list(snapshot.get("visible_inputs") or snapshot.get("inputs") or []))
+            link_count = len(list(snapshot.get("visible_links") or snapshot.get("links") or []))
+            logger.info(
+                "TEACH_EXTENSION_CONTEXT_CONTROLS_DETECTED session_id=%s buttons=%s inputs=%s links=%s",
+                session_id,
+                button_count,
+                input_count,
+                link_count,
+            )
+
+        canonical_url = _canonicalize_teach_url(observed_url)
+        if observed_url and canonical_url and canonical_url != observed_url:
+            logger.info(
+                "TEACH_EXTENSION_START_URL_NORMALIZED session_id=%s observed_url=%s canonical_url=%s",
+                session_id,
+                observed_url[:400],
+                canonical_url,
+            )
+        if canonical_url:
+            previous_suggested = str(ts.get("suggested_start_url") or "").strip()
+            ts["suggested_start_url"] = canonical_url
+            if previous_suggested != canonical_url:
+                logger.info(
+                    "TEACH_EXTENSION_START_URL_SUGGESTED session_id=%s observed_url=%s canonical_url=%s",
+                    session_id,
+                    observed_url[:400],
+                    canonical_url,
+                )
+        if canonical_url and not str(ts.get("start_url") or "").strip():
+            logger.info(
+                "TEACH_EXTENSION_START_URL_NOT_AUTO_CONFIRMED session_id=%s observed_url=%s canonical_url=%s",
+                session_id,
+                observed_url[:400],
+                canonical_url,
+            )
+
+    draft_id = str(record.get("draft_id") or "").strip()
+    if draft_id:
+        idx, draft = _find_workflow_draft(draft_id)
+        if draft is not None and idx is not None:
+            updated = dict(draft)
+            extension_history = list(updated.get("workflow_annotations") or [])
+            target = event.get("target") if isinstance(event.get("target"), dict) else {}
+            extension_history.append(
+                {
+                    "annotation_id": str(uuid4()),
+                    "kind": "extension_event",
+                    "session_id": session_id,
+                    "event_type": event.get("event_type"),
+                    "target_label": str(target.get("target_label") or "") or None,
+                    "target_type": str(target.get("target_type") or "") or None,
+                    "captured_at": event.get("captured_at"),
+                }
+            )
+            updated["workflow_annotations"] = extension_history[-100:]
+
+            updated["updated_at"] = datetime.utcnow().isoformat()
+            workflow_learning_drafts[idx] = updated
+            _save_workflow_learning_drafts()
+
+    action_dict = _build_extension_observation_action(event)
+    if action_dict:
+        return _record_teaching_session_observation(
+            session_id=session_id,
+            record=record,
+            ts=ts,
+            action_dict=action_dict,
+            source="extension",
+            high_confidence=True,
+        )
+
+    logger.info(
+        "TEACH_EXTENSION_CONTEXT_NO_ACTION_STEP session_id=%s event_type=%s",
+        session_id,
+        str(event.get("event_type") or "")[:40],
+    )
+
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    return TeachingSessionMessageResponse(reply="Extension context captured.", teaching_session=TeachingSession.model_validate(ts))
+
+
+@app.post("/api/teaching/session/{session_id}/confirm-start-page", response_model=TeachingSessionMessageResponse)
+def confirm_teaching_start_page(session_id: str, body: dict = Body(default={})) -> TeachingSessionMessageResponse:
+    if session_id not in _teaching_startup_sessions:
+        raise HTTPException(status_code=404, detail="Teaching session not found")
+    record = _teaching_startup_sessions[session_id]
+    ts = record.get("teaching_session")
+    if not ts:
+        raise HTTPException(status_code=404, detail="No teaching session in record")
+
+    requested_url = str((body or {}).get("url") or "").strip()
+    fallback_url = str((ts.get("page_context_snapshot") or {}).get("url") or "").strip()
+    suggested_url = str(ts.get("suggested_start_url") or "").strip()
+    observed_url = requested_url or fallback_url or suggested_url
+    confirmed_url = _confirm_teaching_start_url(
+        session_id=session_id,
+        record=record,
+        ts=ts,
+        observed_url=observed_url,
+        source="ui_button",
+    )
+    if not confirmed_url:
+        raise HTTPException(status_code=400, detail="No valid page URL available to confirm as starting page")
+
+    record["teaching_session"] = ts
+    _teaching_startup_sessions[session_id] = record
+    record_audit_event(
+        "confirm_starting_page",
+        details={
+            "session_id": session_id,
+            "draft_id": str(record.get("draft_id") or ""),
+            "confirmed_url": confirmed_url,
+        },
+        target_type="teaching_session",
+        target_id=session_id,
+        status_code=200,
+        source="teaching",
+        redacted_payload={"url": confirmed_url},
+    )
+    return TeachingSessionMessageResponse(
+        reply=f"Saved {confirmed_url} as the starting page.",
+        teaching_session=TeachingSession.model_validate(ts),
+    )
 
 
 @app.get("/api/teaching/session/{session_id}/debug")

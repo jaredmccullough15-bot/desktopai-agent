@@ -58,6 +58,54 @@ class WorkerReleaseRecord(BaseModel):
     channel: str = "optional"
 
 
+# ---------------------------------------------------------------------------
+# Worker Download Center schemas
+# ---------------------------------------------------------------------------
+
+class WorkerReleasePublicRecord(BaseModel):
+    """Metadata returned to authorized users for the download center UI."""
+    id: str
+    version: str
+    upload_time: str
+    release_notes: str | None = None
+    package_filename: str
+    package_sha256: str | None = None
+    file_size_bytes: int | None = None
+    status: str = "current"  # current | draft | deprecated | disabled
+    released_by_name: str | None = None
+    download_count: int = 0
+
+
+class WorkerReleaseAdminRecord(WorkerReleasePublicRecord):
+    """Extended metadata for admin-only release list."""
+    released_by_user_id: str | None = None
+    channel: str = "stable"
+
+
+class WorkerReleaseCreateRequest(BaseModel):
+    version: str
+    package_filename: str
+    release_notes: str | None = None
+    channel: str = "stable"
+
+
+class WorkerReleaseMarkCurrentRequest(BaseModel):
+    confirm: bool = True
+
+
+class WorkerReleaseDisableRequest(BaseModel):
+    confirm: bool = True
+
+
+class WorkerDownloadUrlResponse(BaseModel):
+    release_id: str
+    version: str
+    package_filename: str
+    download_url: str
+    sha256: str | None = None
+    expires_in_seconds: int | None = None
+
+
 class WorkerDeployRequest(BaseModel):
     machine_uuids: list[str] | None = None
     force: bool = False
@@ -153,6 +201,12 @@ class WorkflowRecord(BaseModel):
     compatible_worker_types: list[str] = Field(default_factory=lambda: ["any"])
     procedure_name: str | None = None
     timeout_policy: WorkflowTimeoutPolicy | None = None
+    created_by_user_id: str | None = None
+    created_by_name: str | None = None
+    last_updated_by_user_id: str | None = None
+    last_updated_by_name: str | None = None
+    approved_by_user_id: str | None = None
+    approved_by_name: str | None = None
 
 
 class BrainCommandRequest(BaseModel):
@@ -197,6 +251,7 @@ class TeachingStartupStatusRequest(BaseModel):
 class BrowserAction(BaseModel):
     id: str
     type: Literal["click", "type", "navigate", "select", "submit"]
+    source: Literal["browser", "extension", "manual"] | None = None
     selector: str | None = None
     selectors: list[str] = Field(default_factory=list)
     locator_candidates: list[dict[str, Any]] = Field(default_factory=list)
@@ -213,6 +268,40 @@ class TeachingSessionActionRequest(BaseModel):
     action: BrowserAction
     step_id: str | None = None
     page_context: dict | None = None         # raw PageContextSnapshot from browser
+
+
+class TeachingExtensionEventElement(BaseModel):
+    target_type: str | None = None
+    target_label: str | None = None
+    visible_text: str | None = None
+    role: str | None = None
+    aria_label: str | None = None
+    placeholder: str | None = None
+    name: str | None = None
+    element_id: str | None = None
+    nearby_label_text: str | None = None
+    bounding_box: dict[str, Any] | None = None
+    selector_candidates: list[str] = Field(default_factory=list)
+    selectors: list[str] = Field(default_factory=list)
+    is_sensitive: bool = False
+
+
+class TeachingExtensionEventRequest(BaseModel):
+    event_type: Literal["context", "click", "focus", "input", "change", "submit"]
+    current_url: str | None = None
+    page_title: str | None = None
+    domain: str | None = None
+    visible_buttons: list[dict[str, Any]] = Field(default_factory=list)
+    visible_fields: list[dict[str, Any]] = Field(default_factory=list)
+    visible_links: list[dict[str, Any]] = Field(default_factory=list)
+    visible_headings: list[dict[str, Any]] = Field(default_factory=list)
+    active_element: dict[str, Any] | None = None
+    target: TeachingExtensionEventElement | None = None
+    input_metadata: dict[str, Any] | None = None
+    page_changed: bool = False
+    paired_session_code: str | None = None
+    captured_at: str | None = None
+    source: str = "extension"
 
 
 class WorkflowStep(BaseModel):
@@ -239,9 +328,78 @@ class TeachingSession(BaseModel):
     workflow_name: str
     workflow_summary: str | None = None
     status: Literal["intro", "teaching", "review", "approved"] = "intro"
+    start_url: str | None = None
+    observed_start_url: str | None = None
+    suggested_start_url: str | None = None
+    observed_current_page: str | None = None
     steps: list[WorkflowStep] = Field(default_factory=list)
     page_context_snapshot: dict | None = None  # last captured PageContextSnapshot
     page_context_history: list[dict] = Field(default_factory=list)
+    extension_connection_status: str | None = None
+    extension_event_count: int = 0
+    last_extension_event: dict[str, Any] | None = None
+    extension_events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class BillUserRecord(BaseModel):
+    id: str
+    tenant_id: str | None = None
+    email: str
+    name: str
+    role: Literal["admin", "teacher", "runner", "viewer"] = "viewer"
+    status: str = "active"
+    last_login_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class BillLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class BillLoginResponse(BaseModel):
+    user: BillUserRecord
+    session_expires_at: str
+
+
+class BillCurrentUserResponse(BaseModel):
+    user: BillUserRecord
+
+
+class BillCreateUserRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    role: Literal["admin", "teacher", "runner", "viewer"] = "viewer"
+    status: str = "active"
+    tenant_id: str | None = None
+
+
+class BillUpdateUserRequest(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    password: str | None = None
+    role: Literal["admin", "teacher", "runner", "viewer"] | None = None
+    status: str | None = None
+
+
+class BillAuditLogRecord(BaseModel):
+    id: int
+    tenant_id: str | None = None
+    event_type: str
+    actor_user_id: str | None = None
+    actor_user_name: str | None = None
+    actor_role: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    request_method: str | None = None
+    request_path: str | None = None
+    status_code: int | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    redacted_payload: dict[str, Any] = Field(default_factory=dict)
+    source: str | None = None
+    created_at: str
 
 
 class TeachingSessionMessageRequest(BaseModel):
@@ -542,6 +700,16 @@ class WorkflowLearningDraftRecord(BaseModel):
     review_status: str = "draft"
     reviewer_notes: str | None = None
     published_workflow_name: str | None = None
+    created_by_user_id: str | None = None
+    created_by_name: str | None = None
+    created_by_role: str | None = None
+    last_updated_by_user_id: str | None = None
+    last_updated_by_name: str | None = None
+    last_updated_by_role: str | None = None
+    approved_by_user_id: str | None = None
+    approved_by_name: str | None = None
+    published_by_user_id: str | None = None
+    published_by_name: str | None = None
     observation_question_frequency: Literal["low", "medium", "high"] = "medium"
     observation_questions_paused: bool = False
     observation_skip_all_questions: bool = False
@@ -619,6 +787,18 @@ class AppendStepRequest(BaseModel):
     url: str = ""
     value: str = ""
     option: str = ""
+    created_by_user_id: str | None = None
+    created_by_name: str | None = None
+    created_at: str | None = None
+    taught_by_user_id: str | None = None
+    taught_by_name: str | None = None
+    taught_at: str | None = None
+    last_updated_by_user_id: str | None = None
+    last_updated_by_name: str | None = None
+    last_updated_at: str | None = None
+    captured_by_user_id: str | None = None
+    captured_by_name: str | None = None
+    captured_at: str | None = None
     step_name: str = ""
     intent: str = ""
     description: str = ""

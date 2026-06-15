@@ -713,6 +713,24 @@ type BillAuditLogRecord = {
   created_at: string;
 };
 
+type WorkerReleasePublicRecord = {
+  id: string;
+  version: string;
+  upload_time: string;
+  release_notes?: string | null;
+  package_filename: string;
+  package_sha256?: string | null;
+  file_size_bytes?: number | null;
+  status: string;
+  released_by_name?: string | null;
+  download_count: number;
+};
+
+type WorkerReleaseAdminRecord = WorkerReleasePublicRecord & {
+  released_by_user_id?: string | null;
+  channel: string;
+};
+
 type ActionFeedback = {
   kind: "success" | "error";
   message: string;
@@ -958,6 +976,20 @@ export default function Home() {
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
+  // Worker Download Center
+  const [currentWorkerRelease, setCurrentWorkerRelease] = useState<WorkerReleasePublicRecord | null>(null);
+  const [workerReleaseLoading, setWorkerReleaseLoading] = useState(false);
+  const [workerReleaseError, setWorkerReleaseError] = useState<string | null>(null);
+  const [workerDownloadBusy, setWorkerDownloadBusy] = useState(false);
+  const [workerDownloadMessage, setWorkerDownloadMessage] = useState<string | null>(null);
+  // Admin Worker Releases
+  const [adminWorkerReleases, setAdminWorkerReleases] = useState<WorkerReleaseAdminRecord[]>([]);
+  const [adminWorkerReleasesLoading, setAdminWorkerReleasesLoading] = useState(false);
+  const [adminWorkerReleasesError, setAdminWorkerReleasesError] = useState<string | null>(null);
+  const [newReleaseVersion, setNewReleaseVersion] = useState("");
+  const [newReleaseFilename, setNewReleaseFilename] = useState("");
+  const [newReleaseNotes, setNewReleaseNotes] = useState("");
+  const [newReleaseChannel, setNewReleaseChannel] = useState("stable");
   const [newUserRole, setNewUserRole] = useState<BillUserRole>("viewer");
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<TaskCreateResponse | null>(null);
@@ -3302,6 +3334,22 @@ export default function Home() {
     void loadAdminPanels();
   }, [currentUser?.role, loadAdminPanels]);
 
+  // Load worker release when a user with download permission logs in.
+  useEffect(() => {
+    if (!currentUser) {
+      setCurrentWorkerRelease(null);
+      setAdminWorkerReleases([]);
+      return;
+    }
+    const downloadRoles = ["admin", "teacher", "runner"];
+    if (downloadRoles.includes(currentUser.role)) {
+      void loadCurrentWorkerRelease();
+    }
+    if (currentUser.role === "admin") {
+      void loadAdminWorkerReleases();
+    }
+  }, [currentUser?.role, loadCurrentWorkerRelease, loadAdminWorkerReleases]);
+
   const submitTask = async (body: Record<string, unknown>) => {
     setLoading(true);
     setActionError(null);
@@ -4901,6 +4949,150 @@ export default function Home() {
           ? "border-slate-500/50 bg-slate-800/70"
           : "border-amber-500/40 bg-amber-500/10";
 
+  // ── Worker Download Center callbacks ──────────────────────────────────────
+
+  const loadCurrentWorkerRelease = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase || !currentUser) return;
+    const allowed = ["admin", "teacher", "runner"] as const;
+    if (!allowed.includes(currentUser.role as (typeof allowed)[number])) return;
+    setWorkerReleaseLoading(true);
+    setWorkerReleaseError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases/current`);
+      if (r.status === 404) {
+        setCurrentWorkerRelease(null);
+        return;
+      }
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setCurrentWorkerRelease((await r.json()) as WorkerReleasePublicRecord);
+    } catch (err) {
+      setWorkerReleaseError(err instanceof Error ? err.message : "Failed to load worker release");
+    } finally {
+      setWorkerReleaseLoading(false);
+    }
+  }, [apiFetch, currentUser]);
+
+  const downloadCurrentWorker = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setWorkerDownloadBusy(true);
+    setWorkerDownloadMessage(null);
+    try {
+      const url = `${apiBase}/api/worker-releases/${releaseId}/download`;
+      const r = await apiFetch(url);
+      if (!r.ok) {
+        const msg = await readErrorDetail(r);
+        setWorkerDownloadMessage(`Download failed: ${msg}`);
+        return;
+      }
+      const blob = await r.blob();
+      const filename =
+        r.headers.get("content-disposition")?.match(/filename="?([^"]+)"?/)?.[1] ??
+        `bill-worker-${releaseId}.zip`;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setWorkerDownloadMessage("Download started.");
+      // Refresh to show updated download count.
+      void loadCurrentWorkerRelease();
+    } catch (err) {
+      setWorkerDownloadMessage(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setWorkerDownloadBusy(false);
+    }
+  }, [apiFetch, loadCurrentWorkerRelease]);
+
+  const loadAdminWorkerReleases = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase || currentUser?.role !== "admin") return;
+    setAdminWorkerReleasesLoading(true);
+    setAdminWorkerReleasesError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases`);
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setAdminWorkerReleases((await r.json()) as WorkerReleaseAdminRecord[]);
+    } catch (err) {
+      setAdminWorkerReleasesError(err instanceof Error ? err.message : "Failed to load releases");
+    } finally {
+      setAdminWorkerReleasesLoading(false);
+    }
+  }, [apiFetch, currentUser?.role]);
+
+  const registerWorkerRelease = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    if (!newReleaseVersion.trim() || !newReleaseFilename.trim()) {
+      setAdminWorkerReleasesError("Version and filename are required.");
+      return;
+    }
+    setAdminWorkerReleasesLoading(true);
+    setAdminWorkerReleasesError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: newReleaseVersion.trim(),
+          package_filename: newReleaseFilename.trim(),
+          release_notes: newReleaseNotes.trim() || null,
+          channel: newReleaseChannel || "stable",
+        }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setNewReleaseVersion("");
+      setNewReleaseFilename("");
+      setNewReleaseNotes("");
+      await loadAdminWorkerReleases();
+    } catch (err) {
+      setAdminWorkerReleasesError(err instanceof Error ? err.message : "Failed to register release");
+    } finally {
+      setAdminWorkerReleasesLoading(false);
+    }
+  }, [apiFetch, newReleaseVersion, newReleaseFilename, newReleaseNotes, newReleaseChannel, loadAdminWorkerReleases]);
+
+  const markReleaseCurrent = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setAdminWorkerReleasesLoading(true);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases/${releaseId}/mark-current`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      await loadAdminWorkerReleases();
+      await loadCurrentWorkerRelease();
+    } catch (err) {
+      setAdminWorkerReleasesError(err instanceof Error ? err.message : "Failed to mark release current");
+    } finally {
+      setAdminWorkerReleasesLoading(false);
+    }
+  }, [apiFetch, loadAdminWorkerReleases, loadCurrentWorkerRelease]);
+
+  const disableRelease = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setAdminWorkerReleasesLoading(true);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases/${releaseId}/disable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      await loadAdminWorkerReleases();
+    } catch (err) {
+      setAdminWorkerReleasesError(err instanceof Error ? err.message : "Failed to disable release");
+    } finally {
+      setAdminWorkerReleasesLoading(false);
+    }
+  }, [apiFetch, loadAdminWorkerReleases]);
+
   const createAdminUser = useCallback(async () => {
     if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
       setAdminError("Name, email, and password are required.");
@@ -5167,7 +5359,264 @@ export default function Home() {
             </section>
           )}
 
-          {/* Main grid: left content + right workers panel */}
+          {/* ── Worker Download Center ────────────────────────────────────────────── */}
+          {currentUser && ["admin", "teacher", "runner"].includes(currentUser.role) && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">Worker Downloads</h2>
+                <button
+                  type="button"
+                  className={BUTTON_SECONDARY}
+                  onClick={() => void loadCurrentWorkerRelease()}
+                  disabled={workerReleaseLoading}
+                >
+                  {workerReleaseLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+
+              {workerReleaseError && (
+                <p className="mt-3 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{workerReleaseError}</p>
+              )}
+
+              {!currentWorkerRelease && !workerReleaseLoading && !workerReleaseError && (
+                <p className="mt-3 text-sm text-slate-400">No current worker release is available. Ask an admin.</p>
+              )}
+
+              {currentWorkerRelease && (
+                <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/60 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-base font-semibold text-slate-50">{currentWorkerRelease.version}</span>
+                        <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">Current Good Build</span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">{currentWorkerRelease.package_filename}</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={workerDownloadBusy}
+                      onClick={() => void downloadCurrentWorker(currentWorkerRelease.id)}
+                      className="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {workerDownloadBusy ? "Downloading..." : "Download Worker"}
+                    </button>
+                  </div>
+
+                  <dl className="mt-3 grid gap-y-1.5 text-xs sm:grid-cols-2">
+                    <div>
+                      <dt className="text-slate-500">Released</dt>
+                      <dd className="text-slate-200">{new Date(currentWorkerRelease.upload_time).toLocaleString()}</dd>
+                    </div>
+                    {currentWorkerRelease.released_by_name && (
+                      <div>
+                        <dt className="text-slate-500">Released by</dt>
+                        <dd className="text-slate-200">{currentWorkerRelease.released_by_name}</dd>
+                      </div>
+                    )}
+                    {currentWorkerRelease.file_size_bytes != null && (
+                      <div>
+                        <dt className="text-slate-500">File size</dt>
+                        <dd className="text-slate-200">{(currentWorkerRelease.file_size_bytes / 1024 / 1024).toFixed(1)} MB</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="text-slate-500">Downloads</dt>
+                      <dd className="text-slate-200">{currentWorkerRelease.download_count}</dd>
+                    </div>
+                    {currentWorkerRelease.package_sha256 && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-slate-500">SHA-256</dt>
+                        <dd className="flex items-center gap-2 break-all font-mono text-[10px] text-slate-300">
+                          {currentWorkerRelease.package_sha256}
+                          <button
+                            type="button"
+                            className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                            onClick={() => void navigator.clipboard.writeText(currentWorkerRelease.package_sha256 ?? "")}
+                          >
+                            Copy
+                          </button>
+                        </dd>
+                      </div>
+                    )}
+                    {currentWorkerRelease.release_notes && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-slate-500">Release notes</dt>
+                        <dd className="text-slate-200">{currentWorkerRelease.release_notes}</dd>
+                      </div>
+                    )}
+                  </dl>
+
+                  {workerDownloadMessage && (
+                    <p className="mt-2 text-xs text-cyan-300">{workerDownloadMessage}</p>
+                  )}
+
+                  <details className="mt-4">
+                    <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-200">Install instructions</summary>
+                    <ol className="mt-2 space-y-1 pl-4 text-xs text-slate-300" style={{listStyleType: "decimal"}}>
+                      <li>Download the zip using the button above.</li>
+                      <li>Extract the entire folder to a stable location (e.g. Desktop or Documents).</li>
+                      <li>Open the extracted folder and run <span className="font-mono">BillWorker.exe</span>.</li>
+                      <li>Keep the folder in the same location — do not move it after first run.</li>
+                      <li>If antivirus flags it, contact Jared or an admin before deleting or quarantining.</li>
+                      <li>Only use the release marked <strong>Current Good Build</strong>.</li>
+                    </ol>
+                  </details>
+                </div>
+              )}
+            </section>
+          )}
+
+          {currentUser && currentUser.role === "viewer" && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <h2 className="text-base font-semibold text-slate-50">Worker Downloads</h2>
+              <p className="mt-2 text-sm text-slate-400">You do not have permission to download the Bill Worker.</p>
+            </section>
+          )}
+
+          {/* ── Admin Worker Releases ─────────────────────────────────────────────── */}
+          {currentUser?.role === "admin" && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">Worker Release Management</h2>
+                <button
+                  type="button"
+                  className={BUTTON_SECONDARY}
+                  onClick={() => void loadAdminWorkerReleases()}
+                  disabled={adminWorkerReleasesLoading}
+                >
+                  {adminWorkerReleasesLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+
+              {adminWorkerReleasesError && (
+                <p className="mt-2 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{adminWorkerReleasesError}</p>
+              )}
+
+              {/* Register new release */}
+              <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/60 p-3">
+                <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Register New Release</p>
+                <p className="mt-1 text-[11px] text-slate-500">File must already be in the worker-packages directory on the server.</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <input
+                    value={newReleaseVersion}
+                    onChange={(e) => setNewReleaseVersion(e.target.value)}
+                    placeholder="Version (e.g. 0.4.0)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  />
+                  <input
+                    value={newReleaseFilename}
+                    onChange={(e) => setNewReleaseFilename(e.target.value)}
+                    placeholder="Filename (e.g. bill-worker-0.4.0.zip)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  />
+                  <input
+                    value={newReleaseNotes}
+                    onChange={(e) => setNewReleaseNotes(e.target.value)}
+                    placeholder="Release notes (optional)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 sm:col-span-2"
+                  />
+                  <select
+                    value={newReleaseChannel}
+                    onChange={(e) => setNewReleaseChannel(e.target.value)}
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  >
+                    <option value="stable">stable</option>
+                    <option value="optional">optional</option>
+                    <option value="required">required</option>
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  disabled={adminWorkerReleasesLoading}
+                  onClick={() => void registerWorkerRelease()}
+                  className="mt-3 rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Register release
+                </button>
+              </div>
+
+              {/* Releases table */}
+              {adminWorkerReleases.length > 0 && (
+                <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="mb-2 text-xs uppercase tracking-[0.14em] text-slate-400">All Releases</p>
+                  <table className="min-w-full text-left text-xs text-slate-200">
+                    <thead className="text-slate-500">
+                      <tr>
+                        <th className="py-1 pr-3">Version</th>
+                        <th className="py-1 pr-3">Status</th>
+                        <th className="py-1 pr-3">File</th>
+                        <th className="py-1 pr-3">SHA-256</th>
+                        <th className="py-1 pr-3">Downloads</th>
+                        <th className="py-1 pr-3">Uploaded</th>
+                        <th className="py-1">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminWorkerReleases.map((rel) => (
+                        <tr key={rel.id} className="border-t border-slate-800/70">
+                          <td className="py-1 pr-3 font-semibold">{rel.version}</td>
+                          <td className="py-1 pr-3">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                                rel.status === "current"
+                                  ? "bg-emerald-500/20 text-emerald-300"
+                                  : rel.status === "disabled"
+                                    ? "bg-rose-500/20 text-rose-300"
+                                    : rel.status === "deprecated"
+                                      ? "bg-amber-500/20 text-amber-300"
+                                      : "bg-slate-700 text-slate-300"
+                              }`}
+                            >
+                              {rel.status}
+                            </span>
+                          </td>
+                          <td className="py-1 pr-3 font-mono text-[10px] text-slate-400">{rel.package_filename}</td>
+                          <td className="py-1 pr-3 font-mono text-[10px] text-slate-500" title={rel.package_sha256 ?? ""}>
+                            {rel.package_sha256 ? rel.package_sha256.slice(0, 12) + "…" : "—"}
+                          </td>
+                          <td className="py-1 pr-3">{rel.download_count}</td>
+                          <td className="py-1 pr-3 text-slate-400">{new Date(rel.upload_time).toLocaleDateString()}</td>
+                          <td className="py-1">
+                            <div className="flex gap-2">
+                              {rel.status !== "current" && rel.status !== "disabled" && (
+                                <button
+                                  type="button"
+                                  disabled={adminWorkerReleasesLoading}
+                                  onClick={() => void markReleaseCurrent(rel.id)}
+                                  className="rounded bg-cyan-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
+                                >
+                                  Mark current
+                                </button>
+                              )}
+                              {rel.status !== "disabled" && (
+                                <button
+                                  type="button"
+                                  disabled={adminWorkerReleasesLoading}
+                                  onClick={() => void disableRelease(rel.id)}
+                                  className="rounded bg-rose-700 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-rose-600 disabled:opacity-50"
+                                >
+                                  Disable
+                                </button>
+                              )}
+                              <a
+                                href={`${getApiBase()}/api/worker-releases/${rel.id}/download`}
+                                download
+                                className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-600"
+                              >
+                                Download
+                              </a>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* Main grid: left content + right workers panel */
           <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
 
             {/* Left column */}
