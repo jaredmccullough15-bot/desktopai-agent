@@ -3334,22 +3334,6 @@ export default function Home() {
     void loadAdminPanels();
   }, [currentUser?.role, loadAdminPanels]);
 
-  // Load worker release when a user with download permission logs in.
-  useEffect(() => {
-    if (!currentUser) {
-      setCurrentWorkerRelease(null);
-      setAdminWorkerReleases([]);
-      return;
-    }
-    const downloadRoles = ["admin", "teacher", "runner"];
-    if (downloadRoles.includes(currentUser.role)) {
-      void loadCurrentWorkerRelease();
-    }
-    if (currentUser.role === "admin") {
-      void loadAdminWorkerReleases();
-    }
-  }, [currentUser?.role, loadCurrentWorkerRelease, loadAdminWorkerReleases]);
-
   const submitTask = async (body: Record<string, unknown>) => {
     setLoading(true);
     setActionError(null);
@@ -5093,6 +5077,22 @@ export default function Home() {
     }
   }, [apiFetch, loadAdminWorkerReleases]);
 
+  // Load worker release when a user with download permission logs in.
+  useEffect(() => {
+    if (!currentUser) {
+      setCurrentWorkerRelease(null);
+      setAdminWorkerReleases([]);
+      return;
+    }
+    const downloadRoles = ["admin", "teacher", "runner"];
+    if (downloadRoles.includes(currentUser.role)) {
+      void loadCurrentWorkerRelease();
+    }
+    if (currentUser.role === "admin") {
+      void loadAdminWorkerReleases();
+    }
+  }, [currentUser?.role, loadCurrentWorkerRelease, loadAdminWorkerReleases]);
+
   const createAdminUser = useCallback(async () => {
     if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
       setAdminError("Name, email, and password are required.");
@@ -5616,7 +5616,7 @@ export default function Home() {
             </section>
           )}
 
-          {/* Main grid: left content + right workers panel */
+          {/* Main grid: left content + right workers panel */}
           <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
 
             {/* Left column */}
