@@ -731,6 +731,24 @@ type WorkerReleaseAdminRecord = WorkerReleasePublicRecord & {
   channel: string;
 };
 
+type ExtensionReleasePublicRecord = {
+  id: string;
+  release_type: "chrome_extension";
+  version_label: string;
+  released_at: string;
+  release_notes?: string | null;
+  file_name: string;
+  sha256_hash?: string | null;
+  file_size_bytes?: number | null;
+  status: string;
+  released_by_name?: string | null;
+  download_count: number;
+};
+
+type ExtensionReleaseAdminRecord = ExtensionReleasePublicRecord & {
+  released_by_user_id?: string | null;
+};
+
 type ActionFeedback = {
   kind: "success" | "error";
   message: string;
@@ -990,6 +1008,19 @@ export default function Home() {
   const [newReleaseFilename, setNewReleaseFilename] = useState("");
   const [newReleaseNotes, setNewReleaseNotes] = useState("");
   const [newReleaseChannel, setNewReleaseChannel] = useState("stable");
+  // Extension Download Center
+  const [currentExtensionRelease, setCurrentExtensionRelease] = useState<ExtensionReleasePublicRecord | null>(null);
+  const [extensionReleaseLoading, setExtensionReleaseLoading] = useState(false);
+  const [extensionReleaseError, setExtensionReleaseError] = useState<string | null>(null);
+  const [extensionDownloadBusy, setExtensionDownloadBusy] = useState(false);
+  const [extensionDownloadMessage, setExtensionDownloadMessage] = useState<string | null>(null);
+  // Admin Extension Releases
+  const [adminExtensionReleases, setAdminExtensionReleases] = useState<ExtensionReleaseAdminRecord[]>([]);
+  const [adminExtensionReleasesLoading, setAdminExtensionReleasesLoading] = useState(false);
+  const [adminExtensionReleasesError, setAdminExtensionReleasesError] = useState<string | null>(null);
+  const [newExtensionVersionLabel, setNewExtensionVersionLabel] = useState("");
+  const [newExtensionFilename, setNewExtensionFilename] = useState("");
+  const [newExtensionReleaseNotes, setNewExtensionReleaseNotes] = useState("");
   const [newUserRole, setNewUserRole] = useState<BillUserRole>("viewer");
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<TaskCreateResponse | null>(null);
@@ -5093,6 +5124,170 @@ export default function Home() {
     }
   }, [currentUser?.role, loadCurrentWorkerRelease, loadAdminWorkerReleases]);
 
+  // ── Extension Download Center callbacks ───────────────────────────────────
+
+  const loadCurrentExtensionRelease = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase || !currentUser) return;
+    const allowed = ["admin", "teacher", "runner"] as const;
+    if (!allowed.includes(currentUser.role as (typeof allowed)[number])) return;
+    setExtensionReleaseLoading(true);
+    setExtensionReleaseError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases/current`);
+      if (r.status === 404) {
+        setCurrentExtensionRelease(null);
+        return;
+      }
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setCurrentExtensionRelease((await r.json()) as ExtensionReleasePublicRecord);
+    } catch (err) {
+      setExtensionReleaseError(err instanceof Error ? err.message : "Failed to load extension release");
+    } finally {
+      setExtensionReleaseLoading(false);
+    }
+  }, [apiFetch, currentUser]);
+
+  const downloadCurrentExtension = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setExtensionDownloadBusy(true);
+    setExtensionDownloadMessage(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases/${releaseId}/download`);
+      if (!r.ok) {
+        const msg = await readErrorDetail(r);
+        setExtensionDownloadMessage(`Download failed: ${msg}`);
+        return;
+      }
+      const blob = await r.blob();
+      const filename =
+        r.headers.get("content-disposition")?.match(/filename="?([^"]+)"?/)?.[1] ??
+        `bill-teaching-helper-${releaseId}.zip`;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setExtensionDownloadMessage("Download started.");
+      void loadCurrentExtensionRelease();
+    } catch (err) {
+      setExtensionDownloadMessage(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setExtensionDownloadBusy(false);
+    }
+  }, [apiFetch, loadCurrentExtensionRelease]);
+
+  const loadAdminExtensionReleases = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase || currentUser?.role !== "admin") return;
+    setAdminExtensionReleasesLoading(true);
+    setAdminExtensionReleasesError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases`);
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setAdminExtensionReleases((await r.json()) as ExtensionReleaseAdminRecord[]);
+    } catch (err) {
+      setAdminExtensionReleasesError(err instanceof Error ? err.message : "Failed to load extension releases");
+    } finally {
+      setAdminExtensionReleasesLoading(false);
+    }
+  }, [apiFetch, currentUser?.role]);
+
+  const registerExtensionRelease = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    if (!newExtensionVersionLabel.trim() || !newExtensionFilename.trim()) {
+      setAdminExtensionReleasesError("Version label and filename are required.");
+      return;
+    }
+    setAdminExtensionReleasesLoading(true);
+    setAdminExtensionReleasesError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version_label: newExtensionVersionLabel.trim(),
+          file_name: newExtensionFilename.trim(),
+          release_notes: newExtensionReleaseNotes.trim() || null,
+        }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setNewExtensionVersionLabel("");
+      setNewExtensionFilename("");
+      setNewExtensionReleaseNotes("");
+      await loadAdminExtensionReleases();
+      await loadCurrentExtensionRelease();
+    } catch (err) {
+      setAdminExtensionReleasesError(err instanceof Error ? err.message : "Failed to register extension release");
+    } finally {
+      setAdminExtensionReleasesLoading(false);
+    }
+  }, [
+    apiFetch,
+    newExtensionVersionLabel,
+    newExtensionFilename,
+    newExtensionReleaseNotes,
+    loadAdminExtensionReleases,
+    loadCurrentExtensionRelease,
+  ]);
+
+  const markExtensionReleaseCurrent = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setAdminExtensionReleasesLoading(true);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases/${releaseId}/mark-current`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      await loadAdminExtensionReleases();
+      await loadCurrentExtensionRelease();
+    } catch (err) {
+      setAdminExtensionReleasesError(err instanceof Error ? err.message : "Failed to mark extension release current");
+    } finally {
+      setAdminExtensionReleasesLoading(false);
+    }
+  }, [apiFetch, loadAdminExtensionReleases, loadCurrentExtensionRelease]);
+
+  const disableExtensionRelease = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setAdminExtensionReleasesLoading(true);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases/${releaseId}/disable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      await loadAdminExtensionReleases();
+    } catch (err) {
+      setAdminExtensionReleasesError(err instanceof Error ? err.message : "Failed to disable extension release");
+    } finally {
+      setAdminExtensionReleasesLoading(false);
+    }
+  }, [apiFetch, loadAdminExtensionReleases]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setCurrentExtensionRelease(null);
+      setAdminExtensionReleases([]);
+      return;
+    }
+    const downloadRoles = ["admin", "teacher", "runner"];
+    if (downloadRoles.includes(currentUser.role)) {
+      void loadCurrentExtensionRelease();
+    }
+    if (currentUser.role === "admin") {
+      void loadAdminExtensionReleases();
+    }
+  }, [currentUser?.role, loadCurrentExtensionRelease, loadAdminExtensionReleases]);
+
   const createAdminUser = useCallback(async () => {
     if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
       setAdminError("Name, email, and password are required.");
@@ -5361,7 +5556,7 @@ export default function Home() {
 
           {/* ── Worker Download Center ────────────────────────────────────────────── */}
           {currentUser && ["admin", "teacher", "runner"].includes(currentUser.role) && (
-            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+            <section id="extension-download-center" className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-base font-semibold text-slate-50">Worker Downloads</h2>
                 <button
@@ -5470,6 +5665,252 @@ export default function Home() {
             <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
               <h2 className="text-base font-semibold text-slate-50">Worker Downloads</h2>
               <p className="mt-2 text-sm text-slate-400">You do not have permission to download the Bill Worker.</p>
+            </section>
+          )}
+
+          {/* ── Extension Download Center ─────────────────────────────────────────── */}
+          {currentUser && ["admin", "teacher", "runner"].includes(currentUser.role) && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">Extension Downloads</h2>
+                <button
+                  type="button"
+                  className={BUTTON_SECONDARY}
+                  onClick={() => void loadCurrentExtensionRelease()}
+                  disabled={extensionReleaseLoading}
+                >
+                  {extensionReleaseLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+
+              {extensionReleaseError && (
+                <p className="mt-3 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{extensionReleaseError}</p>
+              )}
+
+              {!currentExtensionRelease && !extensionReleaseLoading && !extensionReleaseError && (
+                <p className="mt-3 text-sm text-slate-400">No current extension release is available. Ask an admin.</p>
+              )}
+
+              {currentExtensionRelease && (
+                <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/60 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-base font-semibold text-slate-50">{currentExtensionRelease.version_label}</span>
+                        <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">Current Good Build</span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">{currentExtensionRelease.file_name}</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={extensionDownloadBusy}
+                      onClick={() => void downloadCurrentExtension(currentExtensionRelease.id)}
+                      className="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {extensionDownloadBusy ? "Downloading..." : "Download Extension"}
+                    </button>
+                  </div>
+
+                  <dl className="mt-3 grid gap-y-1.5 text-xs sm:grid-cols-2">
+                    <div>
+                      <dt className="text-slate-500">Released</dt>
+                      <dd className="text-slate-200">{new Date(currentExtensionRelease.released_at).toLocaleString()}</dd>
+                    </div>
+                    {currentExtensionRelease.released_by_name && (
+                      <div>
+                        <dt className="text-slate-500">Released by</dt>
+                        <dd className="text-slate-200">{currentExtensionRelease.released_by_name}</dd>
+                      </div>
+                    )}
+                    {currentExtensionRelease.file_size_bytes != null && (
+                      <div>
+                        <dt className="text-slate-500">File size</dt>
+                        <dd className="text-slate-200">{(currentExtensionRelease.file_size_bytes / 1024 / 1024).toFixed(1)} MB</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="text-slate-500">Downloads</dt>
+                      <dd className="text-slate-200">{currentExtensionRelease.download_count}</dd>
+                    </div>
+                    {currentExtensionRelease.sha256_hash && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-slate-500">SHA-256</dt>
+                        <dd className="flex items-center gap-2 break-all font-mono text-[10px] text-slate-300">
+                          {currentExtensionRelease.sha256_hash}
+                          <button
+                            type="button"
+                            className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                            onClick={() => void navigator.clipboard.writeText(currentExtensionRelease.sha256_hash ?? "")}
+                          >
+                            Copy
+                          </button>
+                        </dd>
+                      </div>
+                    )}
+                    {currentExtensionRelease.release_notes && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-slate-500">Release notes</dt>
+                        <dd className="text-slate-200">{currentExtensionRelease.release_notes}</dd>
+                      </div>
+                    )}
+                  </dl>
+
+                  {extensionDownloadMessage && <p className="mt-2 text-xs text-cyan-300">{extensionDownloadMessage}</p>}
+
+                  <details className="mt-4">
+                    <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-200">Install instructions</summary>
+                    <ol className="mt-2 space-y-1 pl-4 text-xs text-slate-300" style={{ listStyleType: "decimal" }}>
+                      <li>Download the extension zip.</li>
+                      <li>Extract it to a stable folder.</li>
+                      <li>Open Chrome.</li>
+                      <li>Go to chrome://extensions.</li>
+                      <li>Turn on Developer Mode.</li>
+                      <li>Click Load unpacked.</li>
+                      <li>Select the extracted extension folder.</li>
+                      <li>Open Bill Teaching Mode and confirm the extension is connected.</li>
+                    </ol>
+                  </details>
+                </div>
+              )}
+            </section>
+          )}
+
+          {currentUser && currentUser.role === "viewer" && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <h2 className="text-base font-semibold text-slate-50">Extension Downloads</h2>
+              <p className="mt-2 text-sm text-slate-400">You do not have permission to download the Bill Teaching Helper extension.</p>
+            </section>
+          )}
+
+          {/* ── Admin Extension Releases ─────────────────────────────────────────── */}
+          {currentUser?.role === "admin" && (
+            <section id="extension-release-management" className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">Extension Release Management</h2>
+                <button
+                  type="button"
+                  className={BUTTON_SECONDARY}
+                  onClick={() => void loadAdminExtensionReleases()}
+                  disabled={adminExtensionReleasesLoading}
+                >
+                  {adminExtensionReleasesLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+
+              {adminExtensionReleasesError && (
+                <p className="mt-2 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{adminExtensionReleasesError}</p>
+              )}
+
+              <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/60 p-3">
+                <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Register New Extension Release</p>
+                <p className="mt-1 text-[11px] text-slate-500">File must already be in the extension-packages directory on the server.</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <input
+                    value={newExtensionVersionLabel}
+                    onChange={(e) => setNewExtensionVersionLabel(e.target.value)}
+                    placeholder="Version label (e.g. 1.2.0)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  />
+                  <input
+                    value={newExtensionFilename}
+                    onChange={(e) => setNewExtensionFilename(e.target.value)}
+                    placeholder="Filename (e.g. bill-teaching-helper-1.2.0.zip)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  />
+                  <input
+                    value={newExtensionReleaseNotes}
+                    onChange={(e) => setNewExtensionReleaseNotes(e.target.value)}
+                    placeholder="Release notes (optional)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 sm:col-span-2"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={adminExtensionReleasesLoading}
+                  onClick={() => void registerExtensionRelease()}
+                  className="mt-3 rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Register extension release
+                </button>
+              </div>
+
+              {adminExtensionReleases.length > 0 && (
+                <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="mb-2 text-xs uppercase tracking-[0.14em] text-slate-400">All Extension Releases</p>
+                  <table className="min-w-full text-left text-xs text-slate-200">
+                    <thead className="text-slate-500">
+                      <tr>
+                        <th className="py-1 pr-3">Version</th>
+                        <th className="py-1 pr-3">Status</th>
+                        <th className="py-1 pr-3">File</th>
+                        <th className="py-1 pr-3">SHA-256</th>
+                        <th className="py-1 pr-3">Downloads</th>
+                        <th className="py-1 pr-3">Released</th>
+                        <th className="py-1">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminExtensionReleases.map((rel) => (
+                        <tr key={rel.id} className="border-t border-slate-800/70">
+                          <td className="py-1 pr-3 font-semibold">{rel.version_label}</td>
+                          <td className="py-1 pr-3">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                                rel.status === "current"
+                                  ? "bg-emerald-500/20 text-emerald-300"
+                                  : rel.status === "disabled"
+                                    ? "bg-rose-500/20 text-rose-300"
+                                    : rel.status === "deprecated"
+                                      ? "bg-amber-500/20 text-amber-300"
+                                      : "bg-slate-700 text-slate-300"
+                              }`}
+                            >
+                              {rel.status}
+                            </span>
+                          </td>
+                          <td className="py-1 pr-3 font-mono text-[10px] text-slate-400">{rel.file_name}</td>
+                          <td className="py-1 pr-3 font-mono text-[10px] text-slate-500" title={rel.sha256_hash ?? ""}>
+                            {rel.sha256_hash ? rel.sha256_hash.slice(0, 12) + "…" : "—"}
+                          </td>
+                          <td className="py-1 pr-3">{rel.download_count}</td>
+                          <td className="py-1 pr-3 text-slate-400">{new Date(rel.released_at).toLocaleDateString()}</td>
+                          <td className="py-1">
+                            <div className="flex gap-2">
+                              {rel.status !== "current" && rel.status !== "disabled" && (
+                                <button
+                                  type="button"
+                                  disabled={adminExtensionReleasesLoading}
+                                  onClick={() => void markExtensionReleaseCurrent(rel.id)}
+                                  className="rounded bg-cyan-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
+                                >
+                                  Mark current
+                                </button>
+                              )}
+                              {rel.status !== "disabled" && (
+                                <button
+                                  type="button"
+                                  disabled={adminExtensionReleasesLoading}
+                                  onClick={() => void disableExtensionRelease(rel.id)}
+                                  className="rounded bg-rose-700 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-rose-600 disabled:opacity-50"
+                                >
+                                  Disable
+                                </button>
+                              )}
+                              <a
+                                href={`${getApiBase()}/api/extension-releases/${rel.id}/download`}
+                                download
+                                className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-600"
+                              >
+                                Download
+                              </a>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
           )}
 

@@ -61,6 +61,9 @@ interface WorkflowLearningDraft {
     blocking_reasons?: string[];
     warnings?: string[];
   };
+  created_by_name?: string | null;
+  last_updated_by_name?: string | null;
+  approved_by_name?: string | null;
 }
 
 interface WorkerRelease {
@@ -139,6 +142,7 @@ const TABS = [
   "Analytics",
   "Voice",
   "Teach Bill",
+  "Extension Downloads",
   "Workflow Builder",
   "Audit Trail",
   "Settings",
@@ -310,6 +314,34 @@ export function AdvancedToolsTabs(props: AdvancedToolsTabsProps) {
           <TeachBillTab {...props} />
         )}
 
+        {activeTab === "Extension Downloads" && (
+          <div className="space-y-4 text-sm text-slate-300">
+            <div>
+              <h3 className="text-base font-semibold text-slate-100">Extension Downloads</h3>
+              <p className="mt-1 text-slate-400">
+                The downloadable Chrome extension bundle is shown in the main page sections below.
+                Use the button to jump to it.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Quick access</p>
+              <p className="mt-2 text-slate-300">
+                This tab keeps the extension feature visible in the tab strip, while the actual download and admin management panels remain in the page body.
+              </p>
+              <button
+                type="button"
+                className="mt-3 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400"
+                onClick={() => {
+                  document.getElementById("extension-download-center")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }}
+              >
+                Jump to extension downloads
+              </button>
+            </div>
+          </div>
+        )}
+
         {activeTab === "Workflow Builder" && (
           <WorkflowBuilderTab {...props} />
         )}
@@ -419,6 +451,13 @@ function TeachBillTab(props: AdvancedToolsTabsProps) {
                 Path: {draft.learning_path} ┬╖ Status: {draft.review_status} ┬╖ Updated: {toDisplayTime(draft.updated_at)}
               </p>
               <p className="mt-1 text-xs text-slate-300">{draft.goal}</p>
+                            {(draft.created_by_name || draft.last_updated_by_name || draft.approved_by_name) && (
+                              <p className="mt-1 text-xs text-slate-500">
+                                {draft.created_by_name && <>Taught by: {draft.created_by_name}</>}
+                                {draft.last_updated_by_name && <> · Updated by: {draft.last_updated_by_name}</>}
+                                {draft.approved_by_name && <> · Approved by: {draft.approved_by_name}</>}
+                              </p>
+                            )}
               <p className="mt-1 text-xs text-slate-500">Steps: {(draft.steps as unknown[]).length}</p>
               <p className="mt-1 text-xs text-slate-400">
                 Readiness: {draft.execution_readiness?.runnable
