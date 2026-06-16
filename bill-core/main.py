@@ -1,8 +1,11 @@
+import base64
 import hashlib
+import hmac
 import importlib.util
 import logging
 import os
 import json
+import time
 
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -83,6 +86,12 @@ from schemas import (
     WorkerReleaseMarkCurrentRequest,
     WorkerReleaseDisableRequest,
     WorkerDownloadUrlResponse,
+    ExtensionDownloadUrlResponse,
+    ExtensionReleasePublicRecord,
+    ExtensionReleaseAdminRecord,
+    ExtensionReleaseCreateRequest,
+    ExtensionReleaseMarkCurrentRequest,
+    ExtensionReleaseDisableRequest,
     WorkerUpdateInstruction,
     WorkerUpdateCheckResponse,
     WorkerHeartbeatRequest,
@@ -568,6 +577,10 @@ WORKER_RELEASES_PATH = Path(os.getenv("BILL_CORE_WORKER_RELEASES") or (Path(__fi
 WORKER_PACKAGES_DIR = Path(os.getenv("BILL_CORE_WORKER_PACKAGES_DIR") or (Path(__file__).resolve().parent / "worker-packages"))
 _releases_lock = threading.Lock()
 
+EXTENSION_RELEASES_PATH = Path(os.getenv("BILL_CORE_EXTENSION_RELEASES") or (Path(__file__).resolve().parent / "extension_releases.json"))
+EXTENSION_PACKAGES_DIR = Path(os.getenv("BILL_CORE_EXTENSION_PACKAGES_DIR") or (Path(__file__).resolve().parent / "extension-packages"))
+_extension_releases_lock = threading.Lock()
+
 
 def _load_worker_releases() -> list[dict]:
     if not WORKER_RELEASES_PATH.exists():
@@ -586,6 +599,22 @@ def _save_worker_releases() -> None:
     save_all_releases_db(worker_releases)
 
 
+def _load_extension_releases() -> list[dict]:
+    if not EXTENSION_RELEASES_PATH.exists():
+        return []
+    try:
+        raw = json.loads(EXTENSION_RELEASES_PATH.read_text(encoding="utf-8-sig"))
+        return raw if isinstance(raw, list) else []
+    except Exception as error:
+        logger.error("Failed loading extension releases %s: %s", EXTENSION_RELEASES_PATH, error)
+        return []
+
+
+def _save_extension_releases() -> None:
+    EXTENSION_RELEASES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    EXTENSION_RELEASES_PATH.write_text(json.dumps(extension_releases, indent=2), encoding="utf-8")
+
+
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -601,7 +630,15 @@ def _get_active_release() -> dict | None:
     return None
 
 
+def _get_active_extension_release() -> dict | None:
+    for r in extension_releases:
+        if r.get("is_active"):
+            return r
+    return None
+
+
 worker_releases: list[dict] = _load_worker_releases()
+extension_releases: list[dict] = _load_extension_releases()
 
 WORKFLOWS_CONFIG_PATH = Path(os.getenv("BILL_CORE_WORKFLOWS_CONFIG") or (Path(__file__).resolve().parent / "workflows_registry.json"))
 BRAIN_AUDIT_PATH = Path(os.getenv("BILL_CORE_BRAIN_AUDIT") or (Path(__file__).resolve().parent / "brain_command_audit.json"))
@@ -645,6 +682,7 @@ def log_server_binding() -> None:
     _normalize_all_proposals()
     _normalize_all_workflow_drafts()
     WORKER_PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
+    EXTENSION_PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
     if _DB_ENABLED:
         try:
             _run_seed()
@@ -662,10 +700,14 @@ def log_server_binding() -> None:
     logger.info("Loaded workflow learning drafts: %s", len(workflow_learning_drafts))
     logger.info("Loaded learned procedure templates: %s", len(learned_procedure_templates))
     logger.info("Loaded worker releases: %s (packages dir: %s)", len(worker_releases), WORKER_PACKAGES_DIR)
+    logger.info("Loaded extension releases: %s (packages dir: %s)", len(extension_releases), EXTENSION_PACKAGES_DIR)
     logger.info("Loaded navigation rules for %s tenant(s)", len(navigation_rules_by_tenant))
     active = _get_active_release()
     if active:
         logger.info("Active worker release: v%s id=%s channel=%s", active["version"], active["id"], active["channel"])
+    active_extension = _get_active_extension_release()
+    if active_extension:
+        logger.info("Active extension release: %s id=%s", active_extension.get("version_label"), active_extension.get("id"))
 
 
 @app.post("/api/auth/login", response_model=BillLoginResponse)
@@ -793,6 +835,83 @@ def admin_list_audit_logs(request: Request, limit: int = 100) -> list[BillAuditL
 
 _DOWNLOAD_ALLOWED_ROLES = {"admin", "teacher", "runner"}
 _ADMIN_ONLY_ROLES = {"admin"}
+_DOWNLOAD_URL_TTL_SECONDS = max(60, int(os.getenv("BILL_CORE_DOWNLOAD_URL_TTL_SECONDS") or "300"))
+
+
+def _get_public_base_url() -> str:
+    return (os.getenv("BILL_CORE_PUBLIC_URL") or "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com").strip().rstrip("/")
+
+
+def _get_download_token_secret() -> bytes:
+    secret = (
+        os.getenv("BILL_CORE_DOWNLOAD_TOKEN_SECRET")
+        or os.getenv("BILL_CORE_DASHBOARD_API_KEY")
+        or "bill-core-download-token-dev-secret"
+    ).strip()
+    return secret.encode("utf-8")
+
+
+def _encode_download_token(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    body = base64.urlsafe_b64encode(raw).rstrip(b"=")
+    signature = hmac.new(_get_download_token_secret(), body, hashlib.sha256).digest()
+    sig = base64.urlsafe_b64encode(signature).rstrip(b"=")
+    return f"{body.decode('ascii')}.{sig.decode('ascii')}"
+
+
+def _decode_download_token(token: str) -> dict[str, Any] | None:
+    try:
+        body_b64, sig_b64 = token.split(".", 1)
+    except ValueError:
+        return None
+
+    body = body_b64.encode("ascii")
+    expected_sig = hmac.new(_get_download_token_secret(), body, hashlib.sha256).digest()
+    try:
+        actual_sig = base64.urlsafe_b64decode(sig_b64 + "=" * (-len(sig_b64) % 4))
+    except Exception:
+        return None
+    if not hmac.compare_digest(expected_sig, actual_sig):
+        return None
+
+    try:
+        raw = base64.urlsafe_b64decode(body_b64 + "=" * (-len(body_b64) % 4))
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _build_release_download_token(release_id: str, kind: str, filename: str) -> tuple[str, int]:
+    expires_at = int(time.time()) + _DOWNLOAD_URL_TTL_SECONDS
+    token = _encode_download_token({
+        "release_id": release_id,
+        "kind": kind,
+        "filename": filename,
+        "exp": expires_at,
+    })
+    return token, _DOWNLOAD_URL_TTL_SECONDS
+
+
+def _validate_release_download_token(token: str | None, release_id: str, kind: str, filename: str) -> bool:
+    if not token:
+        return False
+    payload = _decode_download_token(token)
+    if not payload:
+        return False
+    if payload.get("release_id") != release_id:
+        return False
+    if payload.get("kind") != kind:
+        return False
+    if payload.get("filename") != filename:
+        return False
+    try:
+        expires_at = int(payload.get("exp") or 0)
+    except (TypeError, ValueError):
+        return False
+    return expires_at >= int(time.time())
 
 
 def _worker_release_to_public(r: dict) -> WorkerReleasePublicRecord:
@@ -844,6 +963,26 @@ def _resolve_release_package_path(release: dict) -> Path | None:
     return target
 
 
+def _get_worker_release_if_downloadable(release_id: str, user: dict | None) -> tuple[dict, bool]:
+    if user is None:
+        raise HTTPException(status_code=401, detail="Login required")
+    if not user_has_role(user, _DOWNLOAD_ALLOWED_ROLES):
+        raise HTTPException(status_code=403, detail="You do not have permission to download the Bill Worker.")
+
+    with _releases_lock:
+        target = next((r for r in worker_releases if r.get("id") == release_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Worker release not found")
+
+    release_status = str(target.get("status") or "")
+    is_admin = user_has_role(user, _ADMIN_ONLY_ROLES)
+    if release_status == "disabled" and not is_admin:
+        raise HTTPException(status_code=403, detail="This worker release has been disabled.")
+    if release_status == "deprecated" and not is_admin:
+        raise HTTPException(status_code=403, detail="This worker release is no longer available for your role.")
+    return target, is_admin
+
+
 @app.get("/api/worker-releases/current", response_model=WorkerReleasePublicRecord)
 def get_current_worker_release(request: Request) -> WorkerReleasePublicRecord:
     """Return the current worker release metadata for authorized users."""
@@ -866,6 +1005,57 @@ def get_current_worker_release(request: Request) -> WorkerReleasePublicRecord:
         source="worker_download_center",
     )
     return _worker_release_to_public(active)
+
+
+@app.post("/api/worker-releases/{release_id}/download-url", response_model=WorkerDownloadUrlResponse)
+def get_worker_release_download_url(request: Request, release_id: str) -> WorkerDownloadUrlResponse:
+    user = get_request_user(request)
+    try:
+        target, _ = _get_worker_release_if_downloadable(release_id, user)
+    except HTTPException as exc:
+        event_type = "worker_release_download_denied"
+        details: dict[str, Any] = {"release_id": release_id, "reason": "download_url_denied"}
+        if user is None:
+            details["reason"] = "unauthenticated"
+        elif not user_has_role(user, _DOWNLOAD_ALLOWED_ROLES):
+            details = {"release_id": release_id, "reason": "insufficient_role", "user_role": user.get("role")}
+        record_audit_event(
+            event_type,
+            request=request,
+            details=details,
+            target_type="worker_release",
+            target_id=release_id,
+            status_code=exc.status_code,
+            source="worker_download_center",
+        )
+        raise
+
+    package_filename = str(target.get("package_filename") or "").strip()
+    token, expires_in_seconds = _build_release_download_token(release_id, "worker", package_filename)
+    download_url = f"{_get_public_base_url()}/api/worker-releases/{release_id}/download?token={token}"
+    record_audit_event(
+        "worker_release_download_requested",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version": target.get("version"),
+            "package_filename": package_filename,
+            "action": "download_url_issued",
+            "expires_in_seconds": expires_in_seconds,
+        },
+        target_type="worker_release",
+        target_id=release_id,
+        status_code=200,
+        source="worker_download_center",
+    )
+    return WorkerDownloadUrlResponse(
+        release_id=release_id,
+        version=str(target.get("version") or ""),
+        package_filename=package_filename,
+        download_url=download_url,
+        sha256=target.get("package_sha256"),
+        expires_in_seconds=expires_in_seconds,
+    )
 
 
 @app.get("/api/worker-releases", response_model=list[WorkerReleaseAdminRecord])
@@ -1013,60 +1203,45 @@ def disable_worker_release(
 
 
 @app.get("/api/worker-releases/{release_id}/download")
-def download_worker_release(request: Request, release_id: str) -> FileResponse:
+def download_worker_release(request: Request, release_id: str, token: str | None = None) -> FileResponse:
     """Download a worker release package. Requires login and download role."""
     user = get_request_user(request)
-    if user is None:
-        record_audit_event(
-            "worker_release_download_denied",
-            request=request,
-            details={"release_id": release_id, "reason": "unauthenticated"},
-            target_type="worker_release",
-            target_id=release_id,
-            status_code=401,
-            source="worker_download_center",
-        )
-        raise HTTPException(status_code=401, detail="Login required")
-
-    if not user_has_role(user, _DOWNLOAD_ALLOWED_ROLES):
-        record_audit_event(
-            "worker_release_download_denied",
-            request=request,
-            details={
-                "release_id": release_id,
-                "reason": "insufficient_role",
-                "user_role": user.get("role"),
-            },
-            target_type="worker_release",
-            target_id=release_id,
-            status_code=403,
-            source="worker_download_center",
-        )
-        raise HTTPException(status_code=403, detail="You do not have permission to download the Bill Worker.")
-
-    with _releases_lock:
-        target = next((r for r in worker_releases if r.get("id") == release_id), None)
-
-    if target is None:
-        raise HTTPException(status_code=404, detail="Worker release not found")
-
-    release_status = str(target.get("status") or "")
-    is_admin = user_has_role(user, _ADMIN_ONLY_ROLES)
-    if release_status == "disabled" and not is_admin:
-        record_audit_event(
-            "worker_release_download_denied",
-            request=request,
-            details={
-                "release_id": release_id,
-                "reason": "release_disabled",
-                "version": target.get("version"),
-            },
-            target_type="worker_release",
-            target_id=release_id,
-            status_code=403,
-            source="worker_download_center",
-        )
-        raise HTTPException(status_code=403, detail="This worker release has been disabled.")
+    if token:
+        with _releases_lock:
+            target = next((r for r in worker_releases if r.get("id") == release_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Worker release not found")
+        package_filename = str(target.get("package_filename") or "").strip()
+        if not _validate_release_download_token(token, release_id, "worker", package_filename):
+            raise HTTPException(status_code=403, detail="Invalid or expired download token")
+    else:
+        try:
+            target, _ = _get_worker_release_if_downloadable(release_id, user)
+        except HTTPException as exc:
+            details: dict[str, Any] = {"release_id": release_id, "reason": "download_denied"}
+            if user is None:
+                details["reason"] = "unauthenticated"
+            elif not user_has_role(user, _DOWNLOAD_ALLOWED_ROLES):
+                details = {
+                    "release_id": release_id,
+                    "reason": "insufficient_role",
+                    "user_role": user.get("role"),
+                }
+            elif exc.status_code == 403:
+                details = {
+                    "release_id": release_id,
+                    "reason": "release_not_downloadable",
+                }
+            record_audit_event(
+                "worker_release_download_denied",
+                request=request,
+                details=details,
+                target_type="worker_release",
+                target_id=release_id,
+                status_code=exc.status_code,
+                source="worker_download_center",
+            )
+            raise
 
     file_path = _resolve_release_package_path(target)
     if file_path is None:
@@ -1103,6 +1278,348 @@ def download_worker_release(request: Request, release_id: str) -> FileResponse:
     return FileResponse(
         path=str(file_path),
         filename=target.get("package_filename") or file_path.name,
+        media_type="application/zip",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chrome Extension Download Center — /api/extension-releases
+# ---------------------------------------------------------------------------
+
+def _extension_release_to_public(r: dict) -> ExtensionReleasePublicRecord:
+    return ExtensionReleasePublicRecord(
+        id=str(r.get("id") or ""),
+        release_type="chrome_extension",
+        version_label=str(r.get("version_label") or ""),
+        released_at=str(r.get("released_at") or ""),
+        release_notes=r.get("release_notes"),
+        file_name=str(r.get("file_name") or ""),
+        sha256_hash=r.get("sha256_hash"),
+        file_size_bytes=r.get("file_size_bytes"),
+        status=str(r.get("status") or ("current" if r.get("is_active") else "draft")),
+        released_by_name=r.get("released_by_name"),
+        download_count=int(r.get("download_count") or 0),
+    )
+
+
+def _extension_release_to_admin(r: dict) -> ExtensionReleaseAdminRecord:
+    return ExtensionReleaseAdminRecord(
+        id=str(r.get("id") or ""),
+        release_type="chrome_extension",
+        version_label=str(r.get("version_label") or ""),
+        released_at=str(r.get("released_at") or ""),
+        release_notes=r.get("release_notes"),
+        file_name=str(r.get("file_name") or ""),
+        sha256_hash=r.get("sha256_hash"),
+        file_size_bytes=r.get("file_size_bytes"),
+        status=str(r.get("status") or ("current" if r.get("is_active") else "draft")),
+        released_by_name=r.get("released_by_name"),
+        released_by_user_id=r.get("released_by_user_id"),
+        download_count=int(r.get("download_count") or 0),
+    )
+
+
+def _resolve_extension_package_path(release: dict) -> Path | None:
+    filename = str(release.get("file_name") or "").strip()
+    if not filename:
+        return None
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        return None
+    target = (EXTENSION_PACKAGES_DIR / filename).resolve()
+    try:
+        target.relative_to(EXTENSION_PACKAGES_DIR.resolve())
+    except ValueError:
+        return None
+    return target
+
+
+def _get_extension_release_if_downloadable(release_id: str, user: dict | None) -> tuple[dict, bool]:
+    if user is None:
+        raise HTTPException(status_code=401, detail="Login required")
+    if not user_has_role(user, _DOWNLOAD_ALLOWED_ROLES):
+        raise HTTPException(status_code=403, detail="You do not have permission to download the Bill Teaching Helper extension.")
+
+    with _extension_releases_lock:
+        target = next((r for r in extension_releases if r.get("id") == release_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Extension release not found")
+
+    release_status = str(target.get("status") or "")
+    is_admin = user_has_role(user, _ADMIN_ONLY_ROLES)
+    if release_status in {"disabled", "deprecated"} and not is_admin:
+        raise HTTPException(status_code=403, detail="This extension release is not available for your role.")
+    return target, is_admin
+
+
+@app.get("/api/extension-releases/current", response_model=ExtensionReleasePublicRecord)
+def get_current_extension_release(request: Request) -> ExtensionReleasePublicRecord:
+    require_user_role(request, _DOWNLOAD_ALLOWED_ROLES)
+    active = _get_active_extension_release()
+    if active is None:
+        raise HTTPException(status_code=404, detail="No current extension release is available. Ask an admin.")
+    record_audit_event(
+        "extension_release_download_requested",
+        request=request,
+        details={
+            "release_id": active.get("id"),
+            "version_label": active.get("version_label"),
+            "file_name": active.get("file_name"),
+            "action": "view_current",
+        },
+        target_type="extension_release",
+        target_id=str(active.get("id") or ""),
+        status_code=200,
+        source="extension_download_center",
+    )
+    return _extension_release_to_public(active)
+
+
+@app.post("/api/extension-releases/{release_id}/download-url", response_model=ExtensionDownloadUrlResponse)
+def get_extension_release_download_url(request: Request, release_id: str) -> ExtensionDownloadUrlResponse:
+    user = get_request_user(request)
+    try:
+        target, _ = _get_extension_release_if_downloadable(release_id, user)
+    except HTTPException as exc:
+        details: dict[str, Any] = {"release_id": release_id, "reason": "download_url_denied"}
+        if user is None:
+            details["reason"] = "unauthenticated"
+        elif not user_has_role(user, _DOWNLOAD_ALLOWED_ROLES):
+            details = {"release_id": release_id, "reason": "insufficient_role", "user_role": user.get("role")}
+        record_audit_event(
+            "extension_release_download_denied",
+            request=request,
+            details=details,
+            target_type="extension_release",
+            target_id=release_id,
+            status_code=exc.status_code,
+            source="extension_download_center",
+        )
+        raise
+
+    file_name = str(target.get("file_name") or "").strip()
+    token, expires_in_seconds = _build_release_download_token(release_id, "extension", file_name)
+    download_url = f"{_get_public_base_url()}/api/extension-releases/{release_id}/download?token={token}"
+    record_audit_event(
+        "extension_release_download_requested",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version_label": target.get("version_label"),
+            "file_name": file_name,
+            "action": "download_url_issued",
+            "expires_in_seconds": expires_in_seconds,
+        },
+        target_type="extension_release",
+        target_id=release_id,
+        status_code=200,
+        source="extension_download_center",
+    )
+    return ExtensionDownloadUrlResponse(
+        release_id=release_id,
+        version_label=str(target.get("version_label") or ""),
+        file_name=file_name,
+        download_url=download_url,
+        sha256_hash=target.get("sha256_hash"),
+        expires_in_seconds=expires_in_seconds,
+    )
+
+
+@app.get("/api/extension-releases", response_model=list[ExtensionReleaseAdminRecord])
+def list_extension_releases(request: Request) -> list[ExtensionReleaseAdminRecord]:
+    require_user_role(request, _ADMIN_ONLY_ROLES)
+    with _extension_releases_lock:
+        releases = list(extension_releases)
+    return [_extension_release_to_admin(r) for r in releases]
+
+
+@app.post("/api/extension-releases", response_model=ExtensionReleaseAdminRecord, status_code=201)
+def create_extension_release(request: Request, payload: ExtensionReleaseCreateRequest) -> ExtensionReleaseAdminRecord:
+    user = require_user_role(request, _ADMIN_ONLY_ROLES)
+
+    file_name = str(payload.file_name or "").strip()
+    if not file_name:
+        raise HTTPException(status_code=400, detail="file_name is required")
+    if "/" in file_name or "\\" in file_name or file_name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid file_name")
+
+    file_path = (EXTENSION_PACKAGES_DIR / file_name).resolve()
+    try:
+        file_path.relative_to(EXTENSION_PACKAGES_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid file_name")
+
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Extension package '{file_name}' not found in extension-packages directory.")
+
+    sha256_hash = _sha256_file(file_path)
+    file_size = file_path.stat().st_size
+
+    release_id = str(uuid4())
+    now_iso = datetime.utcnow().isoformat()
+    new_release: dict[str, Any] = {
+        "id": release_id,
+        "release_type": "chrome_extension",
+        "version_label": str(payload.version_label or "").strip(),
+        "is_active": False,
+        "status": "draft",
+        "file_name": file_name,
+        "sha256_hash": sha256_hash,
+        "file_size_bytes": file_size,
+        "release_notes": payload.release_notes,
+        "released_at": now_iso,
+        "released_by_user_id": user.get("id"),
+        "released_by_name": user.get("name"),
+        "download_count": 0,
+    }
+
+    with _extension_releases_lock:
+        extension_releases.append(new_release)
+        _save_extension_releases()
+
+    record_audit_event(
+        "extension_release_created",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version_label": new_release["version_label"],
+            "file_name": file_name,
+            "sha256_hash": sha256_hash,
+        },
+        target_type="extension_release",
+        target_id=release_id,
+        status_code=201,
+        source="extension_download_center",
+    )
+    return _extension_release_to_admin(new_release)
+
+
+@app.post("/api/extension-releases/{release_id}/mark-current", response_model=ExtensionReleaseAdminRecord)
+def mark_extension_release_current(
+    request: Request, release_id: str, payload: ExtensionReleaseMarkCurrentRequest
+) -> ExtensionReleaseAdminRecord:
+    require_user_role(request, _ADMIN_ONLY_ROLES)
+    with _extension_releases_lock:
+        target = next((r for r in extension_releases if r.get("id") == release_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Extension release not found")
+        if str(target.get("status") or "") == "disabled":
+            raise HTTPException(status_code=409, detail="Cannot mark a disabled extension release as current")
+        for r in extension_releases:
+            if r.get("id") != release_id and r.get("is_active"):
+                r["is_active"] = False
+                r["status"] = "deprecated"
+        target["is_active"] = True
+        target["status"] = "current"
+        _save_extension_releases()
+
+    record_audit_event(
+        "extension_release_marked_current",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version_label": target.get("version_label"),
+            "file_name": target.get("file_name"),
+        },
+        target_type="extension_release",
+        target_id=release_id,
+        status_code=200,
+        source="extension_download_center",
+    )
+    return _extension_release_to_admin(target)
+
+
+@app.post("/api/extension-releases/{release_id}/disable", response_model=ExtensionReleaseAdminRecord)
+def disable_extension_release(
+    request: Request, release_id: str, payload: ExtensionReleaseDisableRequest
+) -> ExtensionReleaseAdminRecord:
+    require_user_role(request, _ADMIN_ONLY_ROLES)
+    with _extension_releases_lock:
+        target = next((r for r in extension_releases if r.get("id") == release_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Extension release not found")
+        target["is_active"] = False
+        target["status"] = "disabled"
+        _save_extension_releases()
+
+    record_audit_event(
+        "extension_release_disabled",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version_label": target.get("version_label"),
+        },
+        target_type="extension_release",
+        target_id=release_id,
+        status_code=200,
+        source="extension_download_center",
+    )
+    return _extension_release_to_admin(target)
+
+
+@app.get("/api/extension-releases/{release_id}/download")
+def download_extension_release(request: Request, release_id: str, token: str | None = None) -> FileResponse:
+    user = get_request_user(request)
+    if token:
+        with _extension_releases_lock:
+            target = next((r for r in extension_releases if r.get("id") == release_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Extension release not found")
+        file_name = str(target.get("file_name") or "").strip()
+        if not _validate_release_download_token(token, release_id, "extension", file_name):
+            raise HTTPException(status_code=403, detail="Invalid or expired download token")
+    else:
+        try:
+            target, _ = _get_extension_release_if_downloadable(release_id, user)
+        except HTTPException as exc:
+            details: dict[str, Any] = {"release_id": release_id, "reason": "download_denied"}
+            if user is None:
+                details["reason"] = "unauthenticated"
+            elif not user_has_role(user, _DOWNLOAD_ALLOWED_ROLES):
+                details = {"release_id": release_id, "reason": "insufficient_role", "user_role": user.get("role")}
+            elif exc.status_code == 403:
+                details = {"release_id": release_id, "reason": "release_not_downloadable"}
+            record_audit_event(
+                "extension_release_download_denied",
+                request=request,
+                details=details,
+                target_type="extension_release",
+                target_id=release_id,
+                status_code=exc.status_code,
+                source="extension_download_center",
+            )
+            raise
+
+    file_path = _resolve_extension_package_path(target)
+    if file_path is None:
+        raise HTTPException(status_code=400, detail="Release has an invalid file_name.")
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Extension package file not found on server. Contact an admin.")
+
+    with _extension_releases_lock:
+        try:
+            target["download_count"] = int(target.get("download_count") or 0) + 1
+            _save_extension_releases()
+        except Exception:
+            pass
+
+    record_audit_event(
+        "extension_release_download_completed",
+        request=request,
+        details={
+            "release_id": release_id,
+            "version_label": target.get("version_label"),
+            "file_name": target.get("file_name"),
+            "user_role": user.get("role"),
+        },
+        target_type="extension_release",
+        target_id=release_id,
+        status_code=200,
+        source="extension_download_center",
+    )
+
+    return FileResponse(
+        path=str(file_path),
+        filename=target.get("file_name") or file_path.name,
         media_type="application/zip",
     )
 

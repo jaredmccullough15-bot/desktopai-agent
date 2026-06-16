@@ -106,6 +106,51 @@ class WorkerDownloadUrlResponse(BaseModel):
     expires_in_seconds: int | None = None
 
 
+class ExtensionDownloadUrlResponse(BaseModel):
+    release_id: str
+    version_label: str
+    file_name: str
+    download_url: str
+    sha256_hash: str | None = None
+    expires_in_seconds: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# Chrome Extension Download Center schemas
+# ---------------------------------------------------------------------------
+
+class ExtensionReleasePublicRecord(BaseModel):
+    id: str
+    release_type: str = "chrome_extension"
+    version_label: str
+    released_at: str
+    release_notes: str | None = None
+    file_name: str
+    sha256_hash: str | None = None
+    file_size_bytes: int | None = None
+    status: str = "current"  # current | draft | deprecated | disabled
+    released_by_name: str | None = None
+    download_count: int = 0
+
+
+class ExtensionReleaseAdminRecord(ExtensionReleasePublicRecord):
+    released_by_user_id: str | None = None
+
+
+class ExtensionReleaseCreateRequest(BaseModel):
+    version_label: str
+    file_name: str
+    release_notes: str | None = None
+
+
+class ExtensionReleaseMarkCurrentRequest(BaseModel):
+    confirm: bool = True
+
+
+class ExtensionReleaseDisableRequest(BaseModel):
+    confirm: bool = True
+
+
 class WorkerDeployRequest(BaseModel):
     machine_uuids: list[str] | None = None
     force: bool = False

@@ -749,6 +749,24 @@ type ExtensionReleaseAdminRecord = ExtensionReleasePublicRecord & {
   released_by_user_id?: string | null;
 };
 
+type WorkerDownloadUrlResponse = {
+  release_id: string;
+  version: string;
+  package_filename: string;
+  download_url: string;
+  sha256?: string | null;
+  expires_in_seconds?: number | null;
+};
+
+type ExtensionDownloadUrlResponse = {
+  release_id: string;
+  version_label: string;
+  file_name: string;
+  download_url: string;
+  sha256_hash?: string | null;
+  expires_in_seconds?: number | null;
+};
+
 type ActionFeedback = {
   kind: "success" | "error";
   message: string;
@@ -2949,6 +2967,15 @@ export default function Home() {
     return (await response.json()) as T;
   };
 
+  const triggerBrowserDownload = useCallback((downloadUrl: string) => {
+    const anchor = document.createElement("a");
+    anchor.href = downloadUrl;
+    anchor.rel = "noopener noreferrer";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }, []);
+
   const loadCurrentUser = useCallback(async () => {
     const apiBase = getApiBase();
     if (!apiBase) {
@@ -4994,32 +5021,28 @@ export default function Home() {
     setWorkerDownloadBusy(true);
     setWorkerDownloadMessage(null);
     try {
-      const url = `${apiBase}/api/worker-releases/${releaseId}/download`;
-      const r = await apiFetch(url);
+      const r = await apiFetch(`${apiBase}/api/worker-releases/${releaseId}/download-url`, {
+        method: "POST",
+      });
       if (!r.ok) {
         const msg = await readErrorDetail(r);
         setWorkerDownloadMessage(`Download failed: ${msg}`);
         return;
       }
-      const blob = await r.blob();
-      const filename =
-        r.headers.get("content-disposition")?.match(/filename="?([^"]+)"?/)?.[1] ??
-        `bill-worker-${releaseId}.zip`;
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      const payload = (await r.json()) as WorkerDownloadUrlResponse;
+      if (!payload.download_url) {
+        setWorkerDownloadMessage("Download failed: backend did not return a download URL.");
+        return;
+      }
+      triggerBrowserDownload(payload.download_url);
       setWorkerDownloadMessage("Download started.");
-      // Refresh to show updated download count.
       void loadCurrentWorkerRelease();
     } catch (err) {
       setWorkerDownloadMessage(err instanceof Error ? err.message : "Download failed");
     } finally {
       setWorkerDownloadBusy(false);
     }
-  }, [apiFetch, loadCurrentWorkerRelease]);
+  }, [apiFetch, loadCurrentWorkerRelease, triggerBrowserDownload]);
 
   const loadAdminWorkerReleases = useCallback(async () => {
     const apiBase = getApiBase();
@@ -5154,22 +5177,20 @@ export default function Home() {
     setExtensionDownloadBusy(true);
     setExtensionDownloadMessage(null);
     try {
-      const r = await apiFetch(`${apiBase}/api/extension-releases/${releaseId}/download`);
+      const r = await apiFetch(`${apiBase}/api/extension-releases/${releaseId}/download-url`, {
+        method: "POST",
+      });
       if (!r.ok) {
         const msg = await readErrorDetail(r);
         setExtensionDownloadMessage(`Download failed: ${msg}`);
         return;
       }
-      const blob = await r.blob();
-      const filename =
-        r.headers.get("content-disposition")?.match(/filename="?([^"]+)"?/)?.[1] ??
-        `bill-teaching-helper-${releaseId}.zip`;
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      const payload = (await r.json()) as ExtensionDownloadUrlResponse;
+      if (!payload.download_url) {
+        setExtensionDownloadMessage("Download failed: backend did not return a download URL.");
+        return;
+      }
+      triggerBrowserDownload(payload.download_url);
       setExtensionDownloadMessage("Download started.");
       void loadCurrentExtensionRelease();
     } catch (err) {
@@ -5177,7 +5198,7 @@ export default function Home() {
     } finally {
       setExtensionDownloadBusy(false);
     }
-  }, [apiFetch, loadCurrentExtensionRelease]);
+  }, [apiFetch, loadCurrentExtensionRelease, triggerBrowserDownload]);
 
   const loadAdminExtensionReleases = useCallback(async () => {
     const apiBase = getApiBase();
@@ -5896,13 +5917,14 @@ export default function Home() {
                                   Disable
                                 </button>
                               )}
-                              <a
-                                href={`${getApiBase()}/api/extension-releases/${rel.id}/download`}
-                                download
-                                className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-600"
+                              <button
+                                type="button"
+                                disabled={adminExtensionReleasesLoading || extensionDownloadBusy}
+                                onClick={() => void downloadCurrentExtension(rel.id)}
+                                className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-600 disabled:opacity-50"
                               >
                                 Download
-                              </a>
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -6039,13 +6061,14 @@ export default function Home() {
                                   Disable
                                 </button>
                               )}
-                              <a
-                                href={`${getApiBase()}/api/worker-releases/${rel.id}/download`}
-                                download
-                                className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-600"
+                              <button
+                                type="button"
+                                disabled={adminWorkerReleasesLoading || workerDownloadBusy}
+                                onClick={() => void downloadCurrentWorker(rel.id)}
+                                className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-600 disabled:opacity-50"
                               >
                                 Download
-                              </a>
+                              </button>
                             </div>
                           </td>
                         </tr>

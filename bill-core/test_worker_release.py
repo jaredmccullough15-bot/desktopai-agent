@@ -26,6 +26,7 @@ import threading
 import zipfile
 from pathlib import Path
 from typing import Any, Generator
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -122,6 +123,11 @@ def _admin_register_release(client: TestClient, filename: str = "bill-worker-1.0
     return resp.json()
 
 
+def _extract_path_and_query(download_url: str) -> tuple[str, dict[str, list[str]]]:
+    parsed = urlparse(download_url)
+    return parsed.path, parse_qs(parsed.query)
+
+
 # ---------------------------------------------------------------------------
 # Tests: unauthenticated
 # ---------------------------------------------------------------------------
@@ -149,6 +155,10 @@ class TestUnauthenticated:
 
     def test_disable_requires_login(self, client: TestClient) -> None:
         resp = client.post("/api/worker-releases/fake-id/disable", json={"confirm": True})
+        assert resp.status_code == 401
+
+    def test_download_url_requires_login(self, client: TestClient) -> None:
+        resp = client.post("/api/worker-releases/fake-id/download-url")
         assert resp.status_code == 401
 
     def test_health_still_public(self, client: TestClient) -> None:
@@ -232,6 +242,23 @@ class TestDownloadRoles:
         resp = client.get(f"/api/worker-releases/{release['id']}/download")
         assert resp.status_code == 200
         assert resp.headers.get("content-type", "").startswith("application/zip")
+
+    def test_teacher_can_get_download_url(self, client: TestClient) -> None:
+        _make_user(client, "admin_du@test.com", "admin")
+        _make_user(client, "teacher_du@test.com", "teacher")
+
+        _login(client, "admin_du@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "teacher_du@test.com")
+        resp = client.post(f"/api/worker-releases/{release['id']}/download-url")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["release_id"] == release["id"]
+        assert "/api/proxy" not in data["download_url"]
+        assert "/api/worker-releases/" in data["download_url"]
+        assert data["expires_in_seconds"] == 300
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +345,18 @@ class TestAdminManagement:
         resp = client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
         assert resp.status_code == 403
 
+    def test_viewer_cannot_get_download_url(self, client: TestClient) -> None:
+        _make_user(client, "admin_vdu@test.com", "admin")
+        _make_user(client, "viewer_vdu@test.com", "viewer")
+
+        _login(client, "admin_vdu@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "viewer_vdu@test.com")
+        resp = client.post(f"/api/worker-releases/{release['id']}/download-url")
+        assert resp.status_code == 403
+
 
 # ---------------------------------------------------------------------------
 # Tests: disabled release cannot be downloaded by non-admin
@@ -400,6 +439,54 @@ class TestSecurity:
         _login(client, "admin_nx@test.com")
         resp = client.get("/api/worker-releases/does-not-exist/download")
         assert resp.status_code == 404
+
+    def test_invalid_download_token_fails(self, client: TestClient) -> None:
+        _make_user(client, "admin_badtoken@test.com", "admin")
+        _login(client, "admin_badtoken@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        resp = client.get(f"/api/worker-releases/{release['id']}/download?token=invalid-token")
+        assert resp.status_code == 403
+
+    def test_expired_download_token_fails(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        _make_user(client, "admin_exp@test.com", "admin")
+        _make_user(client, "teacher_exp@test.com", "teacher")
+
+        _login(client, "admin_exp@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "teacher_exp@test.com")
+        token_resp = client.post(f"/api/worker-releases/{release['id']}/download-url")
+        assert token_resp.status_code == 200
+        path, query = _extract_path_and_query(token_resp.json()["download_url"])
+        token = query["token"][0]
+
+        import main as main_module
+        now = main_module.time.time()
+        monkeypatch.setattr(main_module.time, "time", lambda: now + 301)
+
+        resp = client.get(f"{path}?token={token}")
+        assert resp.status_code == 403
+
+    def test_tokenized_download_serves_file(self, client: TestClient) -> None:
+        _make_user(client, "admin_tok@test.com", "admin")
+        _make_user(client, "runner_tok@test.com", "runner")
+
+        _login(client, "admin_tok@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "runner_tok@test.com")
+        token_resp = client.post(f"/api/worker-releases/{release['id']}/download-url")
+        assert token_resp.status_code == 200
+        path, query = _extract_path_and_query(token_resp.json()["download_url"])
+        token = query["token"][0]
+
+        resp = client.get(f"{path}?token={token}")
+        assert resp.status_code == 200
+        assert resp.headers.get("content-type", "").startswith("application/zip")
 
 
 # ---------------------------------------------------------------------------
