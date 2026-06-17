@@ -488,6 +488,28 @@ class TestSecurity:
         assert resp.status_code == 200
         assert resp.headers.get("content-type", "").startswith("application/zip")
 
+    def test_non_admin_token_cannot_download_after_release_disabled(self, client: TestClient) -> None:
+        _make_user(client, "admin_tdis@test.com", "admin")
+        _make_user(client, "teacher_tdis@test.com", "teacher")
+
+        _login(client, "admin_tdis@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "teacher_tdis@test.com")
+        token_resp = client.post(f"/api/worker-releases/{release['id']}/download-url")
+        assert token_resp.status_code == 200
+        path, query = _extract_path_and_query(token_resp.json()["download_url"])
+        token = query["token"][0]
+
+        _login(client, "admin_tdis@test.com")
+        disable_resp = client.post(f"/api/worker-releases/{release['id']}/disable", json={"confirm": True})
+        assert disable_resp.status_code == 200
+
+        client.cookies.clear()
+        denied = client.get(f"{path}?token={token}")
+        assert denied.status_code == 403
+
 
 # ---------------------------------------------------------------------------
 # Tests: download counter and file_size

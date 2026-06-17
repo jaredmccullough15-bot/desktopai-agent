@@ -1,6 +1,7 @@
 import hmac
 import logging
 import os
+import re
 from typing import Iterable
 
 from fastapi import HTTPException, Request
@@ -176,6 +177,19 @@ def _path_starts_with(path: str, candidates: Iterable[str]) -> bool:
     return any(path.startswith(prefix) for prefix in candidates)
 
 
+_DIRECT_DOWNLOAD_PATH_RE = re.compile(r"^/api/(worker|extension)-releases/[^/]+/download$")
+
+
+def _is_tokenized_direct_download_request(request: Request) -> bool:
+    if request.method.upper() != "GET":
+        return False
+    path = request.url.path or "/"
+    if not _DIRECT_DOWNLOAD_PATH_RE.match(path):
+        return False
+    token = (request.query_params.get("token") or "").strip()
+    return bool(token)
+
+
 def enforce_request_auth(request: Request) -> None:
     path = request.url.path or "/"
 
@@ -226,6 +240,10 @@ def enforce_request_auth(request: Request) -> None:
         ),
     ):
         require_worker_auth(request)
+        return
+
+    # Allow direct browser downloads when a signed token is provided.
+    if _is_tokenized_direct_download_request(request):
         return
 
     # Everything else under /api is dashboard-facing.

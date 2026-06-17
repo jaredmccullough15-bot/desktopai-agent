@@ -257,12 +257,24 @@ def _is_worker_api_path(path: str, method: str) -> bool:
     return False
 
 
-def _path_requires_user_auth(path: str, method: str) -> bool:
+def _is_tokenized_release_download_path(path: str, method: str, request: Request | None = None) -> bool:
+    if method.upper() != "GET":
+        return False
+    if not re.match(r"^/api/(worker|extension)-releases/[^/]+/download$", path):
+        return False
+    if request is None:
+        return False
+    return bool((request.query_params.get("token") or "").strip())
+
+
+def _path_requires_user_auth(path: str, method: str, request: Request | None = None) -> bool:
     if not path.startswith("/api/"):
         return False
     if _is_public_auth_path(path):
         return False
     if _is_worker_api_path(path, method):
+        return False
+    if _is_tokenized_release_download_path(path, method, request):
         return False
     # Extension callbacks may run without browser cookies; they are attributed to session context.
     if path.startswith("/api/teaching/session/") and path.endswith("/extension-events"):
@@ -347,7 +359,7 @@ async def bill_request_middleware(request: Request, call_next):
             except HTTPException as exc:
                 return _auth_error_response(exc.status_code, str(exc.detail))
 
-    if _path_requires_user_auth(path, request.method):
+    if _path_requires_user_auth(path, request.method, request):
         current_user = get_request_user(request)
         if current_user is None:
             return _auth_error_response(401, "Login required")
@@ -884,34 +896,38 @@ def _decode_download_token(token: str) -> dict[str, Any] | None:
     return payload
 
 
-def _build_release_download_token(release_id: str, kind: str, filename: str) -> tuple[str, int]:
+def _build_release_download_token(release_id: str, kind: str, filename: str, is_admin_token: bool) -> tuple[str, int]:
     expires_at = int(time.time()) + _DOWNLOAD_URL_TTL_SECONDS
     token = _encode_download_token({
         "release_id": release_id,
         "kind": kind,
         "filename": filename,
+        "is_admin": bool(is_admin_token),
         "exp": expires_at,
     })
     return token, _DOWNLOAD_URL_TTL_SECONDS
 
 
-def _validate_release_download_token(token: str | None, release_id: str, kind: str, filename: str) -> bool:
+def _validate_release_download_token(token: str | None, release_id: str, kind: str, filename: str) -> dict[str, Any] | None:
     if not token:
-        return False
+        return None
     payload = _decode_download_token(token)
     if not payload:
-        return False
+        return None
     if payload.get("release_id") != release_id:
-        return False
+        return None
     if payload.get("kind") != kind:
-        return False
+        return None
     if payload.get("filename") != filename:
-        return False
+        return None
     try:
         expires_at = int(payload.get("exp") or 0)
     except (TypeError, ValueError):
-        return False
-    return expires_at >= int(time.time())
+        return None
+    if expires_at < int(time.time()):
+        return None
+    payload["is_admin"] = bool(payload.get("is_admin"))
+    return payload
 
 
 def _worker_release_to_public(r: dict) -> WorkerReleasePublicRecord:
@@ -1011,7 +1027,7 @@ def get_current_worker_release(request: Request) -> WorkerReleasePublicRecord:
 def get_worker_release_download_url(request: Request, release_id: str) -> WorkerDownloadUrlResponse:
     user = get_request_user(request)
     try:
-        target, _ = _get_worker_release_if_downloadable(release_id, user)
+        target, is_admin = _get_worker_release_if_downloadable(release_id, user)
     except HTTPException as exc:
         event_type = "worker_release_download_denied"
         details: dict[str, Any] = {"release_id": release_id, "reason": "download_url_denied"}
@@ -1031,7 +1047,12 @@ def get_worker_release_download_url(request: Request, release_id: str) -> Worker
         raise
 
     package_filename = str(target.get("package_filename") or "").strip()
-    token, expires_in_seconds = _build_release_download_token(release_id, "worker", package_filename)
+    token, expires_in_seconds = _build_release_download_token(
+        release_id,
+        "worker",
+        package_filename,
+        is_admin_token=is_admin,
+    )
     download_url = f"{_get_public_base_url()}/api/worker-releases/{release_id}/download?token={token}"
     record_audit_event(
         "worker_release_download_requested",
@@ -1206,14 +1227,37 @@ def disable_worker_release(
 def download_worker_release(request: Request, release_id: str, token: str | None = None) -> FileResponse:
     """Download a worker release package. Requires login and download role."""
     user = get_request_user(request)
+    token_payload: dict[str, Any] | None = None
     if token:
         with _releases_lock:
             target = next((r for r in worker_releases if r.get("id") == release_id), None)
         if target is None:
             raise HTTPException(status_code=404, detail="Worker release not found")
         package_filename = str(target.get("package_filename") or "").strip()
-        if not _validate_release_download_token(token, release_id, "worker", package_filename):
+        token_payload = _validate_release_download_token(token, release_id, "worker", package_filename)
+        if token_payload is None:
+            record_audit_event(
+                "worker_release_download_denied",
+                request=request,
+                details={"release_id": release_id, "reason": "invalid_or_expired_token"},
+                target_type="worker_release",
+                target_id=release_id,
+                status_code=403,
+                source="worker_download_center",
+            )
             raise HTTPException(status_code=403, detail="Invalid or expired download token")
+        release_status = str(target.get("status") or "")
+        if release_status in {"disabled", "deprecated"} and not bool(token_payload.get("is_admin")):
+            record_audit_event(
+                "worker_release_download_denied",
+                request=request,
+                details={"release_id": release_id, "reason": "release_not_downloadable"},
+                target_type="worker_release",
+                target_id=release_id,
+                status_code=403,
+                source="worker_download_center",
+            )
+            raise HTTPException(status_code=403, detail="This worker release is no longer available for your role.")
     else:
         try:
             target, _ = _get_worker_release_if_downloadable(release_id, user)
@@ -1267,7 +1311,9 @@ def download_worker_release(request: Request, release_id: str, token: str | None
             "release_id": release_id,
             "version": target.get("version"),
             "package_filename": target.get("package_filename"),
-            "user_role": user.get("role"),
+            "user_role": (user or {}).get("role"),
+            "auth_mode": "token" if token_payload is not None else "session",
+            "token_admin": bool((token_payload or {}).get("is_admin")),
         },
         target_type="worker_release",
         target_id=release_id,
@@ -1378,7 +1424,7 @@ def get_current_extension_release(request: Request) -> ExtensionReleasePublicRec
 def get_extension_release_download_url(request: Request, release_id: str) -> ExtensionDownloadUrlResponse:
     user = get_request_user(request)
     try:
-        target, _ = _get_extension_release_if_downloadable(release_id, user)
+        target, is_admin = _get_extension_release_if_downloadable(release_id, user)
     except HTTPException as exc:
         details: dict[str, Any] = {"release_id": release_id, "reason": "download_url_denied"}
         if user is None:
@@ -1397,7 +1443,12 @@ def get_extension_release_download_url(request: Request, release_id: str) -> Ext
         raise
 
     file_name = str(target.get("file_name") or "").strip()
-    token, expires_in_seconds = _build_release_download_token(release_id, "extension", file_name)
+    token, expires_in_seconds = _build_release_download_token(
+        release_id,
+        "extension",
+        file_name,
+        is_admin_token=is_admin,
+    )
     download_url = f"{_get_public_base_url()}/api/extension-releases/{release_id}/download?token={token}"
     record_audit_event(
         "extension_release_download_requested",
@@ -1559,14 +1610,37 @@ def disable_extension_release(
 @app.get("/api/extension-releases/{release_id}/download")
 def download_extension_release(request: Request, release_id: str, token: str | None = None) -> FileResponse:
     user = get_request_user(request)
+    token_payload: dict[str, Any] | None = None
     if token:
         with _extension_releases_lock:
             target = next((r for r in extension_releases if r.get("id") == release_id), None)
         if target is None:
             raise HTTPException(status_code=404, detail="Extension release not found")
         file_name = str(target.get("file_name") or "").strip()
-        if not _validate_release_download_token(token, release_id, "extension", file_name):
+        token_payload = _validate_release_download_token(token, release_id, "extension", file_name)
+        if token_payload is None:
+            record_audit_event(
+                "extension_release_download_denied",
+                request=request,
+                details={"release_id": release_id, "reason": "invalid_or_expired_token"},
+                target_type="extension_release",
+                target_id=release_id,
+                status_code=403,
+                source="extension_download_center",
+            )
             raise HTTPException(status_code=403, detail="Invalid or expired download token")
+        release_status = str(target.get("status") or "")
+        if release_status in {"disabled", "deprecated"} and not bool(token_payload.get("is_admin")):
+            record_audit_event(
+                "extension_release_download_denied",
+                request=request,
+                details={"release_id": release_id, "reason": "release_not_downloadable"},
+                target_type="extension_release",
+                target_id=release_id,
+                status_code=403,
+                source="extension_download_center",
+            )
+            raise HTTPException(status_code=403, detail="This extension release is not available for your role.")
     else:
         try:
             target, _ = _get_extension_release_if_downloadable(release_id, user)
@@ -1609,7 +1683,9 @@ def download_extension_release(request: Request, release_id: str, token: str | N
             "release_id": release_id,
             "version_label": target.get("version_label"),
             "file_name": target.get("file_name"),
-            "user_role": user.get("role"),
+            "user_role": (user or {}).get("role"),
+            "auth_mode": "token" if token_payload is not None else "session",
+            "token_admin": bool((token_payload or {}).get("is_admin")),
         },
         target_type="extension_release",
         target_id=release_id,
