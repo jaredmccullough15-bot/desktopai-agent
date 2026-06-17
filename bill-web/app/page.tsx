@@ -853,7 +853,7 @@ type TeachOverlayQuestionResponse = {
   settings?: TeachOverlaySettings;
 };
 
-const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
+const NEXT_PUBLIC_API_BASE_DEFAULT = "https://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
 const COMMAND_CENTER_VOICE_PREF_KEY = "bill.command-center.voice.enabled";
 const COMMAND_CENTER_AUTO_SUBMIT_PREF_KEY = "bill.command-center.voice.autoSubmit.enabled";
 const TEACHING_STARTUP_POLL_TIMEOUT_MS = 60000;
@@ -2967,14 +2967,45 @@ export default function Home() {
     return (await response.json()) as T;
   };
 
-  const triggerBrowserDownload = useCallback((downloadUrl: string) => {
+  const resolveDownloadUrl = useCallback((downloadUrl: string): URL => {
+    const raw = String(downloadUrl || "").trim();
+    if (!raw) {
+      throw new Error("Download URL is empty.");
+    }
+
+    const looksAbsolute = /^https?:\/\//i.test(raw);
+    const resolved = looksAbsolute ? new URL(raw) : new URL(raw, getWorkerApiBase());
+
+    // Avoid mixed-content blocking when frontend is HTTPS, but only upgrade
+    // direct worker downloads targeting the configured Beanstalk backend host.
+    if (typeof window !== "undefined" && window.location.protocol === "https:" && resolved.protocol === "http:") {
+      try {
+        const workerBaseHost = new URL(getWorkerApiBase()).hostname;
+        const sameWorkerHost = resolved.hostname === workerBaseHost;
+        const isBeanstalkHost = /(?:^|\.)elasticbeanstalk\.com$/i.test(resolved.hostname);
+        if (sameWorkerHost && isBeanstalkHost) {
+          resolved.protocol = "https:";
+        }
+      } catch {
+        // Ignore base parsing issues and keep the original resolved URL.
+      }
+    }
+
+    return resolved;
+  }, []);
+
+  const triggerBrowserDownload = useCallback((downloadUrl: string): string => {
+    const resolved = resolveDownloadUrl(downloadUrl);
     const anchor = document.createElement("a");
-    anchor.href = downloadUrl;
+    anchor.href = resolved.toString();
+    anchor.download = "";
+    anchor.target = "_self";
     anchor.rel = "noopener noreferrer";
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-  }, []);
+    return resolved.toString();
+  }, [resolveDownloadUrl]);
 
   const loadCurrentUser = useCallback(async () => {
     const apiBase = getApiBase();
@@ -5034,8 +5065,9 @@ export default function Home() {
         setWorkerDownloadMessage("Download failed: backend did not return a download URL.");
         return;
       }
-      triggerBrowserDownload(payload.download_url);
-      setWorkerDownloadMessage("Download started.");
+      const openedUrl = triggerBrowserDownload(payload.download_url);
+      const openedDomain = new URL(openedUrl).origin;
+      setWorkerDownloadMessage(`Download link opened from ${openedDomain}.`);
       void loadCurrentWorkerRelease();
     } catch (err) {
       setWorkerDownloadMessage(err instanceof Error ? err.message : "Download failed");
@@ -5190,8 +5222,9 @@ export default function Home() {
         setExtensionDownloadMessage("Download failed: backend did not return a download URL.");
         return;
       }
-      triggerBrowserDownload(payload.download_url);
-      setExtensionDownloadMessage("Download started.");
+      const openedUrl = triggerBrowserDownload(payload.download_url);
+      const openedDomain = new URL(openedUrl).origin;
+      setExtensionDownloadMessage(`Download link opened from ${openedDomain}.`);
       void loadCurrentExtensionRelease();
     } catch (err) {
       setExtensionDownloadMessage(err instanceof Error ? err.message : "Download failed");
