@@ -847,11 +847,317 @@ def admin_list_audit_logs(request: Request, limit: int = 100) -> list[BillAuditL
 
 _DOWNLOAD_ALLOWED_ROLES = {"admin", "teacher", "runner"}
 _ADMIN_ONLY_ROLES = {"admin"}
-_DOWNLOAD_URL_TTL_SECONDS = max(60, int(os.getenv("BILL_CORE_DOWNLOAD_URL_TTL_SECONDS") or "300"))
+_DOWNLOAD_URL_TTL_SECONDS = max(
+    60,
+    int(
+        (os.getenv("BILL_RELEASE_S3_SIGNED_URL_TTL_SECONDS") or os.getenv("BILL_CORE_DOWNLOAD_URL_TTL_SECONDS") or "300")
+    ),
+)
 
 
-def _get_public_base_url() -> str:
-    return (os.getenv("BILL_CORE_PUBLIC_URL") or "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com").strip().rstrip("/")
+def _get_release_storage_backend() -> str:
+    backend = (os.getenv("BILL_RELEASE_STORAGE_BACKEND") or "local").strip().lower()
+    return "s3" if backend == "s3" else "local"
+
+
+def _get_release_signed_url_ttl_seconds() -> int:
+    raw = (
+        os.getenv("BILL_RELEASE_S3_SIGNED_URL_TTL_SECONDS")
+        or os.getenv("BILL_CORE_DOWNLOAD_URL_TTL_SECONDS")
+        or "300"
+    ).strip()
+    try:
+        ttl_seconds = int(raw)
+    except (TypeError, ValueError):
+        ttl_seconds = 300
+    return max(60, ttl_seconds)
+
+
+def _normalize_release_s3_prefix(value: str | None, default: str) -> str:
+    prefix = (value or default).strip().lstrip("/")
+    if prefix and not prefix.endswith("/"):
+        prefix = f"{prefix}/"
+    return prefix or default
+
+
+def _get_release_s3_config() -> dict[str, str]:
+    bucket = (os.getenv("BILL_RELEASE_S3_BUCKET") or "").strip()
+    region = (os.getenv("BILL_RELEASE_S3_REGION") or "").strip()
+    worker_prefix = _normalize_release_s3_prefix(
+        os.getenv("BILL_RELEASE_S3_WORKER_PREFIX"),
+        "worker-packages/",
+    )
+    extension_prefix = _normalize_release_s3_prefix(
+        os.getenv("BILL_RELEASE_S3_EXTENSION_PREFIX"),
+        "extension-packages/",
+    )
+    if not bucket or not region:
+        raise HTTPException(
+            status_code=500,
+            detail="S3 release storage is enabled but BILL_RELEASE_S3_BUCKET or BILL_RELEASE_S3_REGION is missing.",
+        )
+    return {
+        "bucket": bucket,
+        "region": region,
+        "worker_prefix": worker_prefix,
+        "extension_prefix": extension_prefix,
+    }
+
+
+def _get_release_storage_s3_client() -> Any:
+    try:
+        import boto3
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="S3 release storage requires boto3 to be installed on the backend.",
+        ) from exc
+    config = _get_release_s3_config()
+    return boto3.client("s3", region_name=config["region"])
+
+
+def _get_release_filename(release: dict[str, Any], kind: str) -> str:
+    key = "package_filename" if kind == "worker" else "file_name"
+    return str(release.get(key) or "").strip()
+
+
+def _get_release_storage_key(release: dict[str, Any], kind: str, filename: str) -> str:
+    storage_key = str(release.get("storage_key") or "").strip().lstrip("/")
+    if storage_key:
+        return storage_key
+    config = _get_release_s3_config()
+    prefix_key = "worker_prefix" if kind == "worker" else "extension_prefix"
+    return f"{config[prefix_key]}{filename}"
+
+
+def _is_release_s3_not_found_error(error: Exception) -> bool:
+    if isinstance(error, FileNotFoundError):
+        return True
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        error_info = response.get("Error") or {}
+        code = str(error_info.get("Code") or "").strip()
+        if code in {"404", "NoSuchKey", "NotFound", "NoSuchBucket"}:
+            return True
+    message = str(error)
+    return "NoSuchKey" in message or "Not Found" in message or "404" in message
+
+
+def _get_release_s3_error_code(error: Exception) -> str:
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        error_info = response.get("Error") or {}
+        code = str(error_info.get("Code") or "").strip()
+        if code:
+            return code
+    return ""
+
+
+def _is_release_s3_access_denied_error(error: Exception) -> bool:
+    code = _get_release_s3_error_code(error)
+    if code in {
+        "403",
+        "AccessDenied",
+        "Forbidden",
+        "InvalidAccessKeyId",
+        "SignatureDoesNotMatch",
+        "AuthorizationHeaderMalformed",
+        "ExpiredToken",
+    }:
+        return True
+    message = str(error)
+    return "AccessDenied" in message or "access denied" in message.lower() or "Forbidden" in message
+
+
+def _is_release_s3_credentials_error(error: Exception) -> bool:
+    name = error.__class__.__name__
+    if name in {"NoCredentialsError", "PartialCredentialsError"}:
+        return True
+    message = str(error)
+    return "Unable to locate credentials" in message or "credential" in message.lower()
+
+
+def _resolve_release_local_path(kind: str, filename: str) -> Path | None:
+    if not filename:
+        return None
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        return None
+    base_dir = WORKER_PACKAGES_DIR if kind == "worker" else EXTENSION_PACKAGES_DIR
+    target = (base_dir / filename).resolve()
+    try:
+        target.relative_to(base_dir.resolve())
+    except ValueError:
+        return None
+    return target
+
+
+def _get_release_artifact_details(
+    kind: str,
+    release: dict[str, Any],
+    *,
+    missing_status_code: int,
+    missing_detail: str,
+) -> dict[str, Any]:
+    filename = _get_release_filename(release, kind)
+    if _get_release_storage_backend() == "s3":
+        storage_key = _get_release_storage_key(release, kind, filename)
+        config = _get_release_s3_config()
+        try:
+            head = _get_release_storage_s3_client().head_object(Bucket=config["bucket"], Key=storage_key)
+        except Exception as error:
+            if _is_release_s3_not_found_error(error):
+                raise HTTPException(status_code=missing_status_code, detail=missing_detail) from error
+            if _is_release_s3_access_denied_error(error):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied while validating release package in S3. Check Beanstalk IAM role permissions.",
+                ) from error
+            if _is_release_s3_credentials_error(error):
+                raise HTTPException(
+                    status_code=503,
+                    detail="S3 credentials unavailable for release storage. Check Beanstalk instance profile configuration.",
+                ) from error
+            raise HTTPException(
+                status_code=502,
+                detail="S3 release storage validation failed.",
+            ) from error
+        metadata = head.get("Metadata") or {}
+        metadata_sha256 = metadata.get("sha256") or metadata.get("package_sha256") or metadata.get("sha256_hash")
+        return {
+            "backend": "s3",
+            "filename": filename,
+            "storage_key": storage_key,
+            "file_size_bytes": head.get("ContentLength"),
+            "sha256": metadata_sha256,
+        }
+
+    file_path = _resolve_release_local_path(kind, filename)
+    if file_path is None:
+        field_name = "package filename" if kind == "worker" else "file_name"
+        raise HTTPException(status_code=400, detail=f"Release has an invalid {field_name}.")
+    if not file_path.is_file():
+        raise HTTPException(status_code=missing_status_code, detail=missing_detail)
+    return {
+        "backend": "local",
+        "filename": filename,
+        "path": file_path,
+        "file_size_bytes": file_path.stat().st_size,
+        "sha256": _sha256_file(file_path),
+    }
+
+
+def _sync_release_artifact_metadata(release: dict[str, Any], kind: str, artifact: dict[str, Any]) -> bool:
+    changed = False
+    sha_field = "package_sha256" if kind == "worker" else "sha256_hash"
+    size_value = artifact.get("file_size_bytes")
+    sha_value = artifact.get("sha256") or release.get(sha_field)
+
+    if artifact.get("backend") == "s3":
+        storage_key = artifact.get("storage_key")
+        if storage_key and release.get("storage_key") != storage_key:
+            release["storage_key"] = storage_key
+            changed = True
+
+    if size_value is not None:
+        size_int = int(size_value)
+        if release.get("file_size_bytes") != size_int:
+            release["file_size_bytes"] = size_int
+            changed = True
+
+    if sha_value and release.get(sha_field) != sha_value:
+        release[sha_field] = sha_value
+        changed = True
+
+    storage_backend = artifact.get("backend")
+    if storage_backend and release.get("storage_backend") != storage_backend:
+        release["storage_backend"] = storage_backend
+        changed = True
+
+    return changed
+
+
+def _build_release_download_url(request: Request, release: dict[str, Any], kind: str, is_admin: bool) -> tuple[str, int, dict[str, Any]]:
+    filename = _get_release_filename(release, kind)
+    missing_detail = (
+        "Worker release package is missing from configured storage. Contact an admin."
+        if kind == "worker"
+        else "Extension release package is missing from configured storage. Contact an admin."
+    )
+    artifact = _get_release_artifact_details(
+        kind,
+        release,
+        missing_status_code=409,
+        missing_detail=missing_detail,
+    )
+
+    if artifact["backend"] == "s3":
+        config = _get_release_s3_config()
+        expires_in_seconds = _get_release_signed_url_ttl_seconds()
+        try:
+            download_url = _get_release_storage_s3_client().generate_presigned_url(
+                "get_object",
+                Params={"Bucket": config["bucket"], "Key": artifact["storage_key"]},
+                ExpiresIn=expires_in_seconds,
+            )
+        except Exception as error:
+            if _is_release_s3_access_denied_error(error):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied while creating S3 download URL. Check Beanstalk IAM role permissions.",
+                ) from error
+            if _is_release_s3_credentials_error(error):
+                raise HTTPException(
+                    status_code=503,
+                    detail="S3 credentials unavailable while creating download URL.",
+                ) from error
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to create S3 presigned download URL.",
+            ) from error
+        return download_url, expires_in_seconds, artifact
+
+    token, expires_in_seconds = _build_release_download_token(
+        str(release.get("id") or ""),
+        kind,
+        filename,
+        is_admin_token=is_admin,
+    )
+    download_url = f"{_get_public_base_url(request)}/api/{kind}-releases/{release.get('id')}/download?token={token}"
+    return download_url, expires_in_seconds, artifact
+
+
+def _request_prefers_https(request: Request) -> bool:
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").strip().lower()
+    if forwarded_proto:
+        first = forwarded_proto.split(",", 1)[0].strip()
+        if first:
+            return first == "https"
+    return (request.url.scheme or "").lower() == "https"
+
+
+def _normalize_base_url_scheme(base_url: str, request: Request) -> str:
+    parsed = urlparse(base_url)
+    if _request_prefers_https(request) and parsed.scheme == "http":
+        return urlunparse(parsed._replace(scheme="https"))
+    return base_url
+
+
+def _get_public_base_url(request: Request) -> str:
+    configured = (os.getenv("BILL_CORE_PUBLIC_URL") or "").strip().rstrip("/")
+    if configured:
+        return _normalize_base_url_scheme(configured, request).rstrip("/")
+
+    host = (
+        (request.headers.get("x-forwarded-host") or "").strip()
+        or (request.headers.get("host") or "").strip()
+        or request.url.netloc
+    )
+    if host:
+        scheme = "https" if _request_prefers_https(request) else (request.url.scheme or "http")
+        return f"{scheme}://{host}".rstrip("/")
+
+    fallback = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com"
+    return _normalize_base_url_scheme(fallback, request).rstrip("/")
 
 
 def _get_download_token_secret() -> bytes:
@@ -897,7 +1203,8 @@ def _decode_download_token(token: str) -> dict[str, Any] | None:
 
 
 def _build_release_download_token(release_id: str, kind: str, filename: str, is_admin_token: bool) -> tuple[str, int]:
-    expires_at = int(time.time()) + _DOWNLOAD_URL_TTL_SECONDS
+    ttl_seconds = _get_release_signed_url_ttl_seconds()
+    expires_at = int(time.time()) + ttl_seconds
     token = _encode_download_token({
         "release_id": release_id,
         "kind": kind,
@@ -905,7 +1212,7 @@ def _build_release_download_token(release_id: str, kind: str, filename: str, is_
         "is_admin": bool(is_admin_token),
         "exp": expires_at,
     })
-    return token, _DOWNLOAD_URL_TTL_SECONDS
+    return token, ttl_seconds
 
 
 def _validate_release_download_token(token: str | None, release_id: str, kind: str, filename: str) -> dict[str, Any] | None:
@@ -965,18 +1272,7 @@ def _worker_release_to_admin(r: dict) -> WorkerReleaseAdminRecord:
 def _resolve_release_package_path(release: dict) -> Path | None:
     """Return absolute path to the release package if it passes safety checks."""
     filename = str(release.get("package_filename") or "").strip()
-    if not filename:
-        return None
-    # Block path traversal: filename must be a bare name with no directory parts.
-    if "/" in filename or "\\" in filename or filename.startswith("."):
-        return None
-    target = (WORKER_PACKAGES_DIR / filename).resolve()
-    # Confirm target is strictly inside WORKER_PACKAGES_DIR.
-    try:
-        target.relative_to(WORKER_PACKAGES_DIR.resolve())
-    except ValueError:
-        return None
-    return target
+    return _resolve_release_local_path("worker", filename)
 
 
 def _get_worker_release_if_downloadable(release_id: str, user: dict | None) -> tuple[dict, bool]:
@@ -1047,13 +1343,30 @@ def get_worker_release_download_url(request: Request, release_id: str) -> Worker
         raise
 
     package_filename = str(target.get("package_filename") or "").strip()
-    token, expires_in_seconds = _build_release_download_token(
-        release_id,
-        "worker",
-        package_filename,
-        is_admin_token=is_admin,
-    )
-    download_url = f"{_get_public_base_url()}/api/worker-releases/{release_id}/download?token={token}"
+    try:
+        download_url, expires_in_seconds, artifact = _build_release_download_url(request, target, "worker", is_admin)
+    except HTTPException as exc:
+        record_audit_event(
+            "worker_release_download_denied",
+            request=request,
+            details={
+                "release_id": release_id,
+                "version": target.get("version"),
+                "package_filename": package_filename,
+                "reason": "storage_unavailable",
+                "result": str(exc.detail),
+            },
+            target_type="worker_release",
+            target_id=release_id,
+            status_code=exc.status_code,
+            source="worker_download_center",
+        )
+        raise
+
+    with _releases_lock:
+        if _sync_release_artifact_metadata(target, "worker", artifact):
+            _save_worker_releases()
+
     record_audit_event(
         "worker_release_download_requested",
         request=request,
@@ -1063,6 +1376,7 @@ def get_worker_release_download_url(request: Request, release_id: str) -> Worker
             "package_filename": package_filename,
             "action": "download_url_issued",
             "expires_in_seconds": expires_in_seconds,
+            "result": artifact.get("backend"),
         },
         target_type="worker_release",
         target_id=release_id,
@@ -1100,23 +1414,17 @@ def create_worker_release(request: Request, payload: WorkerReleaseCreateRequest)
     filename = str(payload.package_filename or "").strip()
     if not filename:
         raise HTTPException(status_code=400, detail="package_filename is required")
-    if "/" in filename or "\\" in filename or filename.startswith("."):
+    if _get_release_storage_backend() != "s3" and ("/" in filename or "\\" in filename or filename.startswith(".")):
         raise HTTPException(status_code=400, detail="Invalid package_filename")
 
-    file_path = (WORKER_PACKAGES_DIR / filename).resolve()
-    try:
-        file_path.relative_to(WORKER_PACKAGES_DIR.resolve())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid package_filename")
-
-    if not file_path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Package file '{filename}' not found in worker-packages directory.",
-        )
-
-    sha256 = _sha256_file(file_path)
-    file_size = file_path.stat().st_size
+    artifact = _get_release_artifact_details(
+        "worker",
+        {"package_filename": filename},
+        missing_status_code=404,
+        missing_detail=f"Package file '{filename}' not found in worker release storage.",
+    )
+    sha256 = artifact.get("sha256")
+    file_size = artifact.get("file_size_bytes")
 
     release_id = str(uuid4())
     now_iso = datetime.utcnow().isoformat()
@@ -1126,7 +1434,7 @@ def create_worker_release(request: Request, payload: WorkerReleaseCreateRequest)
         "channel": str(payload.channel or "stable").strip(),
         "is_active": False,
         "status": "draft",
-        "package_filename": filename,
+        "package_filename": filename.rsplit("/", 1)[-1],
         "package_sha256": sha256,
         "file_size_bytes": file_size,
         "release_notes": payload.release_notes,
@@ -1134,7 +1442,10 @@ def create_worker_release(request: Request, payload: WorkerReleaseCreateRequest)
         "released_by_user_id": user.get("id"),
         "released_by_name": user.get("name"),
         "download_count": 0,
+        "storage_backend": artifact.get("backend"),
     }
+    if artifact.get("storage_key"):
+        new_release["storage_key"] = artifact["storage_key"]
 
     with _releases_lock:
         worker_releases.append(new_release)
@@ -1367,16 +1678,7 @@ def _extension_release_to_admin(r: dict) -> ExtensionReleaseAdminRecord:
 
 def _resolve_extension_package_path(release: dict) -> Path | None:
     filename = str(release.get("file_name") or "").strip()
-    if not filename:
-        return None
-    if "/" in filename or "\\" in filename or filename.startswith("."):
-        return None
-    target = (EXTENSION_PACKAGES_DIR / filename).resolve()
-    try:
-        target.relative_to(EXTENSION_PACKAGES_DIR.resolve())
-    except ValueError:
-        return None
-    return target
+    return _resolve_release_local_path("extension", filename)
 
 
 def _get_extension_release_if_downloadable(release_id: str, user: dict | None) -> tuple[dict, bool]:
@@ -1443,13 +1745,30 @@ def get_extension_release_download_url(request: Request, release_id: str) -> Ext
         raise
 
     file_name = str(target.get("file_name") or "").strip()
-    token, expires_in_seconds = _build_release_download_token(
-        release_id,
-        "extension",
-        file_name,
-        is_admin_token=is_admin,
-    )
-    download_url = f"{_get_public_base_url()}/api/extension-releases/{release_id}/download?token={token}"
+    try:
+        download_url, expires_in_seconds, artifact = _build_release_download_url(request, target, "extension", is_admin)
+    except HTTPException as exc:
+        record_audit_event(
+            "extension_release_download_denied",
+            request=request,
+            details={
+                "release_id": release_id,
+                "version_label": target.get("version_label"),
+                "file_name": file_name,
+                "reason": "storage_unavailable",
+                "result": str(exc.detail),
+            },
+            target_type="extension_release",
+            target_id=release_id,
+            status_code=exc.status_code,
+            source="extension_download_center",
+        )
+        raise
+
+    with _extension_releases_lock:
+        if _sync_release_artifact_metadata(target, "extension", artifact):
+            _save_extension_releases()
+
     record_audit_event(
         "extension_release_download_requested",
         request=request,
@@ -1459,6 +1778,7 @@ def get_extension_release_download_url(request: Request, release_id: str) -> Ext
             "file_name": file_name,
             "action": "download_url_issued",
             "expires_in_seconds": expires_in_seconds,
+            "result": artifact.get("backend"),
         },
         target_type="extension_release",
         target_id=release_id,
@@ -1490,20 +1810,17 @@ def create_extension_release(request: Request, payload: ExtensionReleaseCreateRe
     file_name = str(payload.file_name or "").strip()
     if not file_name:
         raise HTTPException(status_code=400, detail="file_name is required")
-    if "/" in file_name or "\\" in file_name or file_name.startswith("."):
+    if _get_release_storage_backend() != "s3" and ("/" in file_name or "\\" in file_name or file_name.startswith(".")):
         raise HTTPException(status_code=400, detail="Invalid file_name")
 
-    file_path = (EXTENSION_PACKAGES_DIR / file_name).resolve()
-    try:
-        file_path.relative_to(EXTENSION_PACKAGES_DIR.resolve())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid file_name")
-
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Extension package '{file_name}' not found in extension-packages directory.")
-
-    sha256_hash = _sha256_file(file_path)
-    file_size = file_path.stat().st_size
+    artifact = _get_release_artifact_details(
+        "extension",
+        {"file_name": file_name},
+        missing_status_code=404,
+        missing_detail=f"Extension package '{file_name}' not found in extension release storage.",
+    )
+    sha256_hash = artifact.get("sha256")
+    file_size = artifact.get("file_size_bytes")
 
     release_id = str(uuid4())
     now_iso = datetime.utcnow().isoformat()
@@ -1513,7 +1830,7 @@ def create_extension_release(request: Request, payload: ExtensionReleaseCreateRe
         "version_label": str(payload.version_label or "").strip(),
         "is_active": False,
         "status": "draft",
-        "file_name": file_name,
+        "file_name": file_name.rsplit("/", 1)[-1],
         "sha256_hash": sha256_hash,
         "file_size_bytes": file_size,
         "release_notes": payload.release_notes,
@@ -1521,7 +1838,10 @@ def create_extension_release(request: Request, payload: ExtensionReleaseCreateRe
         "released_by_user_id": user.get("id"),
         "released_by_name": user.get("name"),
         "download_count": 0,
+        "storage_backend": artifact.get("backend"),
     }
+    if artifact.get("storage_key"):
+        new_release["storage_key"] = artifact["storage_key"]
 
     with _extension_releases_lock:
         extension_releases.append(new_release)

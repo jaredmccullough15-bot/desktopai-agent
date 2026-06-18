@@ -21,6 +21,7 @@ Run with:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import threading
 import zipfile
@@ -126,6 +127,56 @@ def _admin_register_release(client: TestClient, filename: str = "bill-worker-1.0
 def _extract_path_and_query(download_url: str) -> tuple[str, dict[str, list[str]]]:
     parsed = urlparse(download_url)
     return parsed.path, parse_qs(parsed.query)
+
+
+class _FakeS3Client:
+    def __init__(self, existing_keys: set[str], *, bucket: str = "private-release-bucket", region: str = "us-east-2") -> None:
+        self.existing_keys = existing_keys
+        self.bucket = bucket
+        self.region = region
+        self.generated_urls: list[str] = []
+
+    def head_object(self, Bucket: str, Key: str) -> dict[str, Any]:
+        assert Bucket == self.bucket
+        if Key not in self.existing_keys:
+            raise FileNotFoundError(Key)
+        return {
+            "ContentLength": 2048,
+            "Metadata": {"sha256": "a" * 64},
+        }
+
+    def generate_presigned_url(self, ClientMethod: str, Params: dict[str, Any], ExpiresIn: int) -> str:
+        assert ClientMethod == "get_object"
+        assert Params["Bucket"] == self.bucket
+        url = (
+            f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{Params['Key']}"
+            f"?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires={ExpiresIn}&X-Amz-Signature=testsig"
+        )
+        self.generated_urls.append(url)
+        return url
+
+
+def _enable_worker_s3(monkeypatch: pytest.MonkeyPatch, existing_keys: set[str]) -> _FakeS3Client:
+    import main as main_module
+
+    fake_client = _FakeS3Client(existing_keys)
+    monkeypatch.setenv("BILL_RELEASE_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("BILL_RELEASE_S3_BUCKET", fake_client.bucket)
+    monkeypatch.setenv("BILL_RELEASE_S3_REGION", fake_client.region)
+    monkeypatch.setenv("BILL_RELEASE_S3_WORKER_PREFIX", "worker-packages/")
+    monkeypatch.setenv("BILL_RELEASE_S3_SIGNED_URL_TTL_SECONDS", "300")
+    monkeypatch.setattr(main_module, "_get_release_storage_s3_client", lambda: fake_client)
+    return fake_client
+
+
+class _FakeS3AccessDeniedClient(_FakeS3Client):
+    def head_object(self, Bucket: str, Key: str) -> dict[str, Any]:
+        class _AccessDenied(Exception):
+            pass
+
+        err = _AccessDenied("AccessDenied")
+        err.response = {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}
+        raise err
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +311,43 @@ class TestDownloadRoles:
         assert "/api/worker-releases/" in data["download_url"]
         assert data["expires_in_seconds"] == 300
 
+    def test_download_url_prefers_https_from_forwarded_proto(self, client: TestClient) -> None:
+        _make_user(client, "admin_duh@test.com", "admin")
+        _make_user(client, "teacher_duh@test.com", "teacher")
+
+        _login(client, "admin_duh@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "teacher_duh@test.com")
+        resp = client.post(
+            f"/api/worker-releases/{release['id']}/download-url",
+            headers={"x-forwarded-proto": "https", "x-forwarded-host": "api.bill-core.com"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["download_url"].startswith("https://api.bill-core.com/")
+
+    def test_teacher_can_get_presigned_s3_download_url(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_s3 = _enable_worker_s3(monkeypatch, {"worker-packages/bill-worker-1.0.0.zip"})
+        _make_user(client, "admin_s3@test.com", "admin")
+        _make_user(client, "teacher_s3@test.com", "teacher")
+
+        _login(client, "admin_s3@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "teacher_s3@test.com")
+        resp = client.post(f"/api/worker-releases/{release['id']}/download-url")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["download_url"].startswith(
+            "https://private-release-bucket.s3.us-east-2.amazonaws.com/worker-packages/bill-worker-1.0.0.zip"
+        )
+        assert "/api/worker-releases/" not in data["download_url"]
+        assert data["expires_in_seconds"] == 300
+        assert fake_s3.generated_urls
+
 
 # ---------------------------------------------------------------------------
 # Tests: admin release management
@@ -357,6 +445,15 @@ class TestAdminManagement:
         resp = client.post(f"/api/worker-releases/{release['id']}/download-url")
         assert resp.status_code == 403
 
+    def test_register_payload_schema_rejects_version_label_and_file_name(self, client: TestClient) -> None:
+        _make_user(client, "admin_payload@test.com", "admin")
+        _login(client, "admin_payload@test.com")
+        resp = client.post(
+            "/api/worker-releases",
+            json={"version_label": "1.0.0", "file_name": "bill-worker-1.0.0.zip"},
+        )
+        assert resp.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # Tests: disabled release cannot be downloaded by non-admin
@@ -433,6 +530,40 @@ class TestSecurity:
             json={"version": "1.0.0", "package_filename": "nonexistent-worker.zip"},
         )
         assert resp.status_code == 404
+
+    def test_missing_s3_object_returns_409_from_download_url(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_s3 = _enable_worker_s3(monkeypatch, {"worker-packages/bill-worker-1.0.0.zip"})
+        _make_user(client, "admin_missing_s3@test.com", "admin")
+        _make_user(client, "teacher_missing_s3@test.com", "teacher")
+
+        _login(client, "admin_missing_s3@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+        fake_s3.existing_keys.clear()
+
+        _login(client, "teacher_missing_s3@test.com")
+        resp = client.post(f"/api/worker-releases/{release['id']}/download-url")
+        assert resp.status_code == 409
+        assert "configured storage" in resp.json()["detail"]
+
+    def test_s3_access_denied_on_register_returns_403_not_500(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        import main as main_module
+
+        fake_client = _FakeS3AccessDeniedClient(set())
+        monkeypatch.setenv("BILL_RELEASE_STORAGE_BACKEND", "s3")
+        monkeypatch.setenv("BILL_RELEASE_S3_BUCKET", fake_client.bucket)
+        monkeypatch.setenv("BILL_RELEASE_S3_REGION", fake_client.region)
+        monkeypatch.setenv("BILL_RELEASE_S3_WORKER_PREFIX", "worker-packages/")
+        monkeypatch.setattr(main_module, "_get_release_storage_s3_client", lambda: fake_client)
+
+        _make_user(client, "admin_access_denied@test.com", "admin")
+        _login(client, "admin_access_denied@test.com")
+        resp = client.post(
+            "/api/worker-releases",
+            json={"version": "1.0.0", "package_filename": "bill-worker-1.0.0.zip"},
+        )
+        assert resp.status_code == 403
+        assert "Access denied" in resp.json()["detail"]
 
     def test_download_nonexistent_release_id(self, client: TestClient) -> None:
         _make_user(client, "admin_nx@test.com", "admin")
@@ -597,3 +728,22 @@ class TestAuditLogging:
         _login(client, "viewer_dl_aud@test.com")
         client.get("/api/worker-releases/fake-id/download")
         # We can't read audit as viewer so just assert no exception from server.
+
+    def test_presigned_url_is_not_logged_in_audit(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_worker_s3(monkeypatch, {"worker-packages/bill-worker-1.0.0.zip"})
+        _make_user(client, "admin_worker_audit_s3@test.com", "admin")
+        _make_user(client, "teacher_worker_audit_s3@test.com", "teacher")
+
+        _login(client, "admin_worker_audit_s3@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/worker-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "teacher_worker_audit_s3@test.com")
+        resp = client.post(f"/api/worker-releases/{release['id']}/download-url")
+        assert resp.status_code == 200
+
+        _login(client, "admin_worker_audit_s3@test.com")
+        logs = self._get_audit_logs(client)
+        matching = [entry for entry in logs if entry.get("target_id") == release["id"]]
+        assert any(entry.get("event_type") == "worker_release_download_requested" for entry in matching)
+        assert "X-Amz-Signature=testsig" not in json.dumps(matching)
