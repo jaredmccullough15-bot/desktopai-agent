@@ -713,6 +713,23 @@ type BillAuditLogRecord = {
   created_at: string;
 };
 
+type KnowledgeRecord = {
+  knowledge_id: string;
+  title: string;
+  category: string;
+  applies_to: string[];
+  content: string;
+  source_type: "manual" | "document" | "imported" | "system";
+  tags: string[];
+  status: "active" | "draft" | "archived";
+  created_by_user_id?: string | null;
+  created_by_name?: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+  tenant_id?: string | null;
+};
+
 type WorkerReleasePublicRecord = {
   id: string;
   version: string;
@@ -1007,6 +1024,11 @@ export default function Home() {
   const [sessionExpiresAt, setSessionExpiresAt] = useState<string | null>(null);
   const [adminUsers, setAdminUsers] = useState<BillUserRecord[]>([]);
   const [adminAuditLogs, setAdminAuditLogs] = useState<BillAuditLogRecord[]>([]);
+  const [knowledgeEntries, setKnowledgeEntries] = useState<KnowledgeRecord[]>([]);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [knowledgeActionBusyKey, setKnowledgeActionBusyKey] = useState<string | null>(null);
+  const [knowledgeActionFeedback, setKnowledgeActionFeedback] = useState<ActionFeedback | null>(null);
   const [adminBusy, setAdminBusy] = useState(false);
   const [adminError, setAdminError] = useState<string | null>(null);
   const [newUserName, setNewUserName] = useState("");
@@ -3065,6 +3087,33 @@ export default function Home() {
     }
   }, [currentUser?.role]);
 
+  const loadKnowledgePanels = useCallback(async () => {
+    if (!currentUser || currentUser.role === "viewer") {
+      setKnowledgeEntries([]);
+      setKnowledgeError(null);
+      return;
+    }
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      return;
+    }
+
+    setKnowledgeLoading(true);
+    setKnowledgeError(null);
+    try {
+      const endpoint =
+        currentUser.role === "admin"
+          ? `${apiBase}/api/knowledge?limit=300`
+          : `${apiBase}/api/knowledge/active?limit=300`;
+      const records = await fetchJson<KnowledgeRecord[]>(endpoint);
+      setKnowledgeEntries(Array.isArray(records) ? records : []);
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Knowledge Center failed to load");
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }, [currentUser, fetchJson]);
+
   const submitLogin = useCallback(async () => {
     const apiBase = getApiBase();
     if (!apiBase) {
@@ -3422,6 +3471,15 @@ export default function Home() {
     }
     void loadAdminPanels();
   }, [currentUser?.role, loadAdminPanels]);
+
+  useEffect(() => {
+    if (!currentUser || currentUser.role === "viewer") {
+      setKnowledgeEntries([]);
+      setKnowledgeError(null);
+      return;
+    }
+    void loadKnowledgePanels();
+  }, [currentUser?.role, loadKnowledgePanels]);
 
   const submitTask = async (body: Record<string, unknown>) => {
     setLoading(true);
@@ -5408,6 +5466,151 @@ export default function Home() {
     [apiFetch, loadAdminPanels],
   );
 
+  const createKnowledgeEntry = useCallback(async (payload: {
+    title: string;
+    category: string;
+    applies_to: string[];
+    content: string;
+    source_type: "manual" | "document" | "imported" | "system";
+    tags: string[];
+    status: "active" | "draft" | "archived";
+    tenant_id?: string | null;
+  }) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setKnowledgeActionBusyKey("knowledge-create");
+    setKnowledgeActionFeedback(null);
+    setKnowledgeError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/knowledge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      await loadKnowledgePanels();
+      setKnowledgeActionFeedback({
+        kind: "success",
+        message: "Knowledge entry created.",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Failed to create knowledge entry");
+      setKnowledgeActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to create knowledge entry",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } finally {
+      setKnowledgeActionBusyKey(null);
+    }
+  }, [apiFetch, loadKnowledgePanels]);
+
+  const updateKnowledgeEntry = useCallback(async (
+    knowledgeId: string,
+    payload: {
+      title?: string;
+      category?: string;
+      applies_to?: string[];
+      content?: string;
+      source_type?: "manual" | "document" | "imported" | "system";
+      tags?: string[];
+      status?: "active" | "draft" | "archived";
+      tenant_id?: string | null;
+    }
+  ) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setKnowledgeActionBusyKey(`knowledge-update-${knowledgeId}`);
+    setKnowledgeActionFeedback(null);
+    setKnowledgeError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/knowledge/${knowledgeId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      await loadKnowledgePanels();
+      setKnowledgeActionFeedback({
+        kind: "success",
+        message: "Knowledge entry saved.",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Failed to update knowledge entry");
+      setKnowledgeActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to update knowledge entry",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } finally {
+      setKnowledgeActionBusyKey(null);
+    }
+  }, [apiFetch, loadKnowledgePanels]);
+
+  const archiveKnowledgeEntry = useCallback(async (knowledgeId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setKnowledgeActionBusyKey(`knowledge-archive-${knowledgeId}`);
+    setKnowledgeActionFeedback(null);
+    setKnowledgeError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/knowledge/${knowledgeId}/archive`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      await loadKnowledgePanels();
+      setKnowledgeActionFeedback({
+        kind: "success",
+        message: "Knowledge entry archived.",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Failed to archive knowledge entry");
+      setKnowledgeActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to archive knowledge entry",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } finally {
+      setKnowledgeActionBusyKey(null);
+    }
+  }, [apiFetch, loadKnowledgePanels]);
+
+  const activateKnowledgeEntry = useCallback(async (knowledgeId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setKnowledgeActionBusyKey(`knowledge-activate-${knowledgeId}`);
+    setKnowledgeActionFeedback(null);
+    setKnowledgeError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/knowledge/${knowledgeId}/activate`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      await loadKnowledgePanels();
+      setKnowledgeActionFeedback({
+        kind: "success",
+        message: "Knowledge entry activated.",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Failed to activate knowledge entry");
+      setKnowledgeActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to activate knowledge entry",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } finally {
+      setKnowledgeActionBusyKey(null);
+    }
+  }, [apiFetch, loadKnowledgePanels]);
+
   if (authChecking) {
     return (
       <main className="grid min-h-screen place-items-center bg-[#070a11] px-4 text-slate-100">
@@ -6270,6 +6473,7 @@ export default function Home() {
               <AdvancedToolsTabs
                 apiBase={getApiBase()}
                 billVoice={billVoice}
+                currentUserRole={currentUser?.role ?? null}
                 auditEntries={auditEntries}
                 onRefreshAudit={() => void loadBrainPanels()}
                 auditError={errors.audit}
@@ -6362,6 +6566,16 @@ export default function Home() {
                 onDeployToWorkers={(uuids) => void deployToWorkers(uuids)}
                 onRefreshBrainPanels={() => void loadBrainPanels()}
                 chatHistory={chatHistory}
+                knowledgeEntries={knowledgeEntries}
+                knowledgeLoading={knowledgeLoading}
+                knowledgeError={knowledgeError}
+                knowledgeActionBusyKey={knowledgeActionBusyKey}
+                knowledgeActionFeedback={knowledgeActionFeedback}
+                onRefreshKnowledge={() => void loadKnowledgePanels()}
+                onCreateKnowledge={(payload) => void createKnowledgeEntry(payload)}
+                onUpdateKnowledge={(knowledgeId, payload) => void updateKnowledgeEntry(knowledgeId, payload)}
+                onArchiveKnowledge={(knowledgeId) => void archiveKnowledgeEntry(knowledgeId)}
+                onActivateKnowledge={(knowledgeId) => void activateKnowledgeEntry(knowledgeId)}
               />
             </div>
 

@@ -447,6 +447,45 @@ class BillAuditLogRecord(BaseModel):
     created_at: str
 
 
+class KnowledgeRecord(BaseModel):
+    knowledge_id: str
+    title: str
+    category: str
+    applies_to: list[str] = Field(default_factory=list)
+    content: str
+    source_type: Literal["manual", "document", "imported", "system"] = "manual"
+    tags: list[str] = Field(default_factory=list)
+    status: Literal["active", "draft", "archived"] = "draft"
+    created_by_user_id: str | None = None
+    created_by_name: str | None = None
+    created_at: str
+    updated_at: str
+    version: int = 1
+    tenant_id: str | None = None
+
+
+class KnowledgeCreateRequest(BaseModel):
+    title: str
+    category: str
+    applies_to: list[str] = Field(default_factory=list)
+    content: str
+    source_type: Literal["manual", "document", "imported", "system"] = "manual"
+    tags: list[str] = Field(default_factory=list)
+    status: Literal["active", "draft", "archived"] = "draft"
+    tenant_id: str | None = None
+
+
+class KnowledgeUpdateRequest(BaseModel):
+    title: str | None = None
+    category: str | None = None
+    applies_to: list[str] | None = None
+    content: str | None = None
+    source_type: Literal["manual", "document", "imported", "system"] | None = None
+    tags: list[str] | None = None
+    status: Literal["active", "draft", "archived"] | None = None
+    tenant_id: str | None = None
+
+
 class TeachingSessionMessageRequest(BaseModel):
     message: str
     step_id: str | None = None

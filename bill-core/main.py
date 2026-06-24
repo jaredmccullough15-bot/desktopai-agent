@@ -50,6 +50,9 @@ from schemas import (
     BrainCommandRequest,
     BrainCommandResponse,
     BillAuditLogRecord,
+    KnowledgeRecord,
+    KnowledgeCreateRequest,
+    KnowledgeUpdateRequest,
     BillCreateUserRequest,
     BillCurrentUserResponse,
     BillLoginRequest,
@@ -227,6 +230,18 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("bill-core")
+
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    raw_value = (os.getenv(name, default) or "").strip().lower()
+    return raw_value in {"1", "true", "yes", "on"}
+
+
+def _worker_auto_update_enabled() -> bool:
+    return _env_flag("BILL_WORKER_AUTO_UPDATE_ENABLED", "true")
+
+
+logger.info("Worker auto-update enabled=%s", _worker_auto_update_enabled())
 
 
 _PUBLIC_AUTH_PATH_PREFIXES = (
@@ -663,6 +678,7 @@ CONVERSATION_PREFS_PATH = Path(os.getenv("BILL_CORE_CONVERSATION_PREFS") or (Pat
 WORKFLOW_DRAFTS_PATH = Path(os.getenv("BILL_CORE_WORKFLOW_DRAFTS") or (Path(__file__).resolve().parent / "workflow_learning_drafts.json"))
 LEARNED_PROCEDURES_PATH = Path(os.getenv("BILL_CORE_LEARNED_PROCEDURES") or (Path(__file__).resolve().parent / "learned_procedure_templates.json"))
 NAVIGATION_RULES_PATH = Path(os.getenv("BILL_CORE_NAVIGATION_RULES") or (Path(__file__).resolve().parent / "navigation_rules_by_tenant.json"))
+KNOWLEDGE_CENTER_PATH = Path(os.getenv("BILL_CORE_KNOWLEDGE_CENTER") or (Path(__file__).resolve().parent / "knowledge_center.json"))
 
 DEFAULT_WORKFLOW_RECORDS: list[dict[str, Any]] = [
     {
@@ -707,6 +723,7 @@ def log_server_binding() -> None:
     logger.info("Loaded task reflections: %s", len(task_reflections))
     logger.info("Loaded improvement proposals: %s", len(improvement_proposals))
     logger.info("Loaded workflow SOP summaries: %s", len(workflow_sop_summaries))
+    logger.info("Loaded knowledge center entries: %s", len(knowledge_records))
     logger.info("Loaded interactive prompts: %s", len(interactive_prompts))
     logger.info("Loaded conversation preferences: %s", len(conversation_preferences))
     logger.info("Loaded workflow learning drafts: %s", len(workflow_learning_drafts))
@@ -839,6 +856,281 @@ def admin_list_audit_logs(request: Request, limit: int = 100) -> list[BillAuditL
     require_user_role(request, {"admin"})
     records = list_audit_logs(limit=limit)
     return [BillAuditLogRecord(**item) for item in records]
+
+
+def _knowledge_by_id(knowledge_id: str) -> tuple[int | None, dict[str, Any] | None]:
+    for idx, item in enumerate(knowledge_records):
+        if str(item.get("knowledge_id") or "") == str(knowledge_id):
+            return idx, item
+    return None, None
+
+
+def _knowledge_visible_to_user(item: dict[str, Any], user: dict[str, Any]) -> bool:
+    if user_has_role(user, {"admin"}):
+        return True
+    return str(item.get("status") or "").strip().lower() == "active"
+
+
+@app.get("/api/knowledge", response_model=list[KnowledgeRecord])
+def list_knowledge(
+    request: Request,
+    status: str | None = None,
+    category: str | None = None,
+    tag: str | None = None,
+    search: str | None = None,
+    limit: int = 200,
+) -> list[KnowledgeRecord]:
+    user = require_user_role(request, {"admin", "teacher", "runner"})
+    status_filter = str(status or "").strip().lower()
+    category_filter = str(category or "").strip().lower()
+    tag_filter = str(tag or "").strip().lower()
+    search_filter = str(search or "").strip().lower()
+    safe_limit = max(1, min(limit, 1000))
+
+    records: list[dict[str, Any]] = []
+    for item in knowledge_records:
+        if not _knowledge_visible_to_user(item, user):
+            continue
+        item_status = str(item.get("status") or "").strip().lower()
+        if status_filter and item_status != status_filter:
+            continue
+        if category_filter and category_filter not in str(item.get("category") or "").strip().lower():
+            continue
+        if tag_filter:
+            tags = [str(value).strip().lower() for value in list(item.get("tags") or [])]
+            if not any(tag_filter in value for value in tags):
+                continue
+        if search_filter:
+            blob = "\n".join(
+                [
+                    str(item.get("title") or ""),
+                    str(item.get("category") or ""),
+                    str(item.get("content") or ""),
+                    " ".join(str(v) for v in list(item.get("tags") or [])),
+                    " ".join(str(v) for v in list(item.get("applies_to") or [])),
+                ]
+            ).lower()
+            if search_filter not in blob:
+                continue
+        records.append(dict(item))
+
+    records.sort(key=lambda value: str(value.get("updated_at") or ""), reverse=True)
+    return [KnowledgeRecord(**item) for item in records[:safe_limit]]
+
+
+@app.get("/api/knowledge/active", response_model=list[KnowledgeRecord])
+def list_active_knowledge(
+    request: Request,
+    context: str | None = None,
+    category: str | None = None,
+    tag: str | None = None,
+    limit: int = 50,
+) -> list[KnowledgeRecord]:
+    user = require_user_role(request, {"admin", "teacher", "runner"})
+    safe_limit = max(1, min(limit, 200))
+
+    if context and str(context).strip():
+        tenant_id = str(user.get("tenant_id") or "").strip() or None
+        records = get_relevant_knowledge(str(context), limit=safe_limit, tenant_id=tenant_id)
+    else:
+        category_filter = str(category or "").strip().lower()
+        tag_filter = str(tag or "").strip().lower()
+        records = []
+        for item in knowledge_records:
+            if str(item.get("status") or "").strip().lower() != "active":
+                continue
+            if category_filter and category_filter not in str(item.get("category") or "").strip().lower():
+                continue
+            if tag_filter:
+                tags = [str(value).strip().lower() for value in list(item.get("tags") or [])]
+                if not any(tag_filter in value for value in tags):
+                    continue
+            records.append(dict(item))
+        records.sort(key=lambda value: str(value.get("updated_at") or ""), reverse=True)
+        records = records[:safe_limit]
+
+    return [KnowledgeRecord(**item) for item in records]
+
+
+@app.get("/api/knowledge/{knowledge_id}", response_model=KnowledgeRecord)
+def get_knowledge(request: Request, knowledge_id: str) -> KnowledgeRecord:
+    user = require_user_role(request, {"admin", "teacher", "runner"})
+    _, item = _knowledge_by_id(knowledge_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Knowledge entry not found")
+    if not _knowledge_visible_to_user(item, user):
+        raise HTTPException(status_code=403, detail="You do not have permission to view this knowledge entry")
+    return KnowledgeRecord(**item)
+
+
+@app.post("/api/knowledge", response_model=KnowledgeRecord, status_code=201)
+def create_knowledge(request: Request, payload: KnowledgeCreateRequest) -> KnowledgeRecord:
+    user = require_user_role(request, {"admin"})
+
+    now_iso = datetime.utcnow().isoformat()
+    record = {
+        "knowledge_id": str(uuid4()),
+        "title": " ".join(str(payload.title or "").split()).strip(),
+        "category": " ".join(str(payload.category or "").split()).strip(),
+        "applies_to": _clean_string_list(payload.applies_to),
+        "content": str(payload.content or "").strip(),
+        "source_type": str(payload.source_type or "manual").strip().lower(),
+        "tags": _clean_string_list(payload.tags),
+        "status": str(payload.status or "draft").strip().lower(),
+        "created_by_user_id": user.get("id"),
+        "created_by_name": user.get("name"),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "version": 1,
+        "tenant_id": str(payload.tenant_id or "").strip() or None,
+    }
+    normalized = _normalize_knowledge_record(record)
+    if normalized is None:
+        raise HTTPException(status_code=400, detail="Knowledge entry is invalid")
+
+    knowledge_records.append(normalized)
+    _save_knowledge_records()
+    record_audit_event(
+        "knowledge_created",
+        request=request,
+        details={
+            "knowledge_id": normalized.get("knowledge_id"),
+            "title": normalized.get("title"),
+            "status": normalized.get("status"),
+        },
+        target_type="knowledge",
+        target_id=normalized.get("knowledge_id"),
+        status_code=201,
+        source="knowledge_center",
+    )
+    return KnowledgeRecord(**normalized)
+
+
+@app.patch("/api/knowledge/{knowledge_id}", response_model=KnowledgeRecord)
+def update_knowledge(request: Request, knowledge_id: str, payload: KnowledgeUpdateRequest) -> KnowledgeRecord:
+    require_user_role(request, {"admin"})
+    idx, current = _knowledge_by_id(knowledge_id)
+    if idx is None or current is None:
+        raise HTTPException(status_code=404, detail="Knowledge entry not found")
+
+    updated = dict(current)
+    changed = False
+
+    if payload.title is not None:
+        title = " ".join(str(payload.title).split()).strip()
+        if title != str(updated.get("title") or ""):
+            updated["title"] = title
+            changed = True
+    if payload.category is not None:
+        category = " ".join(str(payload.category).split()).strip()
+        if category != str(updated.get("category") or ""):
+            updated["category"] = category
+            changed = True
+    if payload.applies_to is not None:
+        applies_to = _clean_string_list(payload.applies_to)
+        if applies_to != list(updated.get("applies_to") or []):
+            updated["applies_to"] = applies_to
+            changed = True
+    if payload.content is not None:
+        content = str(payload.content or "").strip()
+        if content != str(updated.get("content") or ""):
+            updated["content"] = content
+            changed = True
+    if payload.source_type is not None:
+        source_type = str(payload.source_type or "manual").strip().lower()
+        if source_type != str(updated.get("source_type") or ""):
+            updated["source_type"] = source_type
+            changed = True
+    if payload.tags is not None:
+        tags = _clean_string_list(payload.tags)
+        if tags != list(updated.get("tags") or []):
+            updated["tags"] = tags
+            changed = True
+    if payload.status is not None:
+        status = str(payload.status or "draft").strip().lower()
+        if status != str(updated.get("status") or ""):
+            updated["status"] = status
+            changed = True
+    if payload.tenant_id is not None:
+        tenant_id = str(payload.tenant_id or "").strip() or None
+        if tenant_id != updated.get("tenant_id"):
+            updated["tenant_id"] = tenant_id
+            changed = True
+
+    if changed:
+        updated["updated_at"] = datetime.utcnow().isoformat()
+        updated["version"] = int(updated.get("version") or 1) + 1
+
+    normalized = _normalize_knowledge_record(updated)
+    if normalized is None:
+        raise HTTPException(status_code=400, detail="Knowledge entry is invalid")
+
+    knowledge_records[idx] = normalized
+    _save_knowledge_records()
+    record_audit_event(
+        "knowledge_updated",
+        request=request,
+        details={
+            "knowledge_id": normalized.get("knowledge_id"),
+            "changed": changed,
+            "version": normalized.get("version"),
+        },
+        target_type="knowledge",
+        target_id=normalized.get("knowledge_id"),
+        status_code=200,
+        source="knowledge_center",
+    )
+    return KnowledgeRecord(**normalized)
+
+
+@app.post("/api/knowledge/{knowledge_id}/archive", response_model=KnowledgeRecord)
+def archive_knowledge(request: Request, knowledge_id: str) -> KnowledgeRecord:
+    require_user_role(request, {"admin"})
+    idx, current = _knowledge_by_id(knowledge_id)
+    if idx is None or current is None:
+        raise HTTPException(status_code=404, detail="Knowledge entry not found")
+
+    updated = dict(current)
+    updated["status"] = "archived"
+    updated["updated_at"] = datetime.utcnow().isoformat()
+    updated["version"] = int(updated.get("version") or 1) + 1
+    knowledge_records[idx] = updated
+    _save_knowledge_records()
+    record_audit_event(
+        "knowledge_archived",
+        request=request,
+        details={"knowledge_id": knowledge_id, "version": updated.get("version")},
+        target_type="knowledge",
+        target_id=knowledge_id,
+        status_code=200,
+        source="knowledge_center",
+    )
+    return KnowledgeRecord(**updated)
+
+
+@app.post("/api/knowledge/{knowledge_id}/activate", response_model=KnowledgeRecord)
+def activate_knowledge(request: Request, knowledge_id: str) -> KnowledgeRecord:
+    require_user_role(request, {"admin"})
+    idx, current = _knowledge_by_id(knowledge_id)
+    if idx is None or current is None:
+        raise HTTPException(status_code=404, detail="Knowledge entry not found")
+
+    updated = dict(current)
+    updated["status"] = "active"
+    updated["updated_at"] = datetime.utcnow().isoformat()
+    updated["version"] = int(updated.get("version") or 1) + 1
+    knowledge_records[idx] = updated
+    _save_knowledge_records()
+    record_audit_event(
+        "knowledge_activated",
+        request=request,
+        details={"knowledge_id": knowledge_id, "version": updated.get("version")},
+        target_type="knowledge",
+        target_id=knowledge_id,
+        status_code=200,
+        source="knowledge_center",
+    )
+    return KnowledgeRecord(**updated)
 
 
 # ---------------------------------------------------------------------------
@@ -2057,6 +2349,18 @@ def _resolve_worker_package_file() -> Path | None:
 
 
 def _build_worker_update_instruction(current_version: str, machine_uuid: str) -> WorkerUpdateInstruction:
+    if not _worker_auto_update_enabled():
+        logger.info(
+            "Worker auto-update disabled via BILL_WORKER_AUTO_UPDATE_ENABLED=false: uuid=%s current=%s",
+            machine_uuid,
+            current_version,
+        )
+        return WorkerUpdateInstruction(
+            update_available=False,
+            current_version=current_version,
+            message="Worker auto-update disabled by bill-core configuration",
+        )
+
     # Prefer the actively published release over env-var config
     active_release = _get_active_release()
     if active_release:
@@ -2429,6 +2733,184 @@ def _save_json_list(path: Path, values: list[dict[str, Any]], max_entries: int =
     path.write_text(json.dumps(values[-max_entries:], indent=2), encoding="utf-8")
 
 
+def _normalize_text_token(value: str) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _clean_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = " ".join(str(item or "").split()).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+    return cleaned
+
+
+def _normalize_knowledge_record(raw: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    knowledge_id = str(raw.get("knowledge_id") or "").strip()
+    title = " ".join(str(raw.get("title") or "").split()).strip()
+    category = " ".join(str(raw.get("category") or "").split()).strip()
+    content = str(raw.get("content") or "").strip()
+    if not knowledge_id or not title or not category or not content:
+        return None
+
+    source_type = str(raw.get("source_type") or "manual").strip().lower()
+    if source_type not in {"manual", "document", "imported", "system"}:
+        source_type = "manual"
+
+    status = str(raw.get("status") or "draft").strip().lower()
+    if status not in {"active", "draft", "archived"}:
+        status = "draft"
+
+    created_at = str(raw.get("created_at") or datetime.utcnow().isoformat())
+    updated_at = str(raw.get("updated_at") or created_at)
+
+    try:
+        version = int(raw.get("version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    version = max(1, version)
+
+    return {
+        "knowledge_id": knowledge_id,
+        "title": title,
+        "category": category,
+        "applies_to": _clean_string_list(raw.get("applies_to") or []),
+        "content": content,
+        "source_type": source_type,
+        "tags": _clean_string_list(raw.get("tags") or []),
+        "status": status,
+        "created_by_user_id": str(raw.get("created_by_user_id") or "").strip() or None,
+        "created_by_name": str(raw.get("created_by_name") or "").strip() or None,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "version": version,
+        "tenant_id": str(raw.get("tenant_id") or "").strip() or None,
+    }
+
+
+def _load_knowledge_records() -> list[dict[str, Any]]:
+    if not KNOWLEDGE_CENTER_PATH.exists():
+        return []
+    try:
+        raw = json.loads(KNOWLEDGE_CENTER_PATH.read_text(encoding="utf-8-sig"))
+    except Exception as error:
+        logger.error("Failed loading knowledge center %s: %s", KNOWLEDGE_CENTER_PATH, error)
+        return []
+    if not isinstance(raw, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in raw:
+        clean = _normalize_knowledge_record(item if isinstance(item, dict) else {})
+        if clean:
+            normalized.append(clean)
+    return normalized
+
+
+def _save_knowledge_records() -> None:
+    KNOWLEDGE_CENTER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    KNOWLEDGE_CENTER_PATH.write_text(json.dumps(knowledge_records, indent=2), encoding="utf-8")
+
+
+def _serialize_relevant_knowledge(entries: list[dict[str, Any]], max_chars: int = 1400) -> str:
+    if not entries:
+        return ""
+    lines: list[str] = []
+    remaining = max_chars
+    for entry in entries:
+        title = str(entry.get("title") or "Reference").strip()
+        category = str(entry.get("category") or "general").strip()
+        tags = ", ".join([str(tag) for tag in list(entry.get("tags") or [])[:5]])
+        content = " ".join(str(entry.get("content") or "").split())
+        snippet = content[:240] + ("..." if len(content) > 240 else "")
+        line = f"- {title} [{category}] tags={tags or 'none'} :: {snippet}"
+        if len(line) > remaining:
+            break
+        lines.append(line)
+        remaining -= len(line)
+    return "\n".join(lines)
+
+
+def get_relevant_knowledge(context: str, *, limit: int = 5, tenant_id: str | None = None) -> list[dict[str, Any]]:
+    context_text = str(context or "").strip().lower()
+    if not context_text:
+        return []
+
+    tokens = set(re.findall(r"[a-z0-9]+", context_text))
+    if not tokens:
+        return []
+
+    domain_seed = {
+        "keap",
+        "crm",
+        "client",
+        "record",
+        "records",
+        "note",
+        "notes",
+        "task",
+        "tasks",
+        "policy",
+        "policies",
+        "marketplace",
+        "documentation",
+        "followup",
+        "follow",
+    }
+    has_crm_signal = bool(tokens & domain_seed)
+    tenant_key = str(tenant_id or "").strip().lower()
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for item in knowledge_records:
+        if str(item.get("status") or "").strip().lower() != "active":
+            continue
+
+        item_tenant = str(item.get("tenant_id") or "").strip().lower()
+        if tenant_key and item_tenant and item_tenant != tenant_key:
+            continue
+
+        title = _normalize_text_token(item.get("title") or "")
+        category = _normalize_text_token(item.get("category") or "")
+        applies_to = [_normalize_text_token(v) for v in list(item.get("applies_to") or [])]
+        tags = [_normalize_text_token(v) for v in list(item.get("tags") or [])]
+        body = _normalize_text_token(item.get("content") or "")
+
+        score = 0
+        for token in tokens:
+            if token in title:
+                score += 5
+            if token in category:
+                score += 3
+            if any(token in tag for tag in tags):
+                score += 4
+            if any(token in applies for applies in applies_to):
+                score += 3
+            if token in body:
+                score += 1
+
+        if has_crm_signal and any(tag in {"keap", "crm", "marketplace"} for tag in tags):
+            score += 3
+
+        if score <= 0:
+            continue
+
+        scored.append((score, item))
+
+    scored.sort(key=lambda pair: (pair[0], str(pair[1].get("updated_at") or "")), reverse=True)
+    return [dict(item) for _, item in scored[: max(1, min(limit, 20))]]
+
+
 _loaded_learned_templates = _load_json_list(LEARNED_PROCEDURES_PATH, "learned procedure templates")
 learned_procedure_templates: list[dict[str, Any]] = [
     item for item in _loaded_learned_templates if isinstance(item, dict) and str(item.get("name") or "").strip()
@@ -2449,6 +2931,7 @@ workflow_sop_summaries: list[dict[str, Any]] = _load_json_list(SOP_SUMMARIES_PAT
 interactive_prompts: list[dict[str, Any]] = _load_json_list(INTERACTIONS_PATH, "interactive prompts")
 conversation_preferences: list[dict[str, Any]] = _load_json_list(CONVERSATION_PREFS_PATH, "conversation preferences")
 workflow_learning_drafts: list[dict[str, Any]] = _load_json_list(WORKFLOW_DRAFTS_PATH, "workflow learning drafts")
+knowledge_records: list[dict[str, Any]] = _load_knowledge_records()
 
 
 def _load_navigation_rules_by_tenant() -> dict[str, list[dict[str, Any]]]:
@@ -4771,6 +5254,9 @@ def _build_taught_action_plan(draft_steps: list[dict[str, Any]]) -> list[dict[st
 def validate_taught_workflow_executable(draft: dict[str, Any]) -> dict[str, Any]:
     steps = [dict(item or {}) for item in (draft.get("steps") or [])]
     action_plan = _build_taught_action_plan(steps)
+    workflow_name = str(draft.get("workflow_name") or "").strip()
+    draft_goal = str(draft.get("goal") or draft.get("description") or "").strip()
+    readiness_knowledge = get_relevant_knowledge(f"{workflow_name} {draft_goal}", limit=3)
 
     blocking_reasons: list[str] = []
     warnings: list[str] = []
@@ -4847,6 +5333,12 @@ def validate_taught_workflow_executable(draft: dict[str, Any]) -> dict[str, Any]
         logger.info(
             "TEACH_READY_CHECK_MANUAL_ONLY_REASON executable_action_count=0 manual_action_count=%s",
             manual_action_count,
+        )
+
+    if readiness_knowledge:
+        warnings.append(
+            "Reference knowledge available: "
+            + "; ".join(str(item.get("title") or "").strip() for item in readiness_knowledge)
         )
 
     logger.info(
@@ -5011,6 +5503,7 @@ def _build_generated_workflow_sop_record(draft: dict[str, Any], workflow_id: str
     ui_hints = _collect_captured_ui_hints(draft_steps)
     workflow_name = str(draft.get("published_workflow_name") or draft.get("workflow_name") or workflow_id).strip() or workflow_id
     workflow_summary = str(draft.get("workflow_summary") or draft.get("goal") or draft.get("description") or "").strip()
+    sop_knowledge = get_relevant_knowledge(f"{workflow_name} {workflow_summary}", limit=4)
 
     text_blob = "\n".join(
         [
@@ -5190,6 +5683,18 @@ def _build_generated_workflow_sop_record(draft: dict[str, Any], workflow_id: str
         "## Notes / Assumptions",
     ])
     markdown_lines.extend([f"- {note}" for note in notes])
+    if sop_knowledge:
+        markdown_lines.extend([
+            "",
+            "## Relevant Reference Knowledge",
+        ])
+        for item in sop_knowledge:
+            title = str(item.get("title") or "Reference").strip()
+            category = str(item.get("category") or "general").strip()
+            tags = ", ".join([str(tag) for tag in list(item.get("tags") or [])[:5]])
+            snippet = " ".join(str(item.get("content") or "").split())
+            snippet = snippet[:180] + ("..." if len(snippet) > 180 else "")
+            markdown_lines.append(f"- {title} [{category}] tags={tags or 'none'} :: {snippet}")
 
     return {
         "workflow_id": workflow_id,
@@ -5206,6 +5711,7 @@ def _build_generated_workflow_sop_record(draft: dict[str, Any], workflow_id: str
             "captured_fields": ui_hints["fields"][:10],
             "captured_buttons": ui_hints["buttons"][:10],
             "captured_pages": ui_hints["pages"][:5],
+            "knowledge_ids": [str(item.get("knowledge_id") or "") for item in sop_knowledge],
             "manual_step_count": len(manual_steps),
             "needs_confirmation_count": len(needs_confirmation_steps),
             "workflow_summary_present": bool(workflow_summary),
@@ -8304,6 +8810,7 @@ def _llm_conversational_response(
     command_text: str,
     machines: list,
     tasks: list,
+    knowledge_context: str = "",
 ) -> tuple[str, str]:
     """Call OpenAI chat completion to handle any command that didn't match a
     keyword intent.  Returns (before_execution, after_execution) strings.
@@ -8336,6 +8843,11 @@ def _llm_conversational_response(
         "If they want to run something, tell them to say 'run <workflow name>'. "
         "Keep answers under 3 sentences."
     )
+    if knowledge_context.strip():
+        system_prompt += (
+            " Use this reference knowledge when relevant (do not invent workflow clicks):\n"
+            f"{knowledge_context.strip()}"
+        )
 
     try:
         resp = _requests.post(
@@ -8434,6 +8946,12 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     _teach_session_obj: TeachingSession | None = None
     _teach_reply: str | None = None
     _teach_voice_text: str | None = None
+    command_knowledge = get_relevant_knowledge(command_text, limit=3)
+    if command_knowledge:
+        decision_reasoning.append(
+            "Loaded reference knowledge: "
+            + "; ".join(str(item.get("title") or "").strip() for item in command_knowledge)
+        )
 
     worker_hint_match = re.search(r"on worker\s+(.+)$", command_text, flags=re.IGNORECASE)
     worker_hint = worker_hint_match.group(1).strip() if worker_hint_match else None
@@ -9149,7 +9667,10 @@ def brain_command(payload: BrainCommandRequest) -> BrainCommandResponse:
     # ── LLM conversational fallback for anything still unrecognised ──────────
     if recognized_intent == "unknown":
         before_execution, after_execution = _llm_conversational_response(
-            command_text, machines, tasks
+            command_text,
+            machines,
+            tasks,
+            knowledge_context=_serialize_relevant_knowledge(command_knowledge),
         )
         recognized_intent = "conversational"
         suggested_next_action = None
@@ -10819,6 +11340,11 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         "steps": [],
     }
     message = (body.message or "").strip()
+    conversation_knowledge = get_relevant_knowledge(message, limit=2) if message else []
+    if conversation_knowledge:
+        ts["knowledge_context_titles"] = [
+            str(item.get("title") or "").strip() for item in conversation_knowledge if str(item.get("title") or "").strip()
+        ]
     turn_index = int(ts.get("conversation_turn_index") or 0) + 1
     ts["conversation_turn_index"] = turn_index
     _ensure_teaching_auth_state(ts)
@@ -10931,7 +11457,17 @@ def teaching_session_conversation(session_id: str, body: TeachingSessionMessageR
         ts["steps"] = steps
         record["teaching_session"] = ts
         _teaching_startup_sessions[session_id] = record
-        return TeachingSessionMessageResponse(reply="I need a little more detail. What action should Bill perform or watch for?", teaching_session=TeachingSession.model_validate(ts))
+        knowledge_hint = ""
+        if conversation_knowledge:
+            knowledge_hint = (
+                " Relevant standard: "
+                + "; ".join(str(item.get("title") or "").strip() for item in conversation_knowledge)
+                + "."
+            )
+        return TeachingSessionMessageResponse(
+            reply="I need a little more detail. What action should Bill perform or watch for?" + knowledge_hint,
+            teaching_session=TeachingSession.model_validate(ts),
+        )
     ambiguous_click_reply = _build_ambiguous_click_reply(message, snapshot=dict(ts.get("page_context_snapshot") or {}))
     if ambiguous_click_reply:
         ts["steps"] = steps
