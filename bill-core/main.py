@@ -5,6 +5,7 @@ import importlib.util
 import logging
 import os
 import json
+import shutil
 import time
 
 try:
@@ -403,6 +404,53 @@ async def bill_request_middleware(request: Request, call_next):
 # Startup validation (reliability check — no business logic changes)
 # ---------------------------------------------------------------------------
 _BILL_CORE_ROOT = Path(__file__).resolve().parent
+
+
+def _default_data_root() -> Path:
+    configured = (os.getenv("BILL_CORE_DATA_DIR") or "").strip()
+    if configured:
+        return Path(configured)
+    if os.name != "nt":
+        return Path("/var/app/data/bill-core")
+    return _BILL_CORE_ROOT
+
+
+BILL_CORE_DATA_ROOT = _default_data_root()
+
+
+def _resolve_data_file_path(env_name: str, filename: str) -> Path:
+    configured = (os.getenv(env_name) or "").strip()
+    if configured:
+        return Path(configured)
+    return BILL_CORE_DATA_ROOT / filename
+
+
+def _resolve_data_dir_path(env_name: str, dirname: str) -> Path:
+    configured = (os.getenv(env_name) or "").strip()
+    if configured:
+        return Path(configured)
+    return BILL_CORE_DATA_ROOT / dirname
+
+
+def _migrate_legacy_file(new_path: Path, legacy_path: Path) -> None:
+    if new_path == legacy_path:
+        return
+    if new_path.exists() or not legacy_path.exists() or not legacy_path.is_file():
+        return
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(legacy_path, new_path)
+    logger.info("Migrated legacy data file %s -> %s", legacy_path, new_path)
+
+
+def _migrate_legacy_directory(new_path: Path, legacy_path: Path) -> None:
+    if new_path == legacy_path:
+        return
+    if new_path.exists() or not legacy_path.exists() or not legacy_path.is_dir():
+        return
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(legacy_path, new_path)
+    logger.info("Migrated legacy data directory %s -> %s", legacy_path, new_path)
+
 _STARTUP_REQUIRED_FILES = [
     "main.py",
     "task_service.py",
@@ -571,7 +619,7 @@ def _resolve_teach_session_worker_api_base(requested_api_base: str) -> str:
     )
     return DEFAULT_TEACH_SESSION_WORKER_API_BASE
 
-WORKERS_STORE_PATH = Path(os.getenv("BILL_CORE_WORKERS_STORE") or (Path(__file__).resolve().parent / "workers_store.json"))
+WORKERS_STORE_PATH = _resolve_data_file_path("BILL_CORE_WORKERS_STORE", "workers_store.json")
 _workers_lock = threading.Lock()
 
 
@@ -600,13 +648,19 @@ def _save_workers_store() -> None:
 registered_workers: dict[str, dict] = _load_workers_store()
 tasks: list[dict] = []
 
-WORKER_RELEASES_PATH = Path(os.getenv("BILL_CORE_WORKER_RELEASES") or (Path(__file__).resolve().parent / "worker_releases.json"))
-WORKER_PACKAGES_DIR = Path(os.getenv("BILL_CORE_WORKER_PACKAGES_DIR") or (Path(__file__).resolve().parent / "worker-packages"))
+WORKER_RELEASES_PATH = _resolve_data_file_path("BILL_CORE_WORKER_RELEASES", "worker_releases.json")
+WORKER_PACKAGES_DIR = _resolve_data_dir_path("BILL_CORE_WORKER_PACKAGES_DIR", "worker-packages")
 _releases_lock = threading.Lock()
 
-EXTENSION_RELEASES_PATH = Path(os.getenv("BILL_CORE_EXTENSION_RELEASES") or (Path(__file__).resolve().parent / "extension_releases.json"))
-EXTENSION_PACKAGES_DIR = Path(os.getenv("BILL_CORE_EXTENSION_PACKAGES_DIR") or (Path(__file__).resolve().parent / "extension-packages"))
+EXTENSION_RELEASES_PATH = _resolve_data_file_path("BILL_CORE_EXTENSION_RELEASES", "extension_releases.json")
+EXTENSION_PACKAGES_DIR = _resolve_data_dir_path("BILL_CORE_EXTENSION_PACKAGES_DIR", "extension-packages")
 _extension_releases_lock = threading.Lock()
+
+_migrate_legacy_file(WORKERS_STORE_PATH, _BILL_CORE_ROOT / "workers_store.json")
+_migrate_legacy_file(WORKER_RELEASES_PATH, _BILL_CORE_ROOT / "worker_releases.json")
+_migrate_legacy_file(EXTENSION_RELEASES_PATH, _BILL_CORE_ROOT / "extension_releases.json")
+_migrate_legacy_directory(WORKER_PACKAGES_DIR, _BILL_CORE_ROOT / "worker-packages")
+_migrate_legacy_directory(EXTENSION_PACKAGES_DIR, _BILL_CORE_ROOT / "extension-packages")
 
 
 def _load_worker_releases() -> list[dict]:
@@ -667,18 +721,31 @@ def _get_active_extension_release() -> dict | None:
 worker_releases: list[dict] = _load_worker_releases()
 extension_releases: list[dict] = _load_extension_releases()
 
-WORKFLOWS_CONFIG_PATH = Path(os.getenv("BILL_CORE_WORKFLOWS_CONFIG") or (Path(__file__).resolve().parent / "workflows_registry.json"))
-BRAIN_AUDIT_PATH = Path(os.getenv("BILL_CORE_BRAIN_AUDIT") or (Path(__file__).resolve().parent / "brain_command_audit.json"))
-OP_MEMORY_PATH = Path(os.getenv("BILL_CORE_OPERATIONAL_MEMORY") or (Path(__file__).resolve().parent / "operational_memory.json"))
-REFLECTIONS_PATH = Path(os.getenv("BILL_CORE_REFLECTIONS") or (Path(__file__).resolve().parent / "task_reflections.json"))
-PROPOSALS_PATH = Path(os.getenv("BILL_CORE_PROPOSALS") or (Path(__file__).resolve().parent / "improvement_proposals.json"))
-SOP_SUMMARIES_PATH = Path(os.getenv("BILL_CORE_SOP_SUMMARIES") or (Path(__file__).resolve().parent / "workflow_sop_summaries.json"))
-INTERACTIONS_PATH = Path(os.getenv("BILL_CORE_INTERACTIONS") or (Path(__file__).resolve().parent / "interactive_prompts.json"))
-CONVERSATION_PREFS_PATH = Path(os.getenv("BILL_CORE_CONVERSATION_PREFS") or (Path(__file__).resolve().parent / "conversation_preferences.json"))
-WORKFLOW_DRAFTS_PATH = Path(os.getenv("BILL_CORE_WORKFLOW_DRAFTS") or (Path(__file__).resolve().parent / "workflow_learning_drafts.json"))
-LEARNED_PROCEDURES_PATH = Path(os.getenv("BILL_CORE_LEARNED_PROCEDURES") or (Path(__file__).resolve().parent / "learned_procedure_templates.json"))
-NAVIGATION_RULES_PATH = Path(os.getenv("BILL_CORE_NAVIGATION_RULES") or (Path(__file__).resolve().parent / "navigation_rules_by_tenant.json"))
-KNOWLEDGE_CENTER_PATH = Path(os.getenv("BILL_CORE_KNOWLEDGE_CENTER") or (Path(__file__).resolve().parent / "knowledge_center.json"))
+WORKFLOWS_CONFIG_PATH = _resolve_data_file_path("BILL_CORE_WORKFLOWS_CONFIG", "workflows_registry.json")
+BRAIN_AUDIT_PATH = _resolve_data_file_path("BILL_CORE_BRAIN_AUDIT", "brain_command_audit.json")
+OP_MEMORY_PATH = _resolve_data_file_path("BILL_CORE_OPERATIONAL_MEMORY", "operational_memory.json")
+REFLECTIONS_PATH = _resolve_data_file_path("BILL_CORE_REFLECTIONS", "task_reflections.json")
+PROPOSALS_PATH = _resolve_data_file_path("BILL_CORE_PROPOSALS", "improvement_proposals.json")
+SOP_SUMMARIES_PATH = _resolve_data_file_path("BILL_CORE_SOP_SUMMARIES", "workflow_sop_summaries.json")
+INTERACTIONS_PATH = _resolve_data_file_path("BILL_CORE_INTERACTIONS", "interactive_prompts.json")
+CONVERSATION_PREFS_PATH = _resolve_data_file_path("BILL_CORE_CONVERSATION_PREFS", "conversation_preferences.json")
+WORKFLOW_DRAFTS_PATH = _resolve_data_file_path("BILL_CORE_WORKFLOW_DRAFTS", "workflow_learning_drafts.json")
+LEARNED_PROCEDURES_PATH = _resolve_data_file_path("BILL_CORE_LEARNED_PROCEDURES", "learned_procedure_templates.json")
+NAVIGATION_RULES_PATH = _resolve_data_file_path("BILL_CORE_NAVIGATION_RULES", "navigation_rules_by_tenant.json")
+KNOWLEDGE_CENTER_PATH = _resolve_data_file_path("BILL_CORE_KNOWLEDGE_CENTER", "knowledge_center.json")
+
+_migrate_legacy_file(WORKFLOWS_CONFIG_PATH, _BILL_CORE_ROOT / "workflows_registry.json")
+_migrate_legacy_file(BRAIN_AUDIT_PATH, _BILL_CORE_ROOT / "brain_command_audit.json")
+_migrate_legacy_file(OP_MEMORY_PATH, _BILL_CORE_ROOT / "operational_memory.json")
+_migrate_legacy_file(REFLECTIONS_PATH, _BILL_CORE_ROOT / "task_reflections.json")
+_migrate_legacy_file(PROPOSALS_PATH, _BILL_CORE_ROOT / "improvement_proposals.json")
+_migrate_legacy_file(SOP_SUMMARIES_PATH, _BILL_CORE_ROOT / "workflow_sop_summaries.json")
+_migrate_legacy_file(INTERACTIONS_PATH, _BILL_CORE_ROOT / "interactive_prompts.json")
+_migrate_legacy_file(CONVERSATION_PREFS_PATH, _BILL_CORE_ROOT / "conversation_preferences.json")
+_migrate_legacy_file(WORKFLOW_DRAFTS_PATH, _BILL_CORE_ROOT / "workflow_learning_drafts.json")
+_migrate_legacy_file(LEARNED_PROCEDURES_PATH, _BILL_CORE_ROOT / "learned_procedure_templates.json")
+_migrate_legacy_file(NAVIGATION_RULES_PATH, _BILL_CORE_ROOT / "navigation_rules_by_tenant.json")
+_migrate_legacy_file(KNOWLEDGE_CENTER_PATH, _BILL_CORE_ROOT / "knowledge_center.json")
 
 DEFAULT_WORKFLOW_RECORDS: list[dict[str, Any]] = [
     {
