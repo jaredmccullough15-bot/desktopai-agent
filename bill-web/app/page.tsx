@@ -13,6 +13,7 @@ import { WorkersPanel } from "./components/WorkersPanel";
 import { RecentActivityPanel } from "./components/RecentActivityPanel";
 import { ActiveTasksPanel } from "./components/ActiveTasksPanel";
 import { AdvancedToolsTabs } from "./components/AdvancedToolsTabs";
+import { SuperAdminControlPlane } from "./components/SuperAdminControlPlane";
 import { SystemHealthFooter } from "./components/SystemHealthFooter";
 import { useBillMic } from "./hooks/useBillMic";
 import { useBillVoice } from "./hooks/useBillVoice";
@@ -679,7 +680,7 @@ type BrainAuditEntry = {
   after_execution?: string;
 };
 
-type BillUserRole = "admin" | "teacher" | "runner" | "viewer";
+type BillUserRole = "super_admin" | "admin" | "teacher" | "runner" | "viewer";
 
 type BillUserRecord = {
   id: string;
@@ -2974,7 +2975,7 @@ export default function Home() {
     [setLoggedOutState],
   );
 
-  const fetchJson = async <T,>(
+  const fetchJson = useCallback(async <T,>(
     url: string,
     init?: RequestInit & { allowUnauthorized?: boolean },
   ): Promise<T> => {
@@ -2987,7 +2988,7 @@ export default function Home() {
     }
 
     return (await response.json()) as T;
-  };
+  }, [apiFetch]);
 
   const resolveDownloadUrl = useCallback((downloadUrl: string): URL => {
     const raw = String(downloadUrl || "").trim();
@@ -3088,7 +3089,8 @@ export default function Home() {
   }, [currentUser?.role]);
 
   const loadKnowledgePanels = useCallback(async () => {
-    if (!currentUser || currentUser.role === "viewer") {
+    const currentRole = currentUser?.role;
+    if (!currentRole || currentRole === "viewer") {
       setKnowledgeEntries([]);
       setKnowledgeError(null);
       return;
@@ -3102,7 +3104,7 @@ export default function Home() {
     setKnowledgeError(null);
     try {
       const endpoint =
-        currentUser.role === "admin"
+        currentRole === "admin"
           ? `${apiBase}/api/knowledge?limit=300`
           : `${apiBase}/api/knowledge/active?limit=300`;
       const records = await fetchJson<KnowledgeRecord[]>(endpoint);
@@ -3112,7 +3114,7 @@ export default function Home() {
     } finally {
       setKnowledgeLoading(false);
     }
-  }, [currentUser, fetchJson]);
+  }, [currentUser?.role, fetchJson]);
 
   const submitLogin = useCallback(async () => {
     const apiBase = getApiBase();
@@ -5665,6 +5667,45 @@ export default function Home() {
             </button>
           </div>
         </section>
+      </main>
+    );
+  }
+
+  if (currentUser.role === "super_admin") {
+    return (
+      <main className="min-h-screen bg-[#070a11] px-4 py-6 text-slate-100 lg:px-6">
+        <div className="mx-auto max-w-[1600px]">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm">
+            <div className="text-slate-200">
+              <span className="font-semibold text-slate-50">{currentUser.name}</span>
+              <span className="mx-2 text-slate-500">•</span>
+              <span className="uppercase tracking-wide text-amber-200">{currentUser.role}</span>
+              <span className="mx-2 text-slate-500">•</span>
+              <span className="text-slate-400">{currentUser.email}</span>
+              {sessionExpiresAt && (
+                <span className="ml-3 text-xs text-slate-500">Session expires: {toDisplayTime(sessionExpiresAt)}</span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => void submitLogout()}
+              className={BUTTON_SECONDARY}
+            >
+              Log out
+            </button>
+          </div>
+
+          <SuperAdminControlPlane
+            apiBase={getApiBase()}
+            apiFetch={apiFetch}
+            currentUser={{
+              id: currentUser.id,
+              name: currentUser.name,
+              email: currentUser.email,
+              role: "super_admin",
+            }}
+          />
+        </div>
       </main>
     );
   }
