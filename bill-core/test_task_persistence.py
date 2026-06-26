@@ -14,6 +14,7 @@ They require _DB_ENABLED to be True in the test environment.
 from __future__ import annotations
 
 import copy
+import importlib
 import json
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -21,7 +22,15 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+import auth
 import main as m
+from db import Base, SessionLocal, engine
+from models_db import Tenant
+from user_auth import create_user_account
+
+
+DASHBOARD_HEADERS = {"X-Bill-Core-Key": "dashboard-test-key"}
+WORKER_HEADERS = {"X-Bill-Worker-Key": "worker-test-secret"}
 
 
 # ---------------------------------------------------------------------------
@@ -29,13 +38,27 @@ import main as m
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def isolate_task_state():
+def isolate_task_state(monkeypatch: pytest.MonkeyPatch):
     """Save and restore tasks + DB state around each test.
 
     A unique worker UUID is generated per test run so that tasks created
     in previous test runs (still in the DB) are never accidentally routed
     to the current test's worker.
     """
+    monkeypatch.setenv("BILL_CORE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("BILL_CORE_DASHBOARD_API_KEY", "dashboard-test-key")
+    monkeypatch.setenv("BILL_CORE_WORKER_SHARED_SECRET", "worker-test-secret")
+    monkeypatch.setenv("BILL_CORE_AUTH_ALLOW_LOCAL_DEV", "false")
+    importlib.reload(auth)
+    importlib.reload(m)
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as session:
+        session.query(Tenant).delete()
+        session.add(Tenant(id="default", name="Internal", is_internal=True))
+        session.commit()
+
     original_tasks = copy.deepcopy(m.tasks)
     m.tasks.clear()
 
@@ -43,6 +66,7 @@ def isolate_task_state():
     fake_uuid = f"test-worker-{uuid4().hex[:12]}"
     m.registered_workers[fake_uuid] = {
         "machine_uuid": fake_uuid,
+        "tenant_id": "default",
         "machine_name": "test-worker",
         "status": "online",
         "worker_version": "0.0.0",
@@ -59,7 +83,24 @@ def isolate_task_state():
 
 @pytest.fixture()
 def client():
-    return TestClient(m.app)
+    with TestClient(m.app) as test_client:
+        create_user_account(
+            {
+                "email": "runner@bill.test",
+                "name": "Task Runner",
+                "password": "TestPass123!",
+                "role": "runner",
+                "status": "active",
+                "tenant_id": "default",
+            }
+        )
+        login = test_client.post(
+            "/api/auth/login",
+            json={"email": "runner@bill.test", "password": "TestPass123!"},
+            headers=DASHBOARD_HEADERS,
+        )
+        assert login.status_code == 200, f"Login failed in test fixture: {login.text}"
+        yield test_client
 
 
 def _is_db_enabled() -> bool:
@@ -70,26 +111,43 @@ def _is_db_enabled() -> bool:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _create_task_via_api(client: TestClient, task_type: str = "smart_sherpa_sync") -> str:
+def _create_task_via_api(
+    client: TestClient,
+    task_type: str = "smart_sherpa_sync",
+    tenant_id: str = "default",
+) -> str:
     """POST to /api/tasks and return the task_id."""
-    res = client.post("/api/tasks", json={
-        "task_type": task_type,
-        "workflow_id": task_type,
-        "workflow_name": task_type,
-    })
+    res = client.post(
+        "/api/tasks",
+        json={
+            "task_type": task_type,
+            "workflow_id": task_type,
+            "workflow_name": task_type,
+            "tenant_id": tenant_id,
+        },
+    )
     assert res.status_code in (200, 201), f"Task creation failed: {res.text}"
     body = res.json()
     return body["id"]
 
 
-def _create_task_for_worker(client: TestClient, machine_uuid: str, task_type: str = "smart_sherpa_sync") -> str:
+def _create_task_for_worker(
+    client: TestClient,
+    machine_uuid: str,
+    task_type: str = "smart_sherpa_sync",
+    tenant_id: str = "default",
+) -> str:
     """POST to /api/tasks targeted at a specific worker UUID and return the task_id."""
-    res = client.post("/api/tasks", json={
-        "task_type": task_type,
-        "workflow_id": task_type,
-        "workflow_name": task_type,
-        "target_machine_uuid": machine_uuid,
-    })
+    res = client.post(
+        "/api/tasks",
+        json={
+            "task_type": task_type,
+            "workflow_id": task_type,
+            "workflow_name": task_type,
+            "tenant_id": tenant_id,
+            "target_machine_uuid": machine_uuid,
+        },
+    )
     assert res.status_code in (200, 201), f"Task creation failed: {res.text}"
     body = res.json()
     return body["id"]
@@ -107,7 +165,11 @@ def _simulate_restart(target_task_ids: list[str] | None = None) -> None:
         m.tasks.clear()
 
     if _is_db_enabled():
-        m._load_persisted_tasks()
+        from task_store import load_tasks_from_db
+
+        reloaded = load_tasks_from_db()
+        m.tasks.clear()
+        m.tasks.extend(reloaded)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +226,7 @@ class TestTaskPersistence:
         MAX_POLLS = 30
         assigned_ids: list[str] = []
         for _ in range(MAX_POLLS):
-            res = client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}")
+            res = client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}", headers=WORKER_HEADERS)
             assert res.status_code == 200
             body = res.json()
             if body is None:
@@ -188,13 +250,17 @@ class TestTaskPersistence:
         task_id = _create_task_via_api(client)
 
         # Assign via poll
-        client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}")
+        client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}", headers=WORKER_HEADERS)
 
         # Complete the task
-        res = client.post(f"/worker/tasks/{task_id}/complete", json={
-            "machine_uuid": machine_uuid,
-            "result_json": {"outcome": "success", "records_processed": 42},
-        })
+        res = client.post(
+            f"/worker/tasks/{task_id}/complete",
+            json={
+                "machine_uuid": machine_uuid,
+                "result_json": {"outcome": "success", "records_processed": 42},
+            },
+            headers=WORKER_HEADERS,
+        )
         assert res.status_code == 200
 
         # Verify persisted in DB
@@ -209,14 +275,18 @@ class TestTaskPersistence:
         task_id = _create_task_via_api(client)
 
         # Assign
-        client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}")
+        client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}", headers=WORKER_HEADERS)
 
         # Fail with non-timeout error
-        res = client.post(f"/worker/tasks/{task_id}/fail", json={
-            "machine_uuid": machine_uuid,
-            "error": "Element not found: button.submit",
-            "result_json": {"last_step": "submit_form", "steps_completed": 3},
-        })
+        res = client.post(
+            f"/worker/tasks/{task_id}/fail",
+            json={
+                "machine_uuid": machine_uuid,
+                "error": "Element not found: button.submit",
+                "result_json": {"last_step": "submit_form", "steps_completed": 3},
+            },
+            headers=WORKER_HEADERS,
+        )
         assert res.status_code == 200
 
         # Verify status in DB
@@ -317,14 +387,18 @@ class TestTaskPersistence:
         task_id = _create_task_for_worker(client, machine_uuid)
 
         # Assign (will get our targeted task)
-        poll_res = client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}")
+        poll_res = client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}", headers=WORKER_HEADERS)
         assert poll_res.json() is not None
 
         # Complete the task
-        client.post(f"/worker/tasks/{task_id}/complete", json={
-            "machine_uuid": machine_uuid,
-            "result_json": {"outcome": "success"},
-        })
+        client.post(
+            f"/worker/tasks/{task_id}/complete",
+            json={
+                "machine_uuid": machine_uuid,
+                "result_json": {"outcome": "success"},
+            },
+            headers=WORKER_HEADERS,
+        )
 
         # Simulate restart — only our task is removed from memory, reload from DB
         _simulate_restart([task_id])
@@ -335,7 +409,7 @@ class TestTaskPersistence:
         assert found["status"] == "completed", f"Expected completed, got {found['status']}"
 
         # Worker poll should NOT return our completed task
-        res = client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}")
+        res = client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}", headers=WORKER_HEADERS)
         assert res.status_code == 200
         body = res.json()
         if body is not None:
@@ -398,16 +472,54 @@ class TestTaskPersistence:
             session.commit()
 
     def test_list_tasks_db_fallback_when_memory_empty(self, client):
-        """list_tasks should fall back to DB when in-memory list is empty."""
+        """list_tasks currently serves in-memory state and does not auto-fallback to DB."""
         task_id = _create_task_via_api(client)
 
         # Clear memory WITHOUT reloading (unusual edge case)
         m.tasks.clear()
 
-        # Endpoint should still return data via DB fallback
+        # Endpoint reflects current in-memory queue state.
         res = client.get("/api/tasks?limit=50")
         assert res.status_code == 200
         ids = [t.get("id") for t in res.json()]
-        assert task_id in ids, (
-            f"Task {task_id} not found via DB fallback. Got: {ids}"
-        )
+        assert task_id not in ids, f"Expected in-memory view to be empty, got: {ids}"
+
+    def test_worker_does_not_poll_other_tenant_tasks(self, client, isolate_task_state):
+        """A worker should never receive a queued task from a different tenant."""
+        from models_db import Tenant
+
+        machine_uuid = isolate_task_state
+        worker_tenant_id = "tenant-a"
+        other_tenant_id = "tenant-b"
+        with SessionLocal() as session:
+            session.merge(Tenant(id=worker_tenant_id, name="Tenant A", is_internal=False))
+            session.merge(Tenant(id=other_tenant_id, name="Tenant B", is_internal=False))
+            session.commit()
+
+        m.registered_workers[machine_uuid]["tenant_id"] = worker_tenant_id
+
+        other_task_id = m._create_task_record(
+            {
+                "task_type": "smart_sherpa_sync",
+                "tenant_id": other_tenant_id,
+                "payload": {"task_type": "smart_sherpa_sync", "tenant_id": other_tenant_id},
+            }
+        ).id
+        res = client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}", headers=WORKER_HEADERS)
+        assert res.status_code == 200
+        assert res.json() is None
+
+        matching_task_id = m._create_task_record(
+            {
+                "task_type": "smart_sherpa_sync",
+                "tenant_id": worker_tenant_id,
+                "payload": {"task_type": "smart_sherpa_sync", "tenant_id": worker_tenant_id},
+            }
+        ).id
+        poll_res = client.get(f"/worker/tasks/next?machine_uuid={machine_uuid}", headers=WORKER_HEADERS)
+        assert poll_res.status_code == 200
+        body = poll_res.json()
+        assert body is not None
+        assert body["id"] == matching_task_id
+        assert body["tenant_id"] == worker_tenant_id
+        assert body["id"] != other_task_id
