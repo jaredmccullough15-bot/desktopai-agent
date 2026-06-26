@@ -1,0 +1,18 @@
+[
+  {
+    "id": "aae5323e-4efd-4323-b835-a9d37afec6fd",
+    "release_type": "chrome_extension",
+    "version_label": "3.3.3",
+    "is_active": true,
+    "status": "current",
+    "file_name": "bill-extension-auth.zip",
+    "sha256_hash": "aa7e95a0ad188c9dac4aa2f79283aac35a5d13a429ef0570a133c5df637f0a57",
+    "file_size_bytes": 126,
+    "release_notes": null,
+    "released_at": "2026-06-26T15:49:54.303701",
+    "released_by_user_id": "ccb9dd72-b820-42fd-a9dc-97ffe1cf268a",
+    "released_by_name": "Test Admin",
+    "download_count": 1,
+    "storage_backend": "local"
+  }
+]

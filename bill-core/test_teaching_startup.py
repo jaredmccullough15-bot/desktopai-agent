@@ -737,6 +737,73 @@ class TestTeachingConversationStepCapture:
         action = res.json()["teaching_session"]["steps"][0]["observed_actions"][0]
         assert action["type"] == "click"
         assert action["label"] == "Sign In"
+        assert action.get("target_label") == "Sign In"
+        assert action.get("target_type") == "button"
+        assert "blue" in list(action.get("descriptors") or [])
+        selectors = list(action.get("selectors") or [])
+        assert selectors
+        assert all(", text=" not in str(selector).lower() for selector in selectors)
+        import main as m
+        assert all(m._is_valid_teaching_selector(str(selector)) for selector in selectors)
+
+    @pytest.mark.parametrize(
+        "message, expected_label, expected_type",
+        [
+            ("Click the Sign In button", "Sign In", "button"),
+            ("Press the green Save button", "Save", "button"),
+            ("Click the Email field", "Email", "field"),
+            ("Click the Password field", "Password", "field"),
+        ],
+    )
+    def test_click_target_extraction_variants(self, client, message, expected_label, expected_type):
+        sid = self._seed_session()
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "This workflow submits renewal applications for existing clients."},
+        )
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": message},
+        )
+        assert res.status_code == 200
+        action = res.json()["teaching_session"]["steps"][0]["observed_actions"][0]
+        assert action.get("target_label") == expected_label
+        assert action.get("target_type") == expected_type
+        selectors = list(action.get("selectors") or [])
+        assert selectors
+        assert all(", text=" not in str(selector).lower() for selector in selectors)
+
+    def test_click_selector_prefers_snapshot_target(self, client):
+        import main as m
+
+        sid = self._seed_session()
+        record = m._teaching_startup_sessions[sid]
+        record["teaching_session"]["page_context_snapshot"] = {
+            "url": "https://go.trackvia.com/#/signin",
+            "title": "Sign In",
+            "visible_buttons": [
+                {"text": "Sign In", "selector": "#signin-submit"},
+            ],
+            "visible_inputs": [],
+            "visible_links": [],
+            "visible_headings": [],
+        }
+        m._teaching_startup_sessions[sid] = record
+
+        client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "This workflow submits renewal applications for existing clients."},
+        )
+
+        res = client.post(
+            f"/api/teaching/session/{sid}/conversation",
+            json={"message": "Click the blue Sign In button"},
+        )
+        assert res.status_code == 200
+        action = res.json()["teaching_session"]["steps"][0]["observed_actions"][0]
+        assert action.get("target_label") == "Sign In"
+        assert action.get("selector") == "#signin-submit"
+        assert action.get("selectors") and action.get("selectors")[0] == "#signin-submit"
 
     def test_click_message_with_provided_selector_stores_selector(self, client):
         sid = self._seed_session()
@@ -1858,6 +1925,58 @@ class TestTeachingCopilotPhase1:
         assert "Waiting for real webpage tab" in ui_region
         assert "omnibox-popup" in ui_region
         assert "top-chrome" in ui_region
+
+    def test_extension_sensitive_field_metadata_is_minimized(self, client):
+        sid = self._seed_session()
+        res = client.post(
+            f"/api/teaching/session/{sid}/extension-events",
+            json={
+                "event_type": "input",
+                "current_url": "https://go.trackvia.com/#/signin",
+                "domain": "go.trackvia.com",
+                "target": {
+                    "target_type": "field",
+                    "target_label": "Password",
+                    "selectors": ["#password", "input[name='password']"],
+                    "selector_candidates": ["#password"],
+                    "placeholder": "Enter password",
+                    "name": "password",
+                },
+            },
+        )
+        assert res.status_code == 200
+        body = res.json()
+        event = (body.get("teaching_session") or {}).get("last_extension_event") or {}
+        target = event.get("target") or {}
+        assert target.get("target_type") in ("field", "input")
+        assert target.get("target_label") in ("Password field", "Sensitive field")
+        assert target.get("value_redacted") is True
+        assert target.get("selectors") in (None, [])
+        assert target.get("selector_candidates") in (None, [])
+
+        steps = ((body.get("teaching_session") or {}).get("steps") or [])
+        assert steps
+        action = (steps[-1].get("observed_actions") or [])[-1]
+        assert action.get("type") == "type"
+        assert action.get("selector") in (None, "")
+        assert action.get("value_redacted") == "[redacted]"
+        dumped = json.dumps(body).lower()
+        assert "#password" not in dumped
+        assert "input[name='password']" not in dumped
+
+    def test_extension_remains_observe_only_no_execution_calls(self):
+        extension_root = Path(__file__).resolve().parents[1] / "chrome-extension" / "bill-teaching-assistant"
+        content_js = (extension_root / "content.js").read_text(encoding="utf-8").lower()
+        background_js = (extension_root / "background.js").read_text(encoding="utf-8").lower()
+        merged = f"{content_js}\n{background_js}"
+
+        assert "/api/teaching/session/" in merged
+        assert "/extension-events" in merged
+        assert "/api/brain/command" not in merged
+        assert "/api/tasks" not in merged
+        assert "/run-taught" not in merged
+        assert ".click(" not in merged
+        assert ".submit(" not in merged
 
     def test_context_payload_with_unexpected_shape_does_not_break_teaching_session(self, client):
         sid = self._seed_session()

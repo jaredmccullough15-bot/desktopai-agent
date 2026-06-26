@@ -1,0 +1,59 @@
+{
+  "timestamp": "2026-05-14T11:44:11.295732",
+  "base_url": "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com",
+  "tests": {
+    "1_health_public": {
+      "success": true,
+      "message": "Success (200)",
+      "status": 200,
+      "response_preview": "{\"status\":\"ok\",\"app\":\"bill-core\",\"version\":\"0.1.0\",\"version_available\":true,\"build_manifest_available\":false}"
+    },
+    "2_protected_no_key": {
+      "success": true,
+      "message": "Correctly rejected with 401",
+      "status": 401,
+      "response_preview": "{\"detail\":\"Missing required header: X-Bill-Core-Key\"}"
+    },
+    "3_protected_wrong_key": {
+      "success": true,
+      "message": "Correctly rejected with 403",
+      "status": 403,
+      "response_preview": "{\"detail\":\"Invalid dashboard API key\"}"
+    },
+    "4_protected_correct_key": {
+      "success": true,
+      "message": "Success (200)",
+      "status": 200,
+      "response_preview": "[]"
+    },
+    "5_frontend_proxy": {
+      "success": null,
+      "message": "Requires manual verification in browser",
+      "status": null,
+      "response_preview": "Manual check required"
+    },
+    "6_worker_register": {
+      "success": false,
+      "message": "Expected 200, got 422",
+      "status": 422,
+      "response_preview": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"machine_name\"],\"msg\":\"Field required\",\"input\":{\"worker_id\":\"test-worker\",\"capabilities\":[\"browser\"]}},{\"type\":\"missing\",\"loc\":[\"body\",\"machine_uuid\"],\"msg\":"
+    },
+    "7_worker_task_poll": {
+      "success": false,
+      "message": "Got error 422",
+      "status": 422,
+      "response_preview": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"query\",\"machine_uuid\"],\"msg\":\"Field required\",\"input\":null}]}"
+    },
+    "8_teaching_mode": {
+      "success": null,
+      "message": "Requires manual end-to-end verification",
+      "status": null,
+      "response_preview": "Manual check required"
+    }
+  },
+  "summary": {
+    "passed": 4,
+    "failed": 2,
+    "total": 6
+  }
+}

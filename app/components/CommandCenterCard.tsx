@@ -33,6 +33,7 @@ interface CommandCenterCardProps {
   setHelperWorkflow: Dispatch<SetStateAction<string>>;
   onRunWorkflow: (name: string) => void;
   onQuickAction: (command: string) => void;
+  onStartTeaching: () => void;
 }
 
 const QUICK_ACTIONS = [
@@ -60,12 +61,21 @@ export function CommandCenterCard({
   commandMic,
   loading,
   onQuickAction,
+  onStartTeaching,
 }: CommandCenterCardProps) {
   return (
     <section className="rounded-2xl border border-cyan-500/25 bg-slate-900/80 p-5 shadow-[0_24px_45px_-30px_rgba(8,145,178,0.7)]">
       <div className="mb-4">
         <h2 className="text-lg font-semibold text-slate-50">Command Center</h2>
         <p className="text-xs text-slate-400">Tell Bill what to do. Natural language control for workflows and tasks.</p>
+        <button
+          type="button"
+          onClick={onStartTeaching}
+          disabled={chatLoading || loading}
+          className="mt-3 inline-flex items-center gap-2 rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Teach Bill a New Workflow
+        </button>
       </div>
 
       {/* Textarea + mic */}

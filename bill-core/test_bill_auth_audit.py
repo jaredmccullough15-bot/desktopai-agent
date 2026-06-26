@@ -495,6 +495,74 @@ class TestSystemPathExemptions:
         res = client.get("/openapi.json")
         assert res.status_code == 200
 
+    def test_worker_auto_update_disabled_keeps_worker_flows_running(self, client, api_env, monkeypatch):
+        monkeypatch.setenv("BILL_WORKER_AUTO_UPDATE_ENABLED", "false")
+
+        import main as main_module
+
+        monkeypatch.setattr(
+            main_module,
+            "worker_releases",
+            [
+                {
+                    "id": "release-3-33",
+                    "version": "3.33",
+                    "channel": "stable",
+                    "is_active": True,
+                    "status": "current",
+                    "package_filename": "bill-worker-3.33.zip",
+                    "package_sha256": "a" * 64,
+                    "upload_time": "2026-06-22T00:00:00",
+                }
+            ],
+        )
+
+        payload = {
+            "machine_name": "kill-switch-worker",
+            "machine_uuid": "kill-switch-worker-uuid",
+            "worker_version": "0.3.33",
+            "execution_mode": "interactive_visible",
+        }
+        headers = {"X-Bill-Worker-Key": "worker-test-secret"}
+
+        register = client.post("/worker/register", json=payload, headers=headers)
+        assert register.status_code == 200, register.text
+        register_body = register.json()
+        assert register_body["update"]["update_available"] is False
+        assert register_body["update"]["latest_version"] is None
+        assert register_body["update"]["package_url"] is None
+
+        heartbeat = client.post(
+            "/worker/heartbeat",
+            json={
+                "machine_name": payload["machine_name"],
+                "machine_uuid": payload["machine_uuid"],
+                "status": "idle",
+                "worker_version": payload["worker_version"],
+            },
+            headers=headers,
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+
+        task_poll = client.get(
+            "/worker/tasks/next",
+            params={"machine_uuid": payload["machine_uuid"]},
+            headers=headers,
+        )
+        assert task_poll.status_code == 200, task_poll.text
+        assert task_poll.json() is None
+
+        update_check = client.get(
+            "/worker/update/check",
+            params={"machine_uuid": payload["machine_uuid"], "current_version": payload["worker_version"]},
+            headers=headers,
+        )
+        assert update_check.status_code == 200, update_check.text
+        check_body = update_check.json()
+        assert check_body["update_available"] is False
+        assert check_body["latest_version"] is None
+        assert check_body["package_url"] is None
+
 
 class TestTokenizedDirectDownloadExemptions:
     def test_worker_token_download_allows_no_dashboard_header(self, client, tmp_path: Path, monkeypatch):

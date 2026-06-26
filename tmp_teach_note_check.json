@@ -1,0 +1,72 @@
+{
+  "question_status": 404,
+  "question": {
+    "detail": "Teach session not found"
+  },
+  "answer_result": {
+    "skipped": "no_prompt"
+  },
+  "action_status": 200,
+  "action_body": {
+    "reply": "Action captured.",
+    "teaching_session": {
+      "session_id": "75f8236d-2e1e-48be-85cd-36c20b1047ab",
+      "workflow_name": "trackvia_e2e_teach_validation",
+      "workflow_summary": null,
+      "status": "intro",
+      "steps": [
+        {
+          "id": "9350ce5e-69ea-435b-8bae-6904f0c62806",
+          "order": 1,
+          "title": "Observed browser activity",
+          "observed_actions": [
+            {
+              "id": "f201eab3-9320-4972-9c22-6b8e7bc8a276",
+              "type": "navigate",
+              "selector": null,
+              "label": null,
+              "value_redacted": null,
+              "url": "https://go.trackvia.com/#/signin",
+              "timestamp": "2026-05-22T15:47:29.124380+00:00"
+            },
+            {
+              "id": "65a87ba9-0b76-43ec-9baa-0581fe2eb467",
+              "type": "navigate",
+              "selector": null,
+              "label": null,
+              "value_redacted": null,
+              "url": "https://go.trackvia.com/#/home",
+              "timestamp": "2026-05-22T15:47:29.955340+00:00"
+            },
+            {
+              "id": "e2e-action-1",
+              "type": "click",
+              "selector": "button[type='submit']",
+              "label": "Sign In",
+              "value_redacted": null,
+              "url": "https://go.trackvia.com/#/signin",
+              "timestamp": "2026-05-22T11:48:00Z"
+            }
+          ],
+          "employee_explanation": null,
+          "bill_summary": "",
+          "bill_confidence": 0.5,
+          "pending_question": null,
+          "reasoning_reason": null,
+          "needs_reasoning": false,
+          "unanswered_question": false,
+          "last_reasoned_at": null,
+          "decision_rules": [],
+          "exceptions": [],
+          "required_inputs": [],
+          "confirmed": false
+        }
+      ],
+      "page_context_snapshot": null,
+      "page_context_history": []
+    },
+    "copilot_notice": null,
+    "copilot_interpretation": null,
+    "copilot_question": null
+  }
+}

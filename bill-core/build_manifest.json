@@ -1,0 +1,16 @@
+{
+  "app_name": "bill-core",
+  "build_timestamp": "2026-06-17T15:09:42.936882+00:00",
+  "git_commit": "296ee58",
+  "python_version": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+  "required_files_present": {
+    "main.py": true,
+    "task_service.py": true,
+    "conversational/__init__.py": true,
+    "conversational/conversation_service.py": true,
+    "requirements.txt": true,
+    "Procfile": true
+  },
+  "all_required_files_ok": true,
+  "package_type": "backend"
+}

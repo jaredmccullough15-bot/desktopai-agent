@@ -1,0 +1,22 @@
+2026-05-07 13:59:58,972 | WARNING | Playbook endpoints unavailable: No module named 'playbook_endpoints'
+2026-05-07 13:59:59,008 | INFO | Navigation rules file does not exist: C:\Ai Agent\desktop-ai-agent\bill-core\navigation_rules_by_tenant.json
+INFO:     Started server process [5720]
+INFO:     Waiting for application startup.
+2026-05-07 13:59:59,083 | INFO | BILL_CORE_STARTUP_CHECK status=ok version=70d0787 required_files=ok imports=ok
+2026-05-07 13:59:59,097 | INFO | DB tables created / verified OK (url=sqlite:///C:\Ai Agent\desktop-ai-agent\bill-core\bill_core.db)
+2026-05-07 13:59:59,099 | INFO | Server running on: http://0.0.0.0:8000
+2026-05-07 13:59:59,099 | INFO | Loaded workflows: 3 from C:\Ai Agent\desktop-ai-agent\bill-core\workflows_registry.json
+2026-05-07 13:59:59,099 | INFO | Loaded brain audit entries: 18
+2026-05-07 13:59:59,099 | INFO | Loaded operational memory entries: 235
+2026-05-07 13:59:59,099 | INFO | Loaded task reflections: 15
+2026-05-07 13:59:59,099 | INFO | Loaded improvement proposals: 4
+2026-05-07 13:59:59,100 | INFO | Loaded workflow SOP summaries: 5
+2026-05-07 13:59:59,100 | INFO | Loaded interactive prompts: 2
+2026-05-07 13:59:59,100 | INFO | Loaded conversation preferences: 0
+2026-05-07 13:59:59,100 | INFO | Loaded workflow learning drafts: 1
+2026-05-07 13:59:59,100 | INFO | Loaded learned procedure templates: 1
+2026-05-07 13:59:59,100 | INFO | Loaded worker releases: 11 (packages dir: C:\Ai Agent\desktop-ai-agent\bill-core\worker-packages)
+2026-05-07 13:59:59,100 | INFO | Loaded navigation rules for 0 tenant(s)
+2026-05-07 13:59:59,100 | INFO | Active worker release: v0.3.32 id=4aac9373-2e3a-4839-9db5-021bbc412ade channel=optional
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)

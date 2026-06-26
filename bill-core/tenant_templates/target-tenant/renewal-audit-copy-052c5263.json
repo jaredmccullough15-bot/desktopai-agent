@@ -1,0 +1,69 @@
+{
+  "tenant_id": "target-tenant",
+  "workflow_id": "renewal-audit-copy-052c5263",
+  "workflow_name": "Renewal Audit",
+  "description": "",
+  "version": "1.0.0",
+  "enabled": false,
+  "created_at": "2026-06-25T13:35:14.598919Z",
+  "updated_at": "2026-06-25T13:35:14.702617Z",
+  "systems": [],
+  "actions": [
+    {
+      "action_key": "noop.action",
+      "action_type": "noop",
+      "description": "No-op action",
+      "steps": [],
+      "required_identity_score": 0,
+      "requires_human_approval": false,
+      "verification_steps": [],
+      "rollback_or_recovery_notes": null,
+      "notes": null
+    }
+  ],
+  "identity_policy": {
+    "fields": [],
+    "auto_proceed_score": 70,
+    "human_review_score": 40,
+    "block_below_score": 40,
+    "notes": null
+  },
+  "decision_rules": [
+    {
+      "rule_id": "rule-1",
+      "description": "Always noop",
+      "priority": 1,
+      "conditions": [
+        {
+          "field": "audit.status",
+          "operator": "eq",
+          "value": "any"
+        }
+      ],
+      "condition_logic": "all",
+      "action_key": "noop.action",
+      "notes": null
+    }
+  ],
+  "safety_policy": {
+    "never_update_on_name_only": true,
+    "require_identity_score_for_crm_actions": true,
+    "dry_run_default": true,
+    "require_human_approval_for_first_n_runs": 50,
+    "screenshot_before_action": true,
+    "screenshot_after_action": true,
+    "audit_log_required": true,
+    "duplicate_action_check_required": true,
+    "notes": null
+  },
+  "required_inputs": [],
+  "identity_required": false,
+  "identity_fields": [],
+  "tags": [],
+  "metadata": {
+    "copied_from_tenant_id": "source-tenant",
+    "copied_from_record_id": "renewal-audit",
+    "copied_by_user_id": "81099d6b-0945-4eb5-9807-b28745e9a0da",
+    "copied_at": "2026-06-25T13:35:14.702484Z"
+  }
+}

@@ -1,0 +1,757 @@
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class WorkerRegisterRequest(BaseModel):
+    machine_name: str
+    machine_uuid: str
+    worker_version: str | None = None
+    execution_mode: str | None = None
+    current_task_id: str | None = None
+    current_step: str | None = None
+
+
+class WorkerUpdateInstruction(BaseModel):
+    update_available: bool
+    force_update: bool = False
+    current_version: str
+    latest_version: str | None = None
+    package_url: str | None = None
+    package_sha256: str | None = None
+    updater_script_url: str | None = None
+    message: str | None = None
+
+
+class WorkerRegisterResponse(BaseModel):
+    token: str
+    machine_uuid: str
+    connection_confirmed: bool = True
+    update: WorkerUpdateInstruction | None = None
+
+
+class WorkerHeartbeatRequest(BaseModel):
+    machine_name: str
+    machine_uuid: str
+    status: str = "idle"
+    worker_version: str | None = None
+    execution_mode: str | None = None
+    current_task_id: str | None = None
+    current_step: str | None = None
+    update_status: str | None = None
+    update_target_version: str | None = None
+    update_error: str | None = None
+
+
+class WorkerUpdateCheckResponse(WorkerUpdateInstruction):
+    pass
+
+
+class WorkerReleaseRecord(BaseModel):
+    id: str
+    version: str
+    upload_time: str
+    release_notes: str | None = None
+    package_filename: str
+    package_sha256: str | None = None
+    is_active: bool = False
+    channel: str = "optional"
+
+
+class WorkerDeployRequest(BaseModel):
+    machine_uuids: list[str] | None = None
+    force: bool = False
+    idle_only: bool = False
+
+
+class WorkerDeployResponse(BaseModel):
+    queued: list[str]
+    skipped: list[str]
+    message: str
+
+
+class TaskCreateRequest(BaseModel):
+    task_type: str | None = None
+    mode: str | None = None
+    url: str | None = None
+    selector: str | None = None
+    value: str | None = None
+    timeout_ms: int | None = None
+    name: str | None = None
+    steps: list[dict[str, Any]] | None = None
+    target_machine_uuid: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+    def normalized_payload(self) -> dict[str, Any]:
+        merged_payload = dict(self.payload)
+
+        if self.task_type:
+            merged_payload["task_type"] = self.task_type
+
+        if self.mode:
+            merged_payload["mode"] = self.mode
+
+        if self.url:
+            merged_payload["url"] = self.url
+
+        if self.selector:
+            merged_payload["selector"] = self.selector
+
+        if self.value is not None:
+            merged_payload["value"] = self.value
+
+        if self.timeout_ms is not None:
+            merged_payload["timeout_ms"] = self.timeout_ms
+
+        if self.name:
+            merged_payload["name"] = self.name
+
+        if self.steps is not None:
+            merged_payload["steps"] = self.steps
+
+        if self.target_machine_uuid:
+            merged_payload["target_machine_uuid"] = self.target_machine_uuid
+
+        return merged_payload
+
+
+class TaskCreateResponse(BaseModel):
+    id: str
+    status: str
+
+
+class ProcedureTemplate(BaseModel):
+    name: str
+    task_type: str
+    description: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcedureRunRequest(BaseModel):
+    mode: str | None = None
+    target_machine_uuid: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowTimeoutPolicy(BaseModel):
+    """Per-workflow timeout recovery policy. All fields are optional — defaults apply."""
+    max_step_retries: int = 2
+    max_recovery_attempts: int = 3
+    restart_allowed: bool = True
+    prefer_human_escalation: bool = False
+    step_timeout_ms: int = 20000
+    page_timeout_ms: int = 45000
+    checkpoint_after_n_steps: int = 5
+
+
+class WorkflowRecord(BaseModel):
+    workflow_name: str
+    description: str
+    required_inputs: list[str] = Field(default_factory=list)
+    login_or_session_required: bool = False
+    safe_for_unattended: bool = True
+    compatible_worker_types: list[str] = Field(default_factory=lambda: ["any"])
+    procedure_name: str | None = None
+    timeout_policy: WorkflowTimeoutPolicy | None = None
+
+
+class BrainCommandRequest(BaseModel):
+    command: str
+    target_machine_uuid: str | None = None
+    confirm_execution: bool = False
+    interaction_id: str | None = None
+    guided_answers: dict[str, Any] = Field(default_factory=dict)
+    runtime_adjustments: dict[str, Any] = Field(default_factory=dict)
+    run_with_proposal_id: str | None = None
+
+
+class TeachingStartupState(BaseModel):
+    """Returned inside BrainCommandResponse when a teach_session task is queued.
+
+    The frontend uses this to:
+    - Show a teaching startup overlay immediately (before the browser opens)
+    - Poll GET /api/teaching/session/{session_id}/status every 2 s until active/failed
+    """
+    session_id: str
+    task_id: str | None = None
+    workflow_name: str
+    target_machine_uuid: str | None = None
+    target_machine_name: str | None = None
+    status: str = "browser_opening"  # browser_opening | active | failed
+    message: str = ""
+    overlay_enabled: bool = True
+    voice_prompt_text: str = "Teaching mode is starting. Once the browser opens, tell me what this workflow does."
+
+
+class TeachingStartupStatusRequest(BaseModel):
+    """Worker calls POST /api/teaching/session/{session_id}/status with this body."""
+    status: str  # active | failed
+    task_id: str | None = None
+    message: str = ""
+
+
+class BrowserAction(BaseModel):
+    id: str
+    type: Literal["click", "type", "navigate", "select", "submit"]
+    selector: str | None = None
+    label: str | None = None
+    value_redacted: str | None = None
+    url: str | None = None
+    timestamp: str
+
+
+class TeachingSessionActionRequest(BaseModel):
+    action: BrowserAction
+    step_id: str | None = None
+    page_context: dict | None = None         # raw PageContextSnapshot from browser
+
+
+class WorkflowStep(BaseModel):
+    id: str
+    order: int
+    title: str
+    observed_actions: list[BrowserAction] = Field(default_factory=list)
+    employee_explanation: str | None = None
+    bill_summary: str = ""
+    bill_confidence: float = 0.0
+    pending_question: str | None = None
+    reasoning_reason: str | None = None
+    needs_reasoning: bool = False
+    unanswered_question: bool = False
+    last_reasoned_at: str | None = None
+    decision_rules: list[str] = Field(default_factory=list)
+    exceptions: list[str] = Field(default_factory=list)
+    required_inputs: list[str] = Field(default_factory=list)
+    confirmed: bool = False
+
+
+class TeachingSession(BaseModel):
+    session_id: str
+    workflow_name: str
+    workflow_summary: str | None = None
+    status: Literal["intro", "teaching", "review", "approved"] = "intro"
+    steps: list[WorkflowStep] = Field(default_factory=list)
+    page_context_snapshot: dict | None = None  # last captured PageContextSnapshot
+    page_context_history: list[dict] = Field(default_factory=list)
+
+
+class TeachingSessionMessageRequest(BaseModel):
+    message: str
+    step_id: str | None = None
+
+
+class TeachingSessionMessageResponse(BaseModel):
+    reply: str
+    teaching_session: TeachingSession
+    copilot_notice: str | None = None        # "I saw you …"
+    copilot_interpretation: str | None = None  # "I think this …"
+    copilot_question: str | None = None      # "Bill's question"
+
+
+class TeachingReasoningRequest(BaseModel):
+    step_id: str | None = None
+    latest_employee_message: str | None = None
+
+
+class TeachingReasoningResponse(BaseModel):
+    bill_summary: str
+    suggested_step_title: str
+    question: str
+    confidence: float
+    should_interrupt: bool
+    reason: str
+    step_id: str | None = None
+    step_order: int | None = None
+
+
+class TeachingSessionReviewStepSummary(BaseModel):
+    step_id: str
+    order: int
+    title: str
+    confirmed: bool
+    bill_summary: str = ""
+    employee_explanation: str | None = None
+    observed_actions: list[BrowserAction] = Field(default_factory=list)
+    decision_rules: list[str] = Field(default_factory=list)
+    exceptions: list[str] = Field(default_factory=list)
+    required_inputs: list[str] = Field(default_factory=list)
+
+
+class TeachingSessionReviewSummary(BaseModel):
+    workflow_summary: str = ""
+    total_steps: int = 0
+    confirmed_steps: int = 0
+    unconfirmed_steps: int = 0
+    steps: list[TeachingSessionReviewStepSummary] = Field(default_factory=list)
+
+
+class TeachingSessionReviewResponse(BaseModel):
+    reply: str
+    teaching_session: TeachingSession
+    review_summary: TeachingSessionReviewSummary
+    warnings: list[str] = Field(default_factory=list)
+    draft_result: dict[str, Any] | None = None
+    execution_readiness: dict[str, Any] | None = None
+
+
+class BrainCommandResponse(BaseModel):
+    recognized_intent: str
+    command: str
+    before_execution: str
+    after_execution: str
+    reply: str | None = None
+    selected_workflow: str | None = None
+    selected_worker_uuid: str | None = None
+    selected_worker_name: str | None = None
+    suggested_next_action: str | None = None
+    retry_recommended: bool = False
+    requires_confirmation: bool = False
+    pending_interaction_id: str | None = None
+    pending_questions: list[str] = Field(default_factory=list)
+    live_reasoning: list[str] = Field(default_factory=list)
+    task: TaskCreateResponse | None = None
+    speak_response: bool = False
+    voice_text: str | None = None
+    suggested_emotion: str | None = None
+    suggested_style_profile: str | None = None
+    voice_event_type: str | None = None
+    teaching_mode: TeachingStartupState | None = None
+    teaching_session: TeachingSession | None = None  # Apprentice-mode session included at creation
+
+
+class InteractivePromptRecord(BaseModel):
+    interaction_id: str
+    created_at: str
+    interaction_type: str
+    command: str
+    workflow_name: str | None = None
+    task_id: str | None = None
+    status: str = "pending"
+    recommendation: str
+    questions: list[str] = Field(default_factory=list)
+    pending_adjustments: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class InteractivePromptDecisionRequest(BaseModel):
+    approved: bool
+    adjustments: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+
+
+class GuidedExecutionStartRequest(BaseModel):
+    workflow_name: str
+    target_machine_uuid: str | None = None
+    initial_answers: dict[str, Any] = Field(default_factory=dict)
+
+
+class GuidedExecutionAnswerRequest(BaseModel):
+    answers: dict[str, Any] = Field(default_factory=dict)
+    continue_execution: bool = True
+
+
+class RunWithImprovementRequest(BaseModel):
+    target_machine_uuid: str | None = None
+    confirm_execution: bool = False
+    runtime_adjustments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConversationPreferenceRecord(BaseModel):
+    key: str
+    value: Any
+    updated_at: str
+
+
+class ConversationPreferenceUpdateRequest(BaseModel):
+    key: str
+    value: Any
+
+
+class OperationalMemoryRecord(BaseModel):
+    id: str
+    timestamp: str
+    kind: str
+    summary: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+
+
+class HumanExplanation(BaseModel):
+    what_happened: str = ""
+    likely_cause: str = ""
+    meaning: str = ""
+    recommended_next_action: str = ""
+    category: str = "unknown"
+    memory_hint: str | None = None
+
+
+class TaskReflectionRecord(BaseModel):
+    id: str
+    timestamp: str
+    task_id: str
+    workflow_name: str | None = None
+    worker_name: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    status: str = "unknown"
+    failure_stage: str | None = None
+    failure_classification: str | None = None
+    likely_root_cause: str = "unknown"
+    supporting_evidence: str = ""
+    recommended_next_action: str = ""
+    retry_strategy: str | None = None
+    alternative_worker: str | None = None
+    potential_fix: str | None = None
+    recommendation_feedback: list[str] = Field(default_factory=list)
+    confidence: float = 0.5
+    # Human-readable explanation layer
+    human_summary: str | None = None
+    human_explanation: HumanExplanation | None = None
+    # Timeout-specific recovery fields (populated when failure_classification == "timeout")
+    timeout_type: str | None = None
+    timeout_recovery_attempts: int | None = None
+    timeout_recovery_log: list[dict[str, Any]] | None = None
+    timeout_restart_attempted: bool | None = None
+    timeout_narrative: str | None = None
+    timeout_policy_applied: dict[str, Any] | None = None
+
+
+class ImprovementProposalRecord(BaseModel):
+    proposal_id: str
+    created_at: str
+    workflow_name: str
+    worker_name: str | None = None
+    proposal_type: str
+    title: str
+    description: str
+    supporting_evidence: list[str] = Field(default_factory=list)
+    confidence: float = 0.5
+    recommended_change: str
+    status: str = "open"
+    feedback: list[str] = Field(default_factory=list)
+
+
+class ProposalStatusUpdateRequest(BaseModel):
+    status: str
+
+
+class ProposalFeedbackRequest(BaseModel):
+    feedback: str
+
+
+class WorkflowSOPSummaryRecord(BaseModel):
+    workflow_name: str
+    purpose: str
+    prerequisites: list[str] = Field(default_factory=list)
+    normal_flow: list[str] = Field(default_factory=list)
+    common_failures: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    best_worker_patterns: list[str] = Field(default_factory=list)
+    updated_at: str
+
+
+class WorkflowSOPUpdateRequest(BaseModel):
+    purpose: str | None = None
+    prerequisites: list[str] | None = None
+    normal_flow: list[str] | None = None
+    common_failures: list[str] | None = None
+    recommended_fixes: list[str] | None = None
+    best_worker_patterns: list[str] | None = None
+
+
+class WorkflowVariableDefinition(BaseModel):
+    """Top-level variable registry entry for a workflow draft."""
+    field_key: str
+    label: str = ""
+    is_variable: bool = True
+    # source: user_input | derived | constant
+    source: str = "user_input"
+    default_value: str = ""
+    prompt_question: str = ""
+    example_value: str = ""
+
+
+class WorkflowStepValidation(BaseModel):
+    """Validation contract for a single workflow step."""
+    success_condition: str = ""
+    failure_condition: str = ""
+    recovery_strategy: str = ""
+
+
+class WorkflowLearningCreateRequest(BaseModel):
+    learning_path: str
+    source_text: str | None = None
+    workflow_name: str | None = None
+    goal: str | None = None
+
+
+class WorkflowExecutionReadiness(BaseModel):
+    executable: bool = False
+    runnable: bool = False
+    has_start_url: bool = False
+    start_url: str | None = None
+    executable_action_count: int = 0
+    manual_action_count: int = 0
+    redacted_input_count: int = 0
+    blocking_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class WorkflowLearningDraftRecord(BaseModel):
+    draft_id: str
+    tenant_id: str | None = None
+    created_at: str
+    updated_at: str
+    learning_path: str
+    workflow_name: str
+    goal: str
+    description: str
+    required_inputs: list[str] = Field(default_factory=list)
+    identity_required: bool = False
+    identity_fields: list[str] = Field(default_factory=list)
+    required_session_state: list[str] = Field(default_factory=list)
+    safe_for_unattended: bool = False
+    steps: list[dict[str, Any]] = Field(default_factory=list)
+    # Top-level variable registry (promoted from per-step variable_inputs)
+    variables: list[dict[str, Any]] = Field(default_factory=list)
+    validation_rules: list[str] = Field(default_factory=list)
+    fallback_strategies: list[str] = Field(default_factory=list)
+    common_failures: list[str] = Field(default_factory=list)
+    review_status: str = "draft"
+    reviewer_notes: str | None = None
+    published_workflow_name: str | None = None
+    observation_question_frequency: Literal["low", "medium", "high"] = "medium"
+    observation_questions_paused: bool = False
+    observation_skip_all_questions: bool = False
+    rule_suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    workflow_annotations: list[dict[str, Any]] = Field(default_factory=list)
+    training_memory: list[dict[str, Any]] = Field(default_factory=list)
+    navigation_rules: list[dict[str, Any]] = Field(default_factory=list)
+    execution_readiness: WorkflowExecutionReadiness = Field(default_factory=WorkflowExecutionReadiness)
+    # Teaching loop state
+    teaching_complete: bool = False
+    teaching_pending_step: int | None = None
+
+
+class WorkflowDraftStatusUpdateRequest(BaseModel):
+    review_status: str
+    reviewer_notes: str | None = None
+
+
+class WorkflowDraftTestRequest(BaseModel):
+    target_machine_uuid: str | None = None
+    guided_mode: bool = True
+    runtime_adjustments: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowDraftPublishRequest(BaseModel):
+    approved_by: str | None = None
+    publish_notes: str | None = None
+
+
+class WorkflowDraftStructureUpdateRequest(BaseModel):
+    steps: list[dict[str, Any]] | None = None
+    required_inputs: list[str] | None = None
+    identity_required: bool | None = None
+    identity_fields: list[str] | None = None
+    validation_rules: list[str] | None = None
+    fallback_strategies: list[str] | None = None
+    common_failures: list[str] | None = None
+    variables: list[dict[str, Any]] | None = None
+
+
+class TeachingStepQuestion(BaseModel):
+    """A single question asked during the interactive teaching loop."""
+    step_order: int
+    field: str
+    question: str
+    current_value: str | None = None
+    options: list[str] = Field(default_factory=list)
+
+
+class TeachingSessionQuestion(BaseModel):
+    """Teaching loop response: next step that needs clarification."""
+    draft_id: str
+    step_order: int
+    step_name: str
+    questions: list[TeachingStepQuestion] = Field(default_factory=list)
+    teaching_complete: bool = False
+    steps_remaining: int = 0
+
+
+class TeachingStepAnswerItem(BaseModel):
+    field: str
+    value: str
+
+
+class TeachingSessionAnswerRequest(BaseModel):
+    """Submit answers for one step's teaching questions."""
+    step_order: int
+    answers: list[TeachingStepAnswerItem] = Field(default_factory=list)
+
+
+class AppendStepRequest(BaseModel):
+    """A single observed browser action to append to a workflow draft."""
+    action: str
+    selector: str = ""
+    url: str = ""
+    value: str = ""
+    option: str = ""
+    step_name: str = ""
+    intent: str = ""
+    description: str = ""
+    element_label: str = ""
+    element_tag: str = ""
+    element_type: str = ""
+    captured_at: str = ""
+    event_type: str = ""
+    system_context: dict[str, Any] = Field(default_factory=dict)
+    observation_triggers: list[str] = Field(default_factory=list)
+
+
+class ObservationQuestionPrompt(BaseModel):
+    prompt_id: str
+    draft_id: str
+    step_order: int
+    trigger_type: Literal[
+        "system_switch",
+        "decision_point",
+        "classification_step",
+        "unknown_pattern",
+        "system_selection",
+        "domain_navigation",
+        "navigation_decision",
+    ]
+    question_type: Literal[
+        "check",
+        "decision",
+        "classification",
+        "why_action",
+        "navigation_why",
+        "navigation_which",
+        "navigation_source",
+        "navigation_rule",
+    ]
+    question: str
+    system_context: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["pending", "answered", "skipped", "later", "known"] = "pending"
+    can_skip: bool = True
+    can_answer_later: bool = True
+    voice_supported: bool = True
+
+
+class ObservationQuestionAnswerRequest(BaseModel):
+    prompt_id: str
+    step_order: int
+    action: Literal["answer", "skip", "later", "known", "pause", "resume", "skip_all", "set_frequency"] = "answer"
+    answer: str = ""
+    response_mode: Literal["text", "voice", "control"] = "text"
+    question_type: str | None = None
+    trigger_type: str | None = None
+    question_frequency: Literal["low", "medium", "high"] | None = None
+    system_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ObservationQuestionAnswerResponse(BaseModel):
+    draft_id: str
+    step_order: int
+    prompt_id: str
+    status: str
+    saved_answer: bool = False
+    observation_question_frequency: Literal["low", "medium", "high"] = "medium"
+    observation_questions_paused: bool = False
+    observation_skip_all_questions: bool = False
+    generated_rule_candidate: dict[str, Any] | None = None
+
+
+class NavigationMapping(BaseModel):
+    """Single field → system mapping rule."""
+    mapping_id: str
+    source_field: str
+    source_value: str
+    target_system: str
+    target_url_pattern: str = ""
+    confidence: float = 1.0
+    learned_from_answers: int = 1
+    is_rule_always: bool = True
+    captured_at: str
+    updated_at: str
+
+
+class NavigationRule(BaseModel):
+    """A learned navigation path: how to choose a system and reach it."""
+    rule_id: str
+    draft_id: str
+    step_order: int
+    trigger_type: Literal["system_selection", "domain_navigation", "navigation_decision"]
+    question_type: Literal["navigation_why", "navigation_which", "navigation_source", "navigation_rule"]
+    condition: str
+    current_system: str = ""
+    target_system: str
+    target_url_pattern: str = ""
+    system_context: dict[str, Any] = Field(default_factory=dict)
+    mappings: list[NavigationMapping] = Field(default_factory=list)
+    answer: str
+    response_mode: str = "text"
+    status: str = "candidate"
+    source: str = "interactive_observation"
+    captured_at: str
+    updated_at: str
+
+
+class NavigationRuleMapping(BaseModel):
+    """Multi-tenant navigation mapping store."""
+    tenant_id: str
+    workflow_id: str | None = None
+    navigation_rules: list[NavigationRule] = Field(default_factory=list)
+    missing_mappings_warnings: list[str] = Field(default_factory=list)
+    applied_rules_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class TeachSessionStartRequest(BaseModel):
+    """Request body to launch a Playwright teach session from the dashboard."""
+    start_url: str = ""
+    api_base: str = ""
+    target_machine_uuid: str = ""  # When set, queues task to that worker instead of spawning locally
+
+
+class TaskCompleteRequest(BaseModel):
+    machine_uuid: str
+    result_json: dict[str, Any] | None = None
+
+
+class TaskFailRequest(BaseModel):
+    machine_uuid: str
+    error: str
+    result_json: dict[str, Any] | None = None
+    # Optional step context for richer timeout classification
+    step_name: str | None = None
+    step_index: int | None = None
+    recovery_context: dict[str, Any] | None = None
+
+
+class TaskRecord(BaseModel):
+    id: str
+    payload: dict[str, Any]
+    status: str
+    assigned_machine_uuid: str | None = None
+    result_json: dict[str, Any] | None = None
+    error: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    completed_at: str | None = None
+    logs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class MachineRecord(BaseModel):
+    machine_uuid: str
+    machine_name: str
+    status: str
+    worker_version: str | None = None
+    last_seen: str | None = None
+    online: bool
+    execution_mode: str | None = None
+    current_task_id: str | None = None
+    current_step: str | None = None

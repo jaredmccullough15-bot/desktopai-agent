@@ -885,7 +885,7 @@ function KnowledgeCenterTab(props: AdvancedToolsTabsProps) {
             value={newContent}
             onChange={(event) => setNewContent(event.target.value)}
             placeholder="Knowledge content"
-            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+            className="mt-2 min-h-[240px] w-full resize-y rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
           />
           <button
             type="button"
@@ -970,7 +970,7 @@ function KnowledgeCenterTab(props: AdvancedToolsTabsProps) {
                         <option value="archived">archived</option>
                       </select>
                     </div>
-                    <textarea rows={10} value={editContent} onChange={(event) => setEditContent(event.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+                    <textarea rows={10} value={editContent} onChange={(event) => setEditContent(event.target.value)} className="min-h-[320px] w-full resize-y rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"

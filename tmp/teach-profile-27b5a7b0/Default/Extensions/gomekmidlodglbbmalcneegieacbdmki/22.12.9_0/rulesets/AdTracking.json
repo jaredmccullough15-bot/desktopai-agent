@@ -1,0 +1,1857 @@
+[
+  {
+    "id": 705,
+    "condition": {
+      "requestDomains": [
+        "doubleclick.net",
+        "2mdn.net"
+      ],
+      "regexFilter": "([0-9a-z]+\\.)?([0-9a-z]|-|_)+\\.doubleclick\\.net|(([0-9a-z]|-)+\\.)?([0-9a-z]|-|_)+\\.2mdn\\.net"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 707,
+    "condition": {
+      "requestDomains": [
+        "adnxs.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 708,
+    "condition": {
+      "requestDomains": [
+        "quantserve.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 717,
+    "condition": {
+      "requestDomains": [
+        "rubiconproject.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 718,
+    "condition": {
+      "requestDomains": [
+        "turn.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 719,
+    "condition": {
+      "requestDomains": [
+        "bluekai.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 720,
+    "condition": {
+      "requestDomains": [
+        "invitemedia.com"
+      ],
+      "regexFilter": "(([0-9a-z]|-|_)+\\.)?(([0-9a-z]|-|_)+\\.)?([0-9a-z]|-|_)+\\.invitemedia\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 721,
+    "condition": {
+      "requestDomains": [
+        "admeld.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 722,
+    "condition": {
+      "requestDomains": [
+        "twittercounter.com"
+      ],
+      "regexFilter": "(cdn|button)\\.twittercounter\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 729,
+    "condition": {
+      "requestDomains": [
+        "googletagservices.com"
+      ],
+      "regexFilter": "\\.googletagservices\\.com\\/tag\\/js\\/(.+)\\.js"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 733,
+    "condition": {
+      "requestDomains": [
+        "gemius.pl"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 735,
+    "condition": {
+      "requestDomains": [
+        "mathtag.com"
+      ],
+      "regexFilter": "([0-9a-z]+\\.)?([0-9a-z]+\\.)?[0-9a-z]+\\.mathtag\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 739,
+    "condition": {
+      "requestDomains": [
+        "brightcove.com"
+      ],
+      "regexFilter": "([a-z0-9]+\\.)brightcove\\.com\\/1pix\\.gif|metrics\\.brightcove\\.com\\/tracker"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 740,
+    "condition": {
+      "requestDomains": [
+        "tynt.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 748,
+    "condition": {
+      "requestDomains": [
+        "plugrush.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 749,
+    "condition": {
+      "requestDomains": [
+        "exelator.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 751,
+    "condition": {
+      "requestDomains": [
+        "revsci.net",
+        "wunderloop.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 753,
+    "condition": {
+      "requestDomains": [
+        "imrworldwide.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 754,
+    "condition": {
+      "requestDomains": [
+        "crwdcntrl.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 759,
+    "condition": {
+      "requestDomains": [
+        "360yield.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 763,
+    "condition": {
+      "requestDomains": [
+        "demdex.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 767,
+    "condition": {
+      "requestDomains": [
+        "adocean.pl"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 770,
+    "condition": {
+      "requestDomains": [
+        "truste.com"
+      ],
+      "regexFilter": "([a-z0-9]\\.)?choices\\.truste\\.com\\/(get|ca)"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 774,
+    "condition": {
+      "requestDomains": [
+        "rfihub.com"
+      ],
+      "regexFilter": "(a|p|([0-9])p)\\.rfihub\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 786,
+    "condition": {
+      "requestDomains": [
+        "12mlbe.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 788,
+    "condition": {
+      "requestDomains": [
+        "rlcdn.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 789,
+    "condition": {
+      "requestDomains": [
+        "adadvisor.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 794,
+    "condition": {
+      "requestDomains": [
+        "simpli.fi"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 798,
+    "condition": {
+      "requestDomains": [
+        "247realmedia.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 801,
+    "condition": {
+      "requestDomains": [
+        "tns-counter.ru"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 804,
+    "condition": {
+      "requestDomains": [
+        "ru4.com"
+      ],
+      "regexFilter": "([0-9a-z]+)\\.xp1\\.ru4\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 805,
+    "condition": {
+      "requestDomains": [
+        "media6degrees.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 816,
+    "condition": {
+      "requestDomains": [
+        "ligatus.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 823,
+    "condition": {
+      "requestDomains": [
+        "acxiom-online.com"
+      ],
+      "regexFilter": "p?\\.acxiom\\-online\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 827,
+    "condition": {
+      "requestDomains": [
+        "weborama.fr"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 828,
+    "condition": {
+      "requestDomains": [
+        "nonstoppartner.net"
+      ],
+      "regexFilter": "(a|banner|dynpng)\\.nonstoppartner\\.net"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 829,
+    "condition": {
+      "requestDomains": [
+        "contentspread.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 837,
+    "condition": {
+      "requestDomains": [
+        "luxup.ru"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 847,
+    "condition": {
+      "requestDomains": [
+        "townnews.com"
+      ],
+      "regexFilter": "(stats|adimages|adsys)\\.townnews\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 851,
+    "condition": {
+      "requestDomains": [
+        "adhitzads.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 859,
+    "condition": {
+      "requestDomains": [
+        "connexity.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 874,
+    "condition": {
+      "requestDomains": [
+        "crsspxl.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 885,
+    "condition": {
+      "requestDomains": [
+        "navdmp.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 899,
+    "condition": {
+      "requestDomains": [
+        "eloqua.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 906,
+    "condition": {
+      "requestDomains": [
+        "bluelithium.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 908,
+    "condition": {
+      "requestDomains": [
+        "r7.com"
+      ],
+      "regexFilter": "parceiro\\.log\\.r7\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 909,
+    "condition": {
+      "requestDomains": [
+        "ebay.com"
+      ],
+      "regexFilter": "(rover|stats)\\.ebay\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 925,
+    "condition": {
+      "requestDomains": [
+        "uicdn.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 714,
+    "condition": {
+      "requestDomains": [
+        "googleadservices.com",
+        "googlesyndication.com"
+      ],
+      "regexFilter": "([0-9a-z]+\\.)?googleadservices\\.com|([0-9a-z]+\\.)?([0-9a-z]|-|_)+\\.googlesyndication\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 716,
+    "condition": {
+      "requestDomains": [
+        "yieldmanager.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 723,
+    "condition": {
+      "requestDomains": [
+        "openx.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 724,
+    "condition": {
+      "requestDomains": [
+        "criteo.com",
+        "criteo.net"
+      ],
+      "regexFilter": "([0-9a-z]+\\.)?([0-9a-z]+\\.)?[0-9a-z]+\\.criteo\\.(com|net)"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 725,
+    "condition": {
+      "requestDomains": [
+        "pubmatic.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 730,
+    "condition": {
+      "requestDomains": [
+        "atdmt.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 731,
+    "condition": {
+      "requestDomains": [
+        "flashtalking.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 732,
+    "condition": {
+      "requestDomains": [
+        "adtech.de",
+        "adtechus.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 734,
+    "condition": {
+      "requestDomains": [
+        "serving-sys.com"
+      ],
+      "regexFilter": "([0-9a-z]+\\.)?([0-9a-z]+\\.)?[0-9a-z]+\\.serving\\-sys\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 736,
+    "condition": {
+      "requestDomains": [
+        "exoclick.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 737,
+    "condition": {
+      "requestDomains": [
+        "contextweb.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 738,
+    "condition": {
+      "requestDomains": [
+        "tribalfusion.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 741,
+    "condition": {
+      "requestDomains": [
+        "adroll.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 742,
+    "condition": {
+      "requestDomains": [
+        "zedo.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 743,
+    "condition": {
+      "requestDomains": [
+        "smartadserver.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 744,
+    "condition": {
+      "requestDomains": [
+        "zanox.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 745,
+    "condition": {
+      "requestDomains": [
+        "buysellads.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 746,
+    "condition": {
+      "requestDomains": [
+        "mookie1.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 747,
+    "condition": {
+      "requestDomains": [
+        "intellitxt.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 752,
+    "condition": {
+      "requestDomains": [
+        "adscale.de"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 761,
+    "condition": {
+      "requestDomains": [
+        "saymedia.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 764,
+    "condition": {
+      "requestDomains": [
+        "advertising.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 765,
+    "condition": {
+      "requestDomains": [
+        "w55c.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 766,
+    "condition": {
+      "requestDomains": [
+        "nexac.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 768,
+    "condition": {
+      "requestDomains": [
+        "ad4mat.de"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 771,
+    "condition": {
+      "requestDomains": [
+        "juicyads.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 772,
+    "condition": {
+      "requestDomains": [
+        "heias.com"
+      ],
+      "regexFilter": "([a-z0-9]\\.)?ads\\.heias\\.com|cdn-([a-z0-9]|-)+\\.heias\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 773,
+    "condition": {
+      "requestDomains": [
+        "redintelligence.net"
+      ],
+      "regexFilter": "([0-9a-z]+\\.)?hal9000\\.redintelligence\\.net"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 775,
+    "condition": {
+      "requestDomains": [
+        "e-planning.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 777,
+    "condition": {
+      "requestDomains": [
+        "ibillboard.com",
+        "bbelements.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 781,
+    "condition": {
+      "requestDomains": [
+        "adfox.ru"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 784,
+    "condition": {
+      "requestDomains": [
+        "chango.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 787,
+    "condition": {
+      "requestDomains": [
+        "casalemedia.com"
+      ],
+      "regexFilter": "(as|ip|js|r|[0-9a-z]+)\\.casalemedia\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 790,
+    "condition": {
+      "requestDomains": [
+        "directadvert.ru"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 791,
+    "condition": {
+      "requestDomains": [
+        "sitescout.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 793,
+    "condition": {
+      "requestDomains": [
+        "fastclick.net",
+        "apmebf.com",
+        "yceml.net"
+      ],
+      "regexFilter": "[0-9a-z]+\\.fastclick\\.net|[0-9a-z]+\\.apmebf\\.com|[0-9a-z]+\\.yceml\\.net"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 795,
+    "condition": {
+      "requestDomains": [
+        "adsrvr.org"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 799,
+    "condition": {
+      "requestDomains": [
+        "ero-advertising.com",
+        "data-ero-advertising.com"
+      ],
+      "regexFilter": "(([a-z0-9]\\.)|data\\-)ero\\-advertising\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 800,
+    "condition": {
+      "requestDomains": [
+        "newsinc.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 802,
+    "condition": {
+      "requestDomains": [
+        "bizographics.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 803,
+    "condition": {
+      "requestDomains": [
+        "burstnet.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 806,
+    "condition": {
+      "requestDomains": [
+        "telemetryverification.net"
+      ],
+      "regexFilter": "([0-9a-z]+)\\.telemetryverification\\.net"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 808,
+    "condition": {
+      "requestDomains": [
+        "emediate.eu"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 809,
+    "condition": {
+      "requestDomains": [
+        "tlvmedia.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 811,
+    "condition": {
+      "requestDomains": [
+        "microad.jp"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 812,
+    "condition": {
+      "requestDomains": [
+        "adform.net",
+        "adformdsp.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 813,
+    "condition": {
+      "requestDomains": [
+        "adriver.ru"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 814,
+    "condition": {
+      "requestDomains": [
+        "lijit.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 815,
+    "condition": {
+      "requestDomains": [
+        "adition.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 817,
+    "condition": {
+      "requestDomains": [
+        "wtp101.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 818,
+    "condition": {
+      "requestDomains": [
+        "spotxchange.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 819,
+    "condition": {
+      "requestDomains": [
+        "tradedoubler.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 820,
+    "condition": {
+      "requestDomains": [
+        "i-mobile.co.jp"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 821,
+    "condition": {
+      "requestDomains": [
+        "atemda.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 822,
+    "condition": {
+      "requestDomains": [
+        "amgdgt.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 825,
+    "condition": {
+      "requestDomains": [
+        "sociomantic.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 826,
+    "condition": {
+      "requestDomains": [
+        "fmpub.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 830,
+    "condition": {
+      "requestDomains": [
+        "doubleverify.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 831,
+    "condition": {
+      "requestDomains": [
+        "adzerk.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 832,
+    "condition": {
+      "requestDomains": [
+        "adspirit.de"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 833,
+    "condition": {
+      "requestDomains": [
+        "specificclick.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 834,
+    "condition": {
+      "requestDomains": [
+        "adxpansion.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 835,
+    "condition": {
+      "requestDomains": [
+        "owneriq.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 836,
+    "condition": {
+      "requestDomains": [
+        "cpmstar.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 839,
+    "condition": {
+      "requestDomains": [
+        "atwola.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 840,
+    "condition": {
+      "requestDomains": [
+        "rtbidder.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 841,
+    "condition": {
+      "requestDomains": [
+        "media.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 842,
+    "condition": {
+      "requestDomains": [
+        "active-srv02.de"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 843,
+    "condition": {
+      "requestDomains": [
+        "audienceiq.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 845,
+    "condition": {
+      "requestDomains": [
+        "dotomi.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 846,
+    "condition": {
+      "requestDomains": [
+        "chitika.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 849,
+    "condition": {
+      "requestDomains": [
+        "triggit.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 853,
+    "condition": {
+      "requestDomains": [
+        "agkn.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 854,
+    "condition": {
+      "requestDomains": [
+        "xtendmedia.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 855,
+    "condition": {
+      "requestDomains": [
+        "liverail.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 856,
+    "condition": {
+      "requestDomains": [
+        "afy11.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 857,
+    "condition": {
+      "requestDomains": [
+        "adverticum.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 860,
+    "condition": {
+      "requestDomains": [
+        "collective-media.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 861,
+    "condition": {
+      "requestDomains": [
+        "scanscout.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 862,
+    "condition": {
+      "requestDomains": [
+        "tiqcdn.com"
+      ],
+      "regexFilter": "tags\\.tiqcdn\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 863,
+    "condition": {
+      "requestDomains": [
+        "adap.tv"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 864,
+    "condition": {
+      "requestDomains": [
+        "z5x.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 865,
+    "condition": {
+      "requestDomains": [
+        "nuggad.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 869,
+    "condition": {
+      "requestDomains": [
+        "ad-srv.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 870,
+    "condition": {
+      "requestDomains": [
+        "mythings.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 872,
+    "condition": {
+      "requestDomains": [
+        "castaclip.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 873,
+    "condition": {
+      "requestDomains": [
+        "adaos-ads.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 875,
+    "condition": {
+      "requestDomains": [
+        "impact-ad.jp"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 876,
+    "condition": {
+      "requestDomains": [
+        "tanx.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 878,
+    "condition": {
+      "requestDomains": [
+        "expedia.com"
+      ],
+      "regexFilter": "ads\\.expedia\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 879,
+    "condition": {
+      "requestDomains": [
+        "skimresources.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 882,
+    "condition": {
+      "requestDomains": [
+        "yieldlab.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 883,
+    "condition": {
+      "requestDomains": [
+        "exponential.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 886,
+    "condition": {
+      "requestDomains": [
+        "hiro.tv",
+        "travelplus.tv"
+      ],
+      "regexFilter": "([a-z0-9]+\\.)hiro\\.tv|synd\\.travelplus\\.tv"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 887,
+    "condition": {
+      "requestDomains": [
+        "crowdscience.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 889,
+    "condition": {
+      "requestDomains": [
+        "254a.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 891,
+    "condition": {
+      "requestDomains": [
+        "webmasterplan.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 893,
+    "condition": {
+      "requestDomains": [
+        "teleskipp.de"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 895,
+    "condition": {
+      "requestDomains": [
+        "miokoo.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 897,
+    "condition": {
+      "requestDomains": [
+        "adjug.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 900,
+    "condition": {
+      "requestDomains": [
+        "p-td.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 901,
+    "condition": {
+      "requestDomains": [
+        "technoratimedia.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 903,
+    "condition": {
+      "requestDomains": [
+        "switchadhub.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 905,
+    "condition": {
+      "requestDomains": [
+        "begun.ru"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 907,
+    "condition": {
+      "requestDomains": [
+        "futurecdn.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 910,
+    "condition": {
+      "requestDomains": [
+        "kdukvh.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 912,
+    "condition": {
+      "requestDomains": [
+        "madadsmedia.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 913,
+    "condition": {
+      "requestDomains": [
+        "lucidmedia.com",
+        "tidaltv.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 914,
+    "condition": {
+      "requestDomains": [
+        "adorika.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 915,
+    "condition": {
+      "requestDomains": [
+        "assoc-amazon.com"
+      ],
+      "regexFilter": "(wms|ws|www)\\.assoc\\-amazon\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 918,
+    "condition": {
+      "requestDomains": [
+        "fetchback.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 919,
+    "condition": {
+      "requestDomains": [
+        "ebuzzing.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 921,
+    "condition": {
+      "requestDomains": [
+        "olx-st.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 922,
+    "condition": {
+      "requestDomains": [
+        "advertstream.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 924,
+    "condition": {
+      "requestDomains": [
+        "netmng.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 926,
+    "condition": {
+      "requestDomains": [
+        "clicksor.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 927,
+    "condition": {
+      "requestDomains": [
+        "bidvertiser.com"
+      ],
+      "regexFilter": "(bdv|cdn)\\.bidvertiser\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  }
+]

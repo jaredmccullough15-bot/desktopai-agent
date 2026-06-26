@@ -1,0 +1,70 @@
+[
+  {
+    "id": 796,
+    "condition": {
+      "requestDomains": [
+        "typekit.net"
+      ],
+      "regexFilter": "([a-z0-9].\\+)p\\.typekit\\.net\\/p\\.gif"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 858,
+    "condition": {
+      "requestDomains": [
+        "aweber.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 884,
+    "condition": {
+      "requestDomains": [
+        "outbrain.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 894,
+    "condition": {
+      "requestDomains": [
+        "visualwebsiteoptimizer.com"
+      ],
+      "regexFilter": "[0-9a-z]+\\.visualwebsiteoptimizer\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 902,
+    "condition": {
+      "requestDomains": [
+        "all-up.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 911,
+    "condition": {
+      "requestDomains": [
+        "olark.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  }
+]

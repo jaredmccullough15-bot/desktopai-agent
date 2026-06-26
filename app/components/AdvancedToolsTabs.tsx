@@ -61,6 +61,26 @@ interface WorkflowLearningDraft {
     blocking_reasons?: string[];
     warnings?: string[];
   };
+  created_by_name?: string | null;
+  last_updated_by_name?: string | null;
+  approved_by_name?: string | null;
+}
+
+interface KnowledgeRecord {
+  knowledge_id: string;
+  title: string;
+  category: string;
+  applies_to: string[];
+  content: string;
+  source_type: "manual" | "document" | "imported" | "system";
+  tags: string[];
+  status: "active" | "draft" | "archived";
+  created_by_user_id?: string | null;
+  created_by_name?: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+  tenant_id?: string | null;
 }
 
 interface WorkerRelease {
@@ -139,6 +159,8 @@ const TABS = [
   "Analytics",
   "Voice",
   "Teach Bill",
+  "Knowledge Center",
+  "Extension Downloads",
   "Workflow Builder",
   "Audit Trail",
   "Settings",
@@ -150,6 +172,7 @@ type TabName = (typeof TABS)[number];
 interface AdvancedToolsTabsProps {
   apiBase: string;
   billVoice: BillVoiceHandle;
+  currentUserRole?: "admin" | "teacher" | "runner" | "viewer" | null;
 
   // Audit
   auditEntries: BrainAuditEntry[];
@@ -254,6 +277,39 @@ interface AdvancedToolsTabsProps {
 
   // Chat history
   chatHistory: ChatEntry[];
+
+  // Knowledge center
+  knowledgeEntries: KnowledgeRecord[];
+  knowledgeLoading: boolean;
+  knowledgeError: string | null;
+  knowledgeActionBusyKey: string | null;
+  knowledgeActionFeedback: ActionFeedback | null;
+  onRefreshKnowledge: () => void;
+  onCreateKnowledge: (payload: {
+    title: string;
+    category: string;
+    applies_to: string[];
+    content: string;
+    source_type: "manual" | "document" | "imported" | "system";
+    tags: string[];
+    status: "active" | "draft" | "archived";
+    tenant_id?: string | null;
+  }) => void;
+  onUpdateKnowledge: (
+    knowledgeId: string,
+    payload: {
+      title?: string;
+      category?: string;
+      applies_to?: string[];
+      content?: string;
+      source_type?: "manual" | "document" | "imported" | "system";
+      tags?: string[];
+      status?: "active" | "draft" | "archived";
+      tenant_id?: string | null;
+    }
+  ) => void;
+  onArchiveKnowledge: (knowledgeId: string) => void;
+  onActivateKnowledge: (knowledgeId: string) => void;
 }
 
 // ΓöÇΓöÇ Component ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
@@ -308,6 +364,38 @@ export function AdvancedToolsTabs(props: AdvancedToolsTabsProps) {
 
         {activeTab === "Teach Bill" && (
           <TeachBillTab {...props} />
+        )}
+
+        {activeTab === "Knowledge Center" && (
+          <KnowledgeCenterTab {...props} />
+        )}
+
+        {activeTab === "Extension Downloads" && (
+          <div className="space-y-4 text-sm text-slate-300">
+            <div>
+              <h3 className="text-base font-semibold text-slate-100">Extension Downloads</h3>
+              <p className="mt-1 text-slate-400">
+                The downloadable Chrome extension bundle is shown in the main page sections below.
+                Use the button to jump to it.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Quick access</p>
+              <p className="mt-2 text-slate-300">
+                This tab keeps the extension feature visible in the tab strip, while the actual download and admin management panels remain in the page body.
+              </p>
+              <button
+                type="button"
+                className="mt-3 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400"
+                onClick={() => {
+                  document.getElementById("extension-download-center")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }}
+              >
+                Jump to extension downloads
+              </button>
+            </div>
+          </div>
         )}
 
         {activeTab === "Workflow Builder" && (
@@ -419,6 +507,13 @@ function TeachBillTab(props: AdvancedToolsTabsProps) {
                 Path: {draft.learning_path} ┬╖ Status: {draft.review_status} ┬╖ Updated: {toDisplayTime(draft.updated_at)}
               </p>
               <p className="mt-1 text-xs text-slate-300">{draft.goal}</p>
+                            {(draft.created_by_name || draft.last_updated_by_name || draft.approved_by_name) && (
+                              <p className="mt-1 text-xs text-slate-500">
+                                {draft.created_by_name && <>Taught by: {draft.created_by_name}</>}
+                                {draft.last_updated_by_name && <> · Updated by: {draft.last_updated_by_name}</>}
+                                {draft.approved_by_name && <> · Approved by: {draft.approved_by_name}</>}
+                              </p>
+                            )}
               <p className="mt-1 text-xs text-slate-500">Steps: {(draft.steps as unknown[]).length}</p>
               <p className="mt-1 text-xs text-slate-400">
                 Readiness: {draft.execution_readiness?.runnable
@@ -659,6 +754,262 @@ function WorkflowBuilderTab(props: AdvancedToolsTabsProps) {
           </details>
         )}
       </div>
+    </div>
+  );
+}
+
+function KnowledgeCenterTab(props: AdvancedToolsTabsProps) {
+  const {
+    currentUserRole,
+    knowledgeEntries,
+    knowledgeLoading,
+    knowledgeError,
+    knowledgeActionBusyKey,
+    knowledgeActionFeedback,
+    onRefreshKnowledge,
+    onCreateKnowledge,
+    onUpdateKnowledge,
+    onArchiveKnowledge,
+    onActivateKnowledge,
+  } = props;
+
+  const isAdmin = currentUserRole === "admin";
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "draft" | "archived">("all");
+  const [tagFilter, setTagFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [newTitle, setNewTitle] = useState("");
+  const [newCategory, setNewCategory] = useState("");
+  const [newAppliesTo, setNewAppliesTo] = useState("");
+  const [newTags, setNewTags] = useState("");
+  const [newContent, setNewContent] = useState("");
+  const [newStatus, setNewStatus] = useState<"active" | "draft" | "archived">("draft");
+  const [newSourceType, setNewSourceType] = useState<"manual" | "document" | "imported" | "system">("manual");
+
+  const selectedEntry = knowledgeEntries.find((entry) => entry.knowledge_id === selectedId) ?? null;
+
+  const [editTitle, setEditTitle] = useState("");
+  const [editCategory, setEditCategory] = useState("");
+  const [editAppliesTo, setEditAppliesTo] = useState("");
+  const [editTags, setEditTags] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [editStatus, setEditStatus] = useState<"active" | "draft" | "archived">("draft");
+  const [editSourceType, setEditSourceType] = useState<"manual" | "document" | "imported" | "system">("manual");
+
+  const filteredEntries = knowledgeEntries.filter((entry) => {
+    if (statusFilter !== "all" && entry.status !== statusFilter) return false;
+    if (categoryFilter.trim() && !entry.category.toLowerCase().includes(categoryFilter.trim().toLowerCase())) return false;
+    if (tagFilter.trim()) {
+      const needle = tagFilter.trim().toLowerCase();
+      if (!entry.tags.some((tag) => tag.toLowerCase().includes(needle))) return false;
+    }
+    if (search.trim()) {
+      const needle = search.trim().toLowerCase();
+      const blob = [entry.title, entry.category, entry.content, entry.tags.join(" "), entry.applies_to.join(" ")].join(" ").toLowerCase();
+      if (!blob.includes(needle)) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3 className="text-base font-semibold text-slate-100">Knowledge Center</h3>
+          <p className="text-xs text-slate-400">Reference knowledge for standards, terminology, policies, and CRM guidance.</p>
+        </div>
+        <button type="button" onClick={onRefreshKnowledge} className={BTN_SECONDARY}>Refresh</button>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-4">
+        <input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search title/content"
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100"
+        />
+        <input
+          value={categoryFilter}
+          onChange={(event) => setCategoryFilter(event.target.value)}
+          placeholder="Filter by category"
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100"
+        />
+        <input
+          value={tagFilter}
+          onChange={(event) => setTagFilter(event.target.value)}
+          placeholder="Filter by tag"
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100"
+        />
+        <select
+          value={statusFilter}
+          onChange={(event) => setStatusFilter(event.target.value as "all" | "active" | "draft" | "archived")}
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100"
+        >
+          <option value="all">All statuses</option>
+          <option value="active">Active</option>
+          <option value="draft">Draft</option>
+          <option value="archived">Archived</option>
+        </select>
+      </div>
+
+      {knowledgeError && <p className="text-sm text-rose-300">{knowledgeError}</p>}
+      {knowledgeActionFeedback && (
+        <div className={`rounded-lg px-3 py-2 text-sm ${knowledgeActionFeedback.kind === "success" ? "border border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : "border border-rose-400/30 bg-rose-500/10 text-rose-200"}`}>
+          {knowledgeActionFeedback.message} - {knowledgeActionFeedback.timestamp}
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+          <p className="mb-2 text-xs uppercase tracking-[0.14em] text-slate-400">Create Knowledge Entry</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input value={newTitle} onChange={(event) => setNewTitle(event.target.value)} placeholder="Title" className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+            <input value={newCategory} onChange={(event) => setNewCategory(event.target.value)} placeholder="Category" className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+            <input value={newAppliesTo} onChange={(event) => setNewAppliesTo(event.target.value)} placeholder="Applies To (comma separated)" className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+            <input value={newTags} onChange={(event) => setNewTags(event.target.value)} placeholder="Tags (comma separated)" className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+            <select value={newSourceType} onChange={(event) => setNewSourceType(event.target.value as "manual" | "document" | "imported" | "system")} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100">
+              <option value="manual">manual</option>
+              <option value="document">document</option>
+              <option value="imported">imported</option>
+              <option value="system">system</option>
+            </select>
+            <select value={newStatus} onChange={(event) => setNewStatus(event.target.value as "active" | "draft" | "archived")} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100">
+              <option value="draft">draft</option>
+              <option value="active">active</option>
+              <option value="archived">archived</option>
+            </select>
+          </div>
+          <textarea
+            rows={4}
+            value={newContent}
+            onChange={(event) => setNewContent(event.target.value)}
+            placeholder="Knowledge content"
+            className="mt-2 min-h-[240px] w-full resize-y rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+          />
+          <button
+            type="button"
+            className="mt-2 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50"
+            disabled={knowledgeActionBusyKey !== null || !newTitle.trim() || !newCategory.trim() || !newContent.trim()}
+            onClick={() => {
+              onCreateKnowledge({
+                title: newTitle.trim(),
+                category: newCategory.trim(),
+                applies_to: newAppliesTo.split(",").map((item) => item.trim()).filter(Boolean),
+                tags: newTags.split(",").map((item) => item.trim()).filter(Boolean),
+                content: newContent.trim(),
+                source_type: newSourceType,
+                status: newStatus,
+              });
+              setNewTitle("");
+              setNewCategory("");
+              setNewAppliesTo("");
+              setNewTags("");
+              setNewContent("");
+              setNewStatus("draft");
+              setNewSourceType("manual");
+            }}
+          >
+            {knowledgeActionBusyKey === "knowledge-create" ? "Creating..." : "Create Entry"}
+          </button>
+        </div>
+      )}
+
+      {knowledgeLoading ? (
+        <p className="text-sm text-slate-400">Loading knowledge entries...</p>
+      ) : filteredEntries.length === 0 ? (
+        <p className="text-sm text-slate-400">No knowledge entries match your filters.</p>
+      ) : (
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+          <div className="max-h-[520px] space-y-2 overflow-auto pr-1">
+            {filteredEntries.map((entry) => (
+              <button
+                key={entry.knowledge_id}
+                type="button"
+                onClick={() => {
+                  setSelectedId(entry.knowledge_id);
+                  setEditTitle(entry.title);
+                  setEditCategory(entry.category);
+                  setEditAppliesTo(entry.applies_to.join(", "));
+                  setEditTags(entry.tags.join(", "));
+                  setEditContent(entry.content);
+                  setEditStatus(entry.status);
+                  setEditSourceType(entry.source_type);
+                }}
+                className={`w-full rounded-xl border p-3 text-left ${selectedId === entry.knowledge_id ? "border-cyan-400/50 bg-slate-900/85" : "border-slate-800 bg-slate-950/70"}`}
+              >
+                <p className="text-sm font-semibold text-slate-100">{entry.title}</p>
+                <p className="mt-1 text-xs text-slate-400">{entry.category} - {entry.status} - v{entry.version}</p>
+                <p className="mt-1 text-xs text-slate-500">Tags: {entry.tags.join(", ") || "none"}</p>
+                <p className="mt-1 text-xs text-slate-500">Updated: {toDisplayTime(entry.updated_at)} - By: {entry.created_by_name || "unknown"}</p>
+              </button>
+            ))}
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+            {!selectedEntry ? (
+              <p className="text-sm text-slate-400">Select an entry to preview and edit.</p>
+            ) : (
+              <div className="space-y-2">
+                {isAdmin ? (
+                  <>
+                    <input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+                    <input value={editCategory} onChange={(event) => setEditCategory(event.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+                    <input value={editAppliesTo} onChange={(event) => setEditAppliesTo(event.target.value)} placeholder="Applies To (comma separated)" className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+                    <input value={editTags} onChange={(event) => setEditTags(event.target.value)} placeholder="Tags (comma separated)" className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <select value={editSourceType} onChange={(event) => setEditSourceType(event.target.value as "manual" | "document" | "imported" | "system")} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100">
+                        <option value="manual">manual</option>
+                        <option value="document">document</option>
+                        <option value="imported">imported</option>
+                        <option value="system">system</option>
+                      </select>
+                      <select value={editStatus} onChange={(event) => setEditStatus(event.target.value as "active" | "draft" | "archived")} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100">
+                        <option value="draft">draft</option>
+                        <option value="active">active</option>
+                        <option value="archived">archived</option>
+                      </select>
+                    </div>
+                    <textarea rows={10} value={editContent} onChange={(event) => setEditContent(event.target.value)} className="min-h-[320px] w-full resize-y rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className={BTN_PRIMARY}
+                        disabled={knowledgeActionBusyKey !== null}
+                        onClick={() => onUpdateKnowledge(selectedEntry.knowledge_id, {
+                          title: editTitle.trim(),
+                          category: editCategory.trim(),
+                          applies_to: editAppliesTo.split(",").map((item) => item.trim()).filter(Boolean),
+                          tags: editTags.split(",").map((item) => item.trim()).filter(Boolean),
+                          content: editContent,
+                          status: editStatus,
+                          source_type: editSourceType,
+                        })}
+                      >
+                        {knowledgeActionBusyKey === `knowledge-update-${selectedEntry.knowledge_id}` ? "Saving..." : "Save"}
+                      </button>
+                      <button type="button" className={BTN_GHOST} disabled={knowledgeActionBusyKey !== null} onClick={() => onActivateKnowledge(selectedEntry.knowledge_id)}>
+                        Activate
+                      </button>
+                      <button type="button" className={BTN_DANGER} disabled={knowledgeActionBusyKey !== null} onClick={() => onArchiveKnowledge(selectedEntry.knowledge_id)}>
+                        Archive
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-lg font-semibold text-slate-100">{selectedEntry.title}</p>
+                    <p className="text-xs text-slate-400">{selectedEntry.category} - {selectedEntry.status}</p>
+                    <p className="text-xs text-slate-500">Tags: {selectedEntry.tags.join(", ") || "none"}</p>
+                    <p className="text-xs text-slate-500">Applies To: {selectedEntry.applies_to.join(", ") || "none"}</p>
+                    <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-200">{selectedEntry.content}</pre>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

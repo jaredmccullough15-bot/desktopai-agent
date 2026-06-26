@@ -1,0 +1,97 @@
+[
+  {
+    "draft_id": "ed19b3fc-24e2-49f8-8aa6-d40275714496",
+    "created_at": "2026-06-02T14:29:24.252738",
+    "updated_at": "2026-06-02T14:29:24.252743",
+    "learning_path": "demonstration",
+    "workflow_name": "submission",
+    "goal": "Workflow 'Submission' taught via Teaching Mode.",
+    "description": "Workflow summary",
+    "required_inputs": [],
+    "identity_required": false,
+    "identity_fields": [],
+    "required_session_state": [],
+    "safe_for_unattended": true,
+    "steps": [
+      {
+        "step_order": 1,
+        "name": "step_1",
+        "step_name": "Click Sign In",
+        "intent": "Trigger the next workflow action.",
+        "description": "Click the Sign In button",
+        "purpose": "Trigger the next workflow action.",
+        "instruction": "",
+        "action": "click_selector",
+        "selector": "button:has-text(\"Sign In\")",
+        "url": "",
+        "value": "",
+        "option": "",
+        "manual_review_required": false,
+        "variable_inputs": [],
+        "field_mappings": [],
+        "validation_rules": [],
+        "success_condition": "The expected page or element state is reached after this step.",
+        "failure_condition": "The element is not found, not visible, or clicking it produces no change.",
+        "recovery_strategy": "Retry once; if still failing, pause and require human review.",
+        "failure_behavior": "Retry once; if still failing, pause and require human review.",
+        "event_type": "",
+        "system_context": {},
+        "observation_triggers": [],
+        "observation_questions": [],
+        "observation_answers": [],
+        "known_step": false,
+        "created_by_user_id": null,
+        "created_by_name": null,
+        "created_at": "2026-06-15T14:14:18.435644",
+        "taught_by_user_id": null,
+        "taught_by_name": null,
+        "taught_at": null,
+        "last_updated_by_user_id": null,
+        "last_updated_by_name": null,
+        "last_updated_at": "2026-06-15T14:14:18.435644",
+        "captured_by_user_id": null,
+        "captured_by_name": null,
+        "captured_at": "2026-06-15T14:14:18.435644"
+      }
+    ],
+    "variables": [],
+    "teaching_complete": false,
+    "teaching_pending_step": 1,
+    "validation_rules": [
+      "Confirm each step has executable action",
+      "Validate selectors and required values before publish",
+      "Run guided test before approval"
+    ],
+    "fallback_strategies": [
+      "Retry once with explicit selector",
+      "Pause for human verification when manual review is needed"
+    ],
+    "common_failures": [
+      "selector_not_found",
+      "session_not_authenticated",
+      "timeout"
+    ],
+    "review_status": "approved",
+    "reviewer_notes": null,
+    "published_workflow_name": null,
+    "observation_question_frequency": "medium",
+    "observation_questions_paused": false,
+    "observation_skip_all_questions": false,
+    "rule_suggestions": [],
+    "workflow_annotations": [],
+    "training_memory": [],
+    "execution_readiness": {
+      "executable": true,
+      "runnable": false,
+      "has_start_url": false,
+      "start_url": null,
+      "executable_action_count": 1,
+      "manual_action_count": 0,
+      "redacted_input_count": 0,
+      "blocking_reasons": [
+        "No starting page was captured."
+      ],
+      "warnings": []
+    }
+  }
+]

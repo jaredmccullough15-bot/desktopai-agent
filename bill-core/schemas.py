@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class WorkerRegisterRequest(BaseModel):
     machine_name: str
     machine_uuid: str
+    tenant_id: str | None = None
     worker_version: str | None = None
     execution_mode: str | None = None
     current_task_id: str | None = None
@@ -33,6 +34,7 @@ class WorkerRegisterResponse(BaseModel):
 class WorkerHeartbeatRequest(BaseModel):
     machine_name: str
     machine_uuid: str
+    tenant_id: str | None = None
     status: str = "idle"
     worker_version: str | None = None
     execution_mode: str | None = None
@@ -391,7 +393,7 @@ class BillUserRecord(BaseModel):
     tenant_id: str | None = None
     email: str
     name: str
-    role: Literal["admin", "teacher", "runner", "viewer"] = "viewer"
+    role: Literal["super_admin", "admin", "teacher", "runner", "viewer"] = "viewer"
     status: str = "active"
     last_login_at: str | None = None
     created_at: str
@@ -416,7 +418,7 @@ class BillCreateUserRequest(BaseModel):
     name: str
     email: str
     password: str
-    role: Literal["admin", "teacher", "runner", "viewer"] = "viewer"
+    role: Literal["super_admin", "admin", "teacher", "runner", "viewer"] = "viewer"
     status: str = "active"
     tenant_id: str | None = None
 
@@ -425,7 +427,7 @@ class BillUpdateUserRequest(BaseModel):
     name: str | None = None
     email: str | None = None
     password: str | None = None
-    role: Literal["admin", "teacher", "runner", "viewer"] | None = None
+    role: Literal["super_admin", "admin", "teacher", "runner", "viewer"] | None = None
     status: str | None = None
 
 
@@ -462,6 +464,10 @@ class KnowledgeRecord(BaseModel):
     updated_at: str
     version: int = 1
     tenant_id: str | None = None
+    copied_from_tenant_id: str | None = None
+    copied_from_record_id: str | None = None
+    copied_by_user_id: str | None = None
+    copied_at: str | None = None
 
 
 class KnowledgeCreateRequest(BaseModel):
@@ -484,6 +490,77 @@ class KnowledgeUpdateRequest(BaseModel):
     tags: list[str] | None = None
     status: Literal["active", "draft", "archived"] | None = None
     tenant_id: str | None = None
+
+
+class SuperAdminTenantRecord(BaseModel):
+    tenant_id: str
+    name: str
+    status: Literal["active", "suspended"] = "active"
+    contact_email: str | None = None
+    notes: str | None = None
+    settings: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+
+class SuperAdminTenantCreateRequest(BaseModel):
+    tenant_id: str
+    name: str
+    contact_email: str | None = None
+    notes: str | None = None
+
+
+class SuperAdminTenantUpdateRequest(BaseModel):
+    name: str | None = None
+    contact_email: str | None = None
+    notes: str | None = None
+    settings: dict[str, Any] | None = None
+    status: Literal["active", "suspended"] | None = None
+
+
+class SuperAdminCopyKnowledgeRequest(BaseModel):
+    source_tenant_id: str
+    source_knowledge_id: str
+    target_tenant_id: str
+    activate: bool = False
+
+
+class SuperAdminCopyWorkflowRequest(BaseModel):
+    source_tenant_id: str
+    source_workflow_id: str
+    target_tenant_id: str
+    activate: bool = False
+
+
+class IntegrationCredentialRecord(BaseModel):
+    integration_id: str
+    tenant_id: str
+    integration_type: str
+    name: str
+    status: str = "active"
+    settings: dict[str, Any] = Field(default_factory=dict)
+    secret_masked: str
+    created_by_user_id: str | None = None
+    created_by_name: str | None = None
+    updated_by_user_id: str | None = None
+    updated_by_name: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class IntegrationCredentialCreateRequest(BaseModel):
+    integration_type: str
+    name: str
+    secret: str
+    status: str = "active"
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class IntegrationCredentialUpdateRequest(BaseModel):
+    name: str | None = None
+    secret: str | None = None
+    status: str | None = None
+    settings: dict[str, Any] | None = None
 
 
 class TeachingSessionMessageRequest(BaseModel):
@@ -1020,6 +1097,7 @@ class TaskFailRequest(BaseModel):
 
 class TaskRecord(BaseModel):
     id: str
+    tenant_id: str | None = None
     payload: dict[str, Any]
     status: str
     assigned_machine_uuid: str | None = None
@@ -1034,6 +1112,7 @@ class TaskRecord(BaseModel):
 class MachineRecord(BaseModel):
     machine_uuid: str
     machine_name: str
+    tenant_id: str | None = None
     status: str
     worker_version: str | None = None
     last_seen: str | None = None

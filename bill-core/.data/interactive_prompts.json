@@ -1,0 +1,442 @@
+[
+  {
+    "interaction_id": "849f14ac-f92e-4b10-837d-fe02fbc43219",
+    "created_at": "2026-05-05T15:15:22.016303",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:wr-phase2-3dc8019d-4438-47ac-8ed4-8bbfafa2aa79",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Inspect worker logs for stack trace details and retry with tighter scope.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "wr-phase2-3dc8019d-4438-47ac-8ed4-8bbfafa2aa79",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "31b58315-c59f-4035-9914-705d5ff96333",
+    "created_at": "2026-05-05T15:15:33.579146",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:wr-phase2-6a4ec8fc-708c-4544-93a8-feaf4eae3f61",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Inspect worker logs for stack trace details and retry with tighter scope.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "wr-phase2-6a4ec8fc-708c-4544-93a8-feaf4eae3f61",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "a1d2377c-8144-40af-bd0c-dfc46a1de14d",
+    "created_at": "2026-05-14T14:19:49.140929",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:4e518cab-f0a0-4d99-8b49-7cb9cbef250a",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "4e518cab-f0a0-4d99-8b49-7cb9cbef250a",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "be188342-cdf7-4f9f-8efd-d8c28f37b4d5",
+    "created_at": "2026-05-14T14:20:56.084294",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:d79b43f8-96ee-483b-9c06-cf10d77f4a70",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "d79b43f8-96ee-483b-9c06-cf10d77f4a70",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "f8b1e79b-3471-4651-8440-1225d51cfcaa",
+    "created_at": "2026-05-14T14:21:24.269403",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:26160a39-6652-48ba-b11e-34465035efc9",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "26160a39-6652-48ba-b11e-34465035efc9",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "dac9dd10-400f-4f3a-ba8c-1bee5c271caa",
+    "created_at": "2026-05-14T14:22:00.878719",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:a2f87d0b-8036-431f-a878-955edadb21ff",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "a2f87d0b-8036-431f-a878-955edadb21ff",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "debc103c-e0c2-4d42-8b50-a22bc756113c",
+    "created_at": "2026-05-14T14:23:25.138025",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:b176dd44-6df1-4920-89a2-8fb34ff1f63d",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "b176dd44-6df1-4920-89a2-8fb34ff1f63d",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "67108cb7-202f-4939-aa72-0a4fecc74700",
+    "created_at": "2026-05-14T14:23:35.284090",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:f99bae96-4ac5-49f7-9581-5b2cb033cbcc",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "f99bae96-4ac5-49f7-9581-5b2cb033cbcc",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "4aeb9917-5618-4509-aa12-61fd816ff93e",
+    "created_at": "2026-05-14T14:42:57.852903",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:08dd9238-8a54-4186-b2d6-198c0e22b639",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "08dd9238-8a54-4186-b2d6-198c0e22b639",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "0ff1ccc6-0691-4761-bfc9-0b6da03dfcd0",
+    "created_at": "2026-05-14T18:24:38.775015",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:e578b6d5-b65e-4ba7-9c04-f16435894750",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "e578b6d5-b65e-4ba7-9c04-f16435894750",
+      "selected_worker_name": "auth-test-worker"
+    }
+  },
+  {
+    "interaction_id": "9dd12a24-3619-456b-9044-0c2d1aeabfd8",
+    "created_at": "2026-05-14T18:25:20.365289",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:33e1efd3-8c46-404c-8185-523357762000",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "33e1efd3-8c46-404c-8185-523357762000",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "12a4c1fe-8c1d-48d9-9643-118e556bd561",
+    "created_at": "2026-05-14T18:25:29.909037",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:42710d98-539f-421f-88db-69f6ba7b0c03",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "42710d98-539f-421f-88db-69f6ba7b0c03",
+      "selected_worker_name": "auth-test-worker"
+    }
+  },
+  {
+    "interaction_id": "25988b4d-4efb-4ea9-aaee-e7f58f1bcfd6",
+    "created_at": "2026-05-14T18:25:56.800026",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:a0c2f863-e95a-433b-b26f-f26ec34e9f85",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "a0c2f863-e95a-433b-b26f-f26ec34e9f85",
+      "selected_worker_name": "auth-test-worker"
+    }
+  },
+  {
+    "interaction_id": "d3e4c669-cdeb-4512-8ea2-a62f85fe0299",
+    "created_at": "2026-05-14T18:26:11.043971",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:f46f8530-049d-4bdf-92e0-e5c55b3afbf3",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "f46f8530-049d-4bdf-92e0-e5c55b3afbf3",
+      "selected_worker_name": "auth-test-worker"
+    }
+  },
+  {
+    "interaction_id": "3a80a359-2507-4350-84ec-4e08d6941cf4",
+    "created_at": "2026-05-14T18:26:25.328038",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:4232e09c-85c2-438f-9594-f0675539f36c",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "4232e09c-85c2-438f-9594-f0675539f36c",
+      "selected_worker_name": "auth-test-worker"
+    }
+  },
+  {
+    "interaction_id": "a6841856-7cd4-4574-95cc-4230ddfe48d1",
+    "created_at": "2026-05-14T18:26:47.887127",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:wr-phase2-4ca7ca6e-2086-4a2e-8464-38c6627872e3",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Inspect worker logs for stack trace details and retry with tighter scope.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "wr-phase2-4ca7ca6e-2086-4a2e-8464-38c6627872e3",
+      "selected_worker_name": "auth-test-worker"
+    }
+  },
+  {
+    "interaction_id": "312dbb8d-e9e0-42e2-a3dc-a65fa5b11e4a",
+    "created_at": "2026-05-14T18:34:06.754721",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:wr-phase2-36644c34-a1c8-4785-aec2-72ffbf297b6f",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Inspect worker logs for stack trace details and retry with tighter scope.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "wr-phase2-36644c34-a1c8-4785-aec2-72ffbf297b6f",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "b1d73f6c-4f3f-4fb6-b594-549f9dc9a550",
+    "created_at": "2026-05-14T18:37:11.061694",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:wr-phase2-9e8dc60e-7720-429f-9018-2182ab114af2",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Inspect worker logs for stack trace details and retry with tighter scope.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "wr-phase2-9e8dc60e-7720-429f-9018-2182ab114af2",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "b379cf80-343b-4fec-bb9f-cf85b65bcb95",
+    "created_at": "2026-06-25T16:52:20.442245",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:10cba2b0-ae4c-48c9-8595-0849ac1a38fe",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "10cba2b0-ae4c-48c9-8595-0849ac1a38fe",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "77a75c1d-5288-42a2-8b87-c805023e8333",
+    "created_at": "2026-06-25T16:56:23.487917",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:4038d009-7353-4eca-abec-aa5d163dd121",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "4038d009-7353-4eca-abec-aa5d163dd121",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "d39cf579-590f-4d63-9842-b897fd9bf1fa",
+    "created_at": "2026-06-25T16:58:17.683363",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:7b1f2090-5fd9-4bb3-8745-db434dc7b0e5",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "7b1f2090-5fd9-4bb3-8745-db434dc7b0e5",
+      "selected_worker_name": null
+    }
+  },
+  {
+    "interaction_id": "89840b8f-995b-4da3-aa30-b2165f48b626",
+    "created_at": "2026-06-26T15:49:40.447368",
+    "interaction_type": "troubleshooting_confirmation",
+    "command": "failure:c2ef5f07-91a1-4758-bb15-d6c9ab4a760b",
+    "workflow_name": "smart_sherpa_sync",
+    "task_id": null,
+    "status": "pending",
+    "recommendation": "Validate selectors against current UI structure before retrying.",
+    "questions": [
+      "Approve retry with suggested adjustments?",
+      "Do you want to override worker selection?"
+    ],
+    "pending_adjustments": {},
+    "metadata": {
+      "workflow_name": "smart_sherpa_sync",
+      "source_task_id": "c2ef5f07-91a1-4758-bb15-d6c9ab4a760b",
+      "selected_worker_name": "auth-test-worker"
+    }
+  }
+]

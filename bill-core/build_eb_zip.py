@@ -51,6 +51,8 @@ REQUIRED_DIRS = [
     "app",
     "tenant_templates",
     "conversational",
+    "worker-packages",  # Worker Download Center package files
+    "extension-packages",  # Chrome Extension Download Center package files
     ".platform",  # EB platform nginx/custom hooks
 ]
 

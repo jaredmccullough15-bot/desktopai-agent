@@ -7,6 +7,7 @@ Run with:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import threading
 import zipfile
@@ -100,6 +101,46 @@ def _extract_path_and_query(download_url: str) -> tuple[str, dict[str, list[str]
     return parsed.path, parse_qs(parsed.query)
 
 
+class _FakeS3Client:
+    def __init__(self, existing_keys: set[str], *, bucket: str = "private-release-bucket", region: str = "us-east-2") -> None:
+        self.existing_keys = existing_keys
+        self.bucket = bucket
+        self.region = region
+        self.generated_urls: list[str] = []
+
+    def head_object(self, Bucket: str, Key: str) -> dict[str, Any]:
+        assert Bucket == self.bucket
+        if Key not in self.existing_keys:
+            raise FileNotFoundError(Key)
+        return {
+            "ContentLength": 1024,
+            "Metadata": {"sha256": "b" * 64},
+        }
+
+    def generate_presigned_url(self, ClientMethod: str, Params: dict[str, Any], ExpiresIn: int) -> str:
+        assert ClientMethod == "get_object"
+        assert Params["Bucket"] == self.bucket
+        url = (
+            f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{Params['Key']}"
+            f"?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires={ExpiresIn}&X-Amz-Signature=testsig"
+        )
+        self.generated_urls.append(url)
+        return url
+
+
+def _enable_extension_s3(monkeypatch: pytest.MonkeyPatch, existing_keys: set[str]) -> _FakeS3Client:
+    import main as main_module
+
+    fake_client = _FakeS3Client(existing_keys)
+    monkeypatch.setenv("BILL_RELEASE_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("BILL_RELEASE_S3_BUCKET", fake_client.bucket)
+    monkeypatch.setenv("BILL_RELEASE_S3_REGION", fake_client.region)
+    monkeypatch.setenv("BILL_RELEASE_S3_EXTENSION_PREFIX", "extension-packages/")
+    monkeypatch.setenv("BILL_RELEASE_S3_SIGNED_URL_TTL_SECONDS", "300")
+    monkeypatch.setattr(main_module, "_get_release_storage_s3_client", lambda: fake_client)
+    return fake_client
+
+
 class TestUnauthenticated:
     def test_current_requires_login(self, client: TestClient) -> None:
         resp = client.get("/api/extension-releases/current")
@@ -176,6 +217,43 @@ class TestRolesAndCurrent:
         assert "/api/extension-releases/" in data["download_url"]
         assert data["expires_in_seconds"] == 300
 
+    def test_download_url_prefers_https_from_forwarded_proto(self, client: TestClient) -> None:
+        _make_user(client, "admin_eduh@test.com", "admin")
+        _make_user(client, "runner_eduh@test.com", "runner")
+
+        _login(client, "admin_eduh@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/extension-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "runner_eduh@test.com")
+        resp = client.post(
+            f"/api/extension-releases/{release['id']}/download-url",
+            headers={"x-forwarded-proto": "https", "x-forwarded-host": "api.bill-core.com"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["download_url"].startswith("https://api.bill-core.com/")
+
+    def test_runner_can_get_presigned_s3_download_url(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_s3 = _enable_extension_s3(monkeypatch, {"extension-packages/bill-teaching-helper-1.0.0.zip"})
+        _make_user(client, "admin_ext_s3@test.com", "admin")
+        _make_user(client, "runner_ext_s3@test.com", "runner")
+
+        _login(client, "admin_ext_s3@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/extension-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "runner_ext_s3@test.com")
+        resp = client.post(f"/api/extension-releases/{release['id']}/download-url")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["download_url"].startswith(
+            "https://private-release-bucket.s3.us-east-2.amazonaws.com/extension-packages/bill-teaching-helper-1.0.0.zip"
+        )
+        assert "/api/extension-releases/" not in data["download_url"]
+        assert data["expires_in_seconds"] == 300
+        assert fake_s3.generated_urls
+
 
 class TestAdminManagement:
     def test_admin_can_register_release(self, client: TestClient) -> None:
@@ -251,6 +329,21 @@ class TestSecurityAndStatusRules:
             json={"version_label": "1.0.0", "file_name": "not-there.zip"},
         )
         assert resp.status_code == 404
+
+    def test_missing_s3_object_returns_409_from_download_url(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_s3 = _enable_extension_s3(monkeypatch, {"extension-packages/bill-teaching-helper-1.0.0.zip"})
+        _make_user(client, "admin_ext_missing_s3@test.com", "admin")
+        _make_user(client, "runner_ext_missing_s3@test.com", "runner")
+
+        _login(client, "admin_ext_missing_s3@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/extension-releases/{release['id']}/mark-current", json={"confirm": True})
+        fake_s3.existing_keys.clear()
+
+        _login(client, "runner_ext_missing_s3@test.com")
+        resp = client.post(f"/api/extension-releases/{release['id']}/download-url")
+        assert resp.status_code == 409
+        assert "configured storage" in resp.json()["detail"]
 
     def test_teacher_cannot_download_disabled_release(self, client: TestClient) -> None:
         _make_user(client, "admin_d1@test.com", "admin")
@@ -392,3 +485,22 @@ class TestAuditAndMetadata:
         _login(client, "admin_aud@test.com")
         events = [e["event_type"] for e in self._get_audit_logs(client)]
         assert "extension_release_download_completed" in events
+
+    def test_presigned_url_is_not_logged_in_audit(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_extension_s3(monkeypatch, {"extension-packages/bill-teaching-helper-1.0.0.zip"})
+        _make_user(client, "admin_ext_audit_s3@test.com", "admin")
+        _make_user(client, "runner_ext_audit_s3@test.com", "runner")
+
+        _login(client, "admin_ext_audit_s3@test.com")
+        release = _admin_register_release(client)
+        client.post(f"/api/extension-releases/{release['id']}/mark-current", json={"confirm": True})
+
+        _login(client, "runner_ext_audit_s3@test.com")
+        resp = client.post(f"/api/extension-releases/{release['id']}/download-url")
+        assert resp.status_code == 200
+
+        _login(client, "admin_ext_audit_s3@test.com")
+        logs = self._get_audit_logs(client)
+        matching = [entry for entry in logs if entry.get("target_id") == release["id"]]
+        assert any(entry.get("event_type") == "extension_release_download_requested" for entry in matching)
+        assert "X-Amz-Signature=testsig" not in json.dumps(matching)

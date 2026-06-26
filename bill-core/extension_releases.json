@@ -1,0 +1,19 @@
+[
+  {
+    "id": "7c4485ef-51dd-4d36-9875-3f050b964980",
+    "release_type": "chrome_extension",
+    "version_label": "1.0.0",
+    "is_active": true,
+    "status": "current",
+    "file_name": "bill-teaching-helper-1.0.0.zip",
+    "sha256_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "file_size_bytes": 1024,
+    "release_notes": "Initial extension build",
+    "released_at": "2026-06-25T13:20:11.863681",
+    "released_by_user_id": "56750585-12cb-4dd5-b79b-806923bd95c6",
+    "released_by_name": "Test Admin",
+    "download_count": 0,
+    "storage_backend": "s3",
+    "storage_key": "extension-packages/bill-teaching-helper-1.0.0.zip"
+  }
+]

@@ -23,14 +23,18 @@ REQUIRED_FILES = [
     "requirements.txt",
     "Procfile",
     ".platform/nginx/conf.d/client_max_body_size.conf",
+    "worker-packages/.gitkeep",
+    "extension-packages/.gitkeep",
 ]
 
 ROOT = Path(__file__).resolve().parent
-ZIP_PATH = ROOT.parent / "bill-core-deploy.zip"
 
-# Also accept a zip in the same directory (build-deploy.ps1 copies it there).
+# Prefer the zip generated in this directory by build_eb_zip.py.
+ZIP_PATH = ROOT / "bill-core-deploy.zip"
+
+# Fallback to parent for workflows that place it one level up.
 if not ZIP_PATH.exists():
-    ZIP_PATH = ROOT / "bill-core-deploy.zip"
+    ZIP_PATH = ROOT.parent / "bill-core-deploy.zip"
 
 
 def main() -> None:

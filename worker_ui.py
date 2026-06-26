@@ -81,22 +81,28 @@ class WorkerUI:
         btn_frame = tk.Frame(self.root)
         btn_frame.pack(fill="x", padx=10, pady=4)
 
-        self.start_btn = tk.Button(btn_frame, text="Start Ready Mode", command=self.start_worker, bg="#2e7d32", fg="white")
+        run_btn_row = tk.Frame(btn_frame)
+        run_btn_row.pack(fill="x", pady=(0, 4))
+
+        self.start_btn = tk.Button(run_btn_row, text="Start Ready Mode", command=self.start_worker, bg="#2e7d32", fg="white")
         self.start_btn.pack(side="left", padx=(0, 8))
 
-        self.stop_btn = tk.Button(btn_frame, text="Stop Worker", command=self.stop_worker, state="disabled", bg="#b71c1c", fg="white")
+        self.stop_btn = tk.Button(run_btn_row, text="Stop Worker", command=self.stop_worker, state="disabled", bg="#b71c1c", fg="white")
         self.stop_btn.pack(side="left")
 
+        utility_btn_row = tk.Frame(btn_frame)
+        utility_btn_row.pack(fill="x")
+
         self.selenium_attach_btn = tk.Button(
-            btn_frame,
+            utility_btn_row,
             text="Open Chrome Debug + Attach Selenium",
             command=self.launch_debug_chrome_with_selenium,
             bg="#1565c0",
             fg="white",
         )
-        self.selenium_attach_btn.pack(side="left", padx=(8, 0))
+        self.selenium_attach_btn.pack(side="left")
 
-        self.update_btn = tk.Button(btn_frame, text="Self-Update", command=self.self_update)
+        self.update_btn = tk.Button(utility_btn_row, text="Self-Update", command=self.self_update)
         self.update_btn.pack(side="right")
 
         self.status_var = tk.StringVar(value="Status: Idle")

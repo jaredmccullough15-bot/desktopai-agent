@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bill Teaching Assistant</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="eyebrow">Bill Teaching Assistant</div>
+        <h1>Observe only. Never automate.</h1>
+        <p>Pair this extension with an active Bill Teaching Mode session to send page context and employee actions to Bill Core.</p>
+      </header>
+
+      <section class="panel">
+        <label>
+          <span>Teaching session ID</span>
+          <input id="sessionId" type="text" placeholder="Paste the active session id" />
+        </label>
+
+        <label>
+          <span>Bill Core API base</span>
+          <input id="apiBase" type="url" placeholder="http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com" />
+        </label>
+
+        <div class="row">
+          <button id="connect" class="primary">Connect</button>
+          <button id="disconnect" class="secondary">Disconnect</button>
+        </div>
+      </section>
+
+      <section class="panel status">
+        <div class="status-line">
+          <span>Status</span>
+          <strong id="statusValue">Waiting</strong>
+        </div>
+        <div class="meta" id="metaValue">No session paired yet.</div>
+        <div class="meta subtle">Visible badge: "Bill Teaching Helper is watching"</div>
+      </section>
+
+      <section class="panel status">
+        <div class="status-line">
+          <span>Diagnostics</span>
+          <strong id="contentStateValue">Unknown</strong>
+        </div>
+        <div class="meta" id="pairedSessionValue">Paired session: n/a</div>
+        <div class="meta" id="tabUrlValue">Active tab: n/a</div>
+        <div class="meta" id="lastEventValue">Last event: n/a</div>
+        <div class="row">
+          <button id="testContext" class="secondary">Test send context</button>
+        </div>
+        <div class="meta subtle" id="diagNote">Checks whether the content script is active on the current tab profile.</div>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "draft_id": "efbe40de-44e8-485c-ba6f-b9dcc3442bdd",
+  "session_id": "75f8236d-2e1e-48be-85cd-36c20b1047ab",
+  "start": {
+    "status": "queued",
+    "task_id": "1c7896e7-af43-467f-be6f-f82f4ff70a3d",
+    "draft_id": "efbe40de-44e8-485c-ba6f-b9dcc3442bdd",
+    "target_machine_uuid": "26859f68-428b-402a-a7c0-93de924aa682",
+    "session_id": "75f8236d-2e1e-48be-85cd-36c20b1047ab"
+  },
+  "final_status": "active"
+}

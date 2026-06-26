@@ -13,6 +13,7 @@ import { WorkersPanel } from "./components/WorkersPanel";
 import { RecentActivityPanel } from "./components/RecentActivityPanel";
 import { ActiveTasksPanel } from "./components/ActiveTasksPanel";
 import { AdvancedToolsTabs } from "./components/AdvancedToolsTabs";
+import { SuperAdminControlPlane } from "./components/SuperAdminControlPlane";
 import { SystemHealthFooter } from "./components/SystemHealthFooter";
 import { useBillMic } from "./hooks/useBillMic";
 import { useBillVoice } from "./hooks/useBillVoice";
@@ -140,6 +141,14 @@ type TeachingStartupState = {
   overlay_enabled?: boolean;
   voice_prompt_text?: string;
   teaching_session?: TeachingSessionApiResponse["teaching_session"] | null;
+  start_url?: string | null;
+  suggested_start_url?: string | null;
+  observed_current_page?: string | null;
+  extension_connection_status?: string | null;
+  extension_event_count?: number;
+  latest_extension_event?: Record<string, unknown> | null;
+  steps?: TeachingSessionApiResponse["teaching_session"]["steps"];
+  page_context_snapshot?: TeachingSessionApiResponse["teaching_session"]["page_context_snapshot"];
   copilot_notice?: string | null;
   copilot_interpretation?: string | null;
   copilot_question?: string | null;
@@ -147,9 +156,13 @@ type TeachingStartupState = {
 
 type BrowserAction = {
   id: string;
-  type: "click" | "type" | "navigate" | "select" | "submit";
+  type: "click" | "type" | "navigate" | "select" | "submit" | "focus";
+  source?: "browser" | "extension" | "manual";
   selector?: string;
+  selectors?: string[];
   label?: string;
+  target_label?: string;
+  target_type?: string;
   valueRedacted?: string;
   url?: string;
   timestamp: string;
@@ -178,7 +191,15 @@ type TeachingSession = {
   workflowName: string;
   workflowSummary?: string;
   status: "intro" | "teaching" | "review" | "approved" | "ready" | "needs_more_teaching";
+  startUrl?: string;
+  observedStartUrl?: string;
+  suggestedStartUrl?: string;
+  observedCurrentPage?: string;
   steps: WorkflowStep[];
+  extensionConnectionStatus?: string | null;
+  extensionEventCount?: number;
+  lastExtensionEvent?: Record<string, unknown> | null;
+  extensionEvents?: Record<string, unknown>[];
   pageContextSnapshot?: {
     url?: string;
     title?: string;
@@ -194,6 +215,9 @@ type TeachingSession = {
     active_element?: { type?: string; label?: string } | null;
     recent_click_label?: string | null;
     recent_type_field?: string | null;
+    extension_connection_status?: string | null;
+    extension_event_count?: number;
+    last_extension_event?: Record<string, unknown> | null;
     modal_present?: boolean;
     modal_title?: string | null;
     captured_at?: number;
@@ -219,6 +243,14 @@ type TeachingSessionApiResponse = {
     workflow_name: string;
     workflow_summary?: string | null;
     status: "intro" | "teaching" | "review" | "approved";
+    start_url?: string | null;
+    observed_start_url?: string | null;
+    suggested_start_url?: string | null;
+    observed_current_page?: string | null;
+    extension_connection_status?: string | null;
+    extension_event_count?: number;
+    last_extension_event?: Record<string, unknown> | null;
+    extension_events?: Record<string, unknown>[];
     page_context_snapshot?: {
       url?: string;
       title?: string;
@@ -234,6 +266,9 @@ type TeachingSessionApiResponse = {
       active_element?: { type?: string; label?: string } | null;
       recent_click_label?: string | null;
       recent_type_field?: string | null;
+      extension_connection_status?: string | null;
+      extension_event_count?: number;
+      last_extension_event?: Record<string, unknown> | null;
       modal_present?: boolean;
       modal_title?: string | null;
       captured_at?: number;
@@ -244,9 +279,13 @@ type TeachingSessionApiResponse = {
       title: string;
       observed_actions?: Array<{
         id: string;
-        type: "click" | "type" | "navigate" | "select" | "submit";
+        type: "click" | "type" | "navigate" | "select" | "submit" | "focus";
+        source?: "browser" | "extension" | "manual";
         selector?: string | null;
+        selectors?: string[];
         label?: string | null;
+        target_label?: string | null;
+        target_type?: string | null;
         value_redacted?: string | null;
         url?: string | null;
         timestamp: string;
@@ -310,12 +349,47 @@ type TeachingSessionApiResponse = {
 const INVALID_TEACHING_CONTEXT_MARKERS = ["omnibox-popup", "top-chrome", "chrome://", "chrome-extension://", "devtools://", "about:", "edge://", "extension://"];
 const INVALID_TEACHING_CONTEXT_MESSAGE = "Bill is waiting for the real webpage tab.";
 
+const BILL_CAN_SEE_PANEL_COPY = {
+  heading: "Bill can currently see",
+  waitingMessage: "Bill is waiting for the real webpage tab.",
+  waitingBadge: "Waiting for real webpage tab",
+  invalidMarkers: ["omnibox-popup", "top-chrome"],
+  floatingPanelLabel: "Floating Chat Panel",
+} as const;
+
 function isInvalidTeachingContextSnapshot(snapshot: { url?: string; title?: string; domain?: string } | null | undefined): boolean {
   const urlValue = snapshot?.url || "";
   const titleValue = snapshot?.title || "";
   const domainValue = snapshot?.domain || "";
   const lowered = `${urlValue} ${titleValue} ${domainValue}`.toLowerCase();
   return INVALID_TEACHING_CONTEXT_MARKERS.some((marker) => lowered.includes(marker));
+}
+
+function canonicalizeTeachingUrl(urlValue: string | null | undefined): string {
+  const raw = String(urlValue || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    const params = new URLSearchParams(parsed.search);
+    const filtered = new URLSearchParams();
+    for (const [key, value] of params.entries()) {
+      const lowered = key.toLowerCase();
+      const isTrackingParam =
+        lowered === "_gl"
+        || lowered === "gclid"
+        || lowered === "fbclid"
+        || lowered.startsWith("utm_")
+        || lowered === "_ga"
+        || lowered.startsWith("_ga_");
+      if (!isTrackingParam) {
+        filtered.append(key, value);
+      }
+    }
+    parsed.search = filtered.toString() ? `?${filtered.toString()}` : "";
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
 }
 
 type TeachingReviewSummary = {
@@ -364,6 +438,103 @@ type EmployeeReadiness = {
   reasons: string[];
   toneClass: string;
 };
+
+type ExtensionLearningReadiness = {
+  label: string;
+  reasons: string[];
+  toneClass: string;
+};
+
+type TeachingStepCardProps = {
+  step: WorkflowStep;
+  stepNumber?: number;
+  status: TeachingStepStatus;
+  formatObservedAction: (action: BrowserAction) => string;
+  compact?: boolean;
+};
+
+function TeachingStepCard({ step, stepNumber, status, formatObservedAction, compact = false }: TeachingStepCardProps) {
+  const hasExtensionEvidence = step.observedActions.some((action) => action.source === "extension");
+  const confidenceValue = Math.max(0, Math.min(1, step.billConfidence || 0));
+  const confidenceLabel = confidenceValue >= 0.8 ? "high" : confidenceValue >= 0.5 ? "medium" : "low";
+  const confidenceClass = confidenceValue >= 0.8
+    ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100"
+    : confidenceValue >= 0.5
+      ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
+      : "border-slate-500/50 bg-slate-800 text-slate-200";
+
+  return (
+    <article className={`rounded-xl border border-slate-700 bg-slate-950/70 text-sm ${compact ? "p-3" : "p-4"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {typeof stepNumber === "number" && (
+              <span className="text-xs uppercase tracking-[0.16em] text-slate-500">Step {stepNumber}</span>
+            )}
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${status.label === "Runnable" ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : status.label === "Needs clarification" ? "border-amber-400/40 bg-amber-500/10 text-amber-100" : "border-slate-500/50 bg-slate-800 text-slate-200"}`}>
+              {status.label}
+            </span>
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${step.confirmed ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : "border-amber-400/40 bg-amber-500/10 text-amber-100"}`}>
+              {step.confirmed ? "Confirmed" : "Unconfirmed"}
+            </span>
+            {hasExtensionEvidence && (
+              <span className="rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
+                Source: Chrome extension
+              </span>
+            )}
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${confidenceClass}`}>
+              Confidence: {confidenceLabel}
+            </span>
+          </div>
+          <h3 className="mt-2 truncate font-semibold text-white">{step.title}</h3>
+        </div>
+      </div>
+
+      <div className="mt-2 space-y-2">
+        <p className="text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
+        <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">Target</p>
+          <p className="mt-1 text-xs text-cyan-50">{step.observedActions[0]?.label || step.observedActions[0]?.selector || "Not captured yet"}</p>
+        </div>
+      </div>
+
+      <details className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+        <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-slate-400">Show technical info</summary>
+        <div className="mt-2 space-y-2 text-xs text-slate-300">
+          <p>Confidence: {(confidenceValue * 100).toFixed(0)}%</p>
+          <p>Employee explanation: {step.employeeExplanation || "Pending"}</p>
+          <p>Required data: {step.requiredInputs.join(", ") || "Pending"}</p>
+          <p>Decision rules: {step.decisionRules.join("; ") || "None yet"}</p>
+          <p>Exceptions: {step.exceptions.join("; ") || "None yet"}</p>
+          {step.pendingQuestion && <p>Pending question: {step.pendingQuestion}</p>}
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
+            {step.observedActions.length === 0 ? (
+              <p className="mt-1 text-slate-400">No browser actions captured yet.</p>
+            ) : (
+              <ul className="mt-1 space-y-1">
+                {step.observedActions.map((action) => (
+                  <li key={action.id}>{formatObservedAction(action)}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </details>
+    </article>
+  );
+}
+
+function summarizeExtensionEvent(event: Record<string, unknown> | null | undefined): string {
+  if (!event) {
+    return "No extension events yet";
+  }
+  return [
+    String(event.event_type ?? "").trim(),
+    String((event.target as Record<string, unknown> | undefined)?.target_label ?? "").trim(),
+    String(event.current_url ?? "").trim(),
+  ].filter(Boolean).join(" • ") || "Extension event captured";
+}
 
 type BrainCommandResponse = {
   recognized_intent?: string;
@@ -461,6 +632,12 @@ type WorkflowLearningDraft = {
     blocking_reasons?: string[];
     warnings?: string[];
   };
+  created_by_user_id?: string | null;
+  created_by_name?: string | null;
+  last_updated_by_user_id?: string | null;
+  last_updated_by_name?: string | null;
+  approved_by_user_id?: string | null;
+  approved_by_name?: string | null;
 };
 
 type ChatEntry = {
@@ -478,6 +655,12 @@ type WorkflowRecord = {
   compatible_worker_types: string[];
   procedure_name?: string | null;
   published_static_procedure?: boolean;
+  created_by_user_id?: string | null;
+  created_by_name?: string | null;
+  last_updated_by_user_id?: string | null;
+  last_updated_by_name?: string | null;
+  approved_by_user_id?: string | null;
+  approved_by_name?: string | null;
 };
 
 const STATIC_PROCEDURE_WORKFLOWS = new Set<string>(["smart_sherpa_sync", "marketplace_workflow"]);
@@ -495,6 +678,111 @@ type BrainAuditEntry = {
   queued_task_id?: string | null;
   before_execution?: string;
   after_execution?: string;
+};
+
+type BillUserRole = "super_admin" | "admin" | "teacher" | "runner" | "viewer";
+
+type BillUserRecord = {
+  id: string;
+  tenant_id?: string | null;
+  email: string;
+  name: string;
+  role: BillUserRole;
+  status: string;
+  last_login_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type BillLoginResponse = {
+  user: BillUserRecord;
+  session_expires_at: string;
+};
+
+type BillCurrentUserResponse = {
+  user: BillUserRecord;
+};
+
+type BillAuditLogRecord = {
+  id: number;
+  event_type: string;
+  actor_user_name?: string | null;
+  actor_role?: string | null;
+  request_method?: string | null;
+  request_path?: string | null;
+  status_code?: number | null;
+  created_at: string;
+};
+
+type KnowledgeRecord = {
+  knowledge_id: string;
+  title: string;
+  category: string;
+  applies_to: string[];
+  content: string;
+  source_type: "manual" | "document" | "imported" | "system";
+  tags: string[];
+  status: "active" | "draft" | "archived";
+  created_by_user_id?: string | null;
+  created_by_name?: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+  tenant_id?: string | null;
+};
+
+type WorkerReleasePublicRecord = {
+  id: string;
+  version: string;
+  upload_time: string;
+  release_notes?: string | null;
+  package_filename: string;
+  package_sha256?: string | null;
+  file_size_bytes?: number | null;
+  status: string;
+  released_by_name?: string | null;
+  download_count: number;
+};
+
+type WorkerReleaseAdminRecord = WorkerReleasePublicRecord & {
+  released_by_user_id?: string | null;
+  channel: string;
+};
+
+type ExtensionReleasePublicRecord = {
+  id: string;
+  release_type: "chrome_extension";
+  version_label: string;
+  released_at: string;
+  release_notes?: string | null;
+  file_name: string;
+  sha256_hash?: string | null;
+  file_size_bytes?: number | null;
+  status: string;
+  released_by_name?: string | null;
+  download_count: number;
+};
+
+type ExtensionReleaseAdminRecord = ExtensionReleasePublicRecord & {
+  released_by_user_id?: string | null;
+};
+
+type WorkerDownloadUrlResponse = {
+  release_id: string;
+  version: string;
+  package_filename: string;
+  download_url: string;
+  sha256?: string | null;
+  expires_in_seconds?: number | null;
+};
+
+type ExtensionDownloadUrlResponse = {
+  release_id: string;
+  version_label: string;
+  file_name: string;
+  download_url: string;
+  sha256_hash?: string | null;
+  expires_in_seconds?: number | null;
 };
 
 type ActionFeedback = {
@@ -583,7 +871,7 @@ type TeachOverlayQuestionResponse = {
   settings?: TeachOverlaySettings;
 };
 
-const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
+const NEXT_PUBLIC_API_BASE_DEFAULT = "https://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
 const COMMAND_CENTER_VOICE_PREF_KEY = "bill.command-center.voice.enabled";
 const COMMAND_CENTER_AUTO_SUBMIT_PREF_KEY = "bill.command-center.voice.autoSubmit.enabled";
 const TEACHING_STARTUP_POLL_TIMEOUT_MS = 60000;
@@ -727,6 +1015,54 @@ const isEditableTarget = (target: EventTarget | null): boolean => {
 };
 
 export default function Home() {
+  const [currentUser, setCurrentUser] = useState<BillUserRecord | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<string | null>(null);
+  const [adminUsers, setAdminUsers] = useState<BillUserRecord[]>([]);
+  const [adminAuditLogs, setAdminAuditLogs] = useState<BillAuditLogRecord[]>([]);
+  const [knowledgeEntries, setKnowledgeEntries] = useState<KnowledgeRecord[]>([]);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [knowledgeActionBusyKey, setKnowledgeActionBusyKey] = useState<string | null>(null);
+  const [knowledgeActionFeedback, setKnowledgeActionFeedback] = useState<ActionFeedback | null>(null);
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  // Worker Download Center
+  const [currentWorkerRelease, setCurrentWorkerRelease] = useState<WorkerReleasePublicRecord | null>(null);
+  const [workerReleaseLoading, setWorkerReleaseLoading] = useState(false);
+  const [workerReleaseError, setWorkerReleaseError] = useState<string | null>(null);
+  const [workerDownloadBusy, setWorkerDownloadBusy] = useState(false);
+  const [workerDownloadMessage, setWorkerDownloadMessage] = useState<string | null>(null);
+  // Admin Worker Releases
+  const [adminWorkerReleases, setAdminWorkerReleases] = useState<WorkerReleaseAdminRecord[]>([]);
+  const [adminWorkerReleasesLoading, setAdminWorkerReleasesLoading] = useState(false);
+  const [adminWorkerReleasesError, setAdminWorkerReleasesError] = useState<string | null>(null);
+  const [newReleaseVersion, setNewReleaseVersion] = useState("");
+  const [newReleaseFilename, setNewReleaseFilename] = useState("");
+  const [newReleaseNotes, setNewReleaseNotes] = useState("");
+  const [newReleaseChannel, setNewReleaseChannel] = useState("stable");
+  // Extension Download Center
+  const [currentExtensionRelease, setCurrentExtensionRelease] = useState<ExtensionReleasePublicRecord | null>(null);
+  const [extensionReleaseLoading, setExtensionReleaseLoading] = useState(false);
+  const [extensionReleaseError, setExtensionReleaseError] = useState<string | null>(null);
+  const [extensionDownloadBusy, setExtensionDownloadBusy] = useState(false);
+  const [extensionDownloadMessage, setExtensionDownloadMessage] = useState<string | null>(null);
+  // Admin Extension Releases
+  const [adminExtensionReleases, setAdminExtensionReleases] = useState<ExtensionReleaseAdminRecord[]>([]);
+  const [adminExtensionReleasesLoading, setAdminExtensionReleasesLoading] = useState(false);
+  const [adminExtensionReleasesError, setAdminExtensionReleasesError] = useState<string | null>(null);
+  const [newExtensionVersionLabel, setNewExtensionVersionLabel] = useState("");
+  const [newExtensionFilename, setNewExtensionFilename] = useState("");
+  const [newExtensionReleaseNotes, setNewExtensionReleaseNotes] = useState("");
+  const [newUserRole, setNewUserRole] = useState<BillUserRole>("viewer");
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<TaskCreateResponse | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -812,9 +1148,14 @@ export default function Home() {
   const [teachingVoiceError, setTeachingVoiceError] = useState<string | null>(null);
   // Teaching startup state — tracks browser_opening → active/failed
   const [teachingStartupState, setTeachingStartupState] = useState<TeachingStartupState | null>(null);
+  const [extensionLearningSessionId, setExtensionLearningSessionId] = useState<string>("");
+  const [extensionLearningState, setExtensionLearningState] = useState<TeachingStartupState | null>(null);
+  const extensionLearningBootstrapRef = useRef(false);
   const teachingStartupPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const teachingStartupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const teachingStartupPollErrorCountRef = useRef<number>(0);
+  const extensionLearningPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const extensionLearningPollErrorCountRef = useRef<number>(0);
   const lastSpokenTeachingSessionIdRef = useRef<string>("");
   const lastGuidedTranscriptHashRef = useRef<string>("");
   const lastGuidedTranscriptAtRef = useRef<number>(0);
@@ -923,6 +1264,70 @@ export default function Home() {
     teachingStartupPollErrorCountRef.current = 0;
   }, []);
 
+  const stopExtensionLearningPoll = useCallback(() => {
+    if (extensionLearningPollRef.current !== null) {
+      clearInterval(extensionLearningPollRef.current);
+      extensionLearningPollRef.current = null;
+    }
+    extensionLearningPollErrorCountRef.current = 0;
+  }, []);
+
+  const startExtensionLearningPoll = useCallback(
+    (sessionId: string) => {
+      stopExtensionLearningPoll();
+      const apiBase = getApiBase();
+      const trimmedSessionId = String(sessionId || "").trim();
+      if (!apiBase || !trimmedSessionId) return;
+
+      extensionLearningPollErrorCountRef.current = 0;
+      setExtensionLearningSessionId(trimmedSessionId);
+
+      const fetchExtensionLearningState = async () => {
+        try {
+          const res = await fetch(`${apiBase}/api/teaching/session/${trimmedSessionId}/status`);
+          if (!res.ok) {
+            extensionLearningPollErrorCountRef.current += 1;
+            if (extensionLearningPollErrorCountRef.current >= TEACHING_STARTUP_MAX_POLL_ERRORS) {
+              stopExtensionLearningPoll();
+            }
+            return;
+          }
+          extensionLearningPollErrorCountRef.current = 0;
+          const data = normalizeTeachingStatus((await res.json()) as TeachingStartupState);
+          setExtensionLearningState(data);
+          if (data.teaching_session) {
+            setGuidedTeachingFromSession(mapApiTeachingSession(data.teaching_session));
+          }
+          if (data.status === "failed") {
+            stopExtensionLearningPoll();
+          }
+        } catch {
+          extensionLearningPollErrorCountRef.current += 1;
+          if (extensionLearningPollErrorCountRef.current >= TEACHING_STARTUP_MAX_POLL_ERRORS) {
+            stopExtensionLearningPoll();
+          }
+        }
+      };
+
+      void fetchExtensionLearningState();
+      extensionLearningPollRef.current = setInterval(() => {
+        void fetchExtensionLearningState();
+      }, 2000);
+    },
+    [stopExtensionLearningPoll],
+  );
+
+
+  useEffect(() => {
+    if (extensionLearningBootstrapRef.current) return;
+    extensionLearningBootstrapRef.current = true;
+
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get("extension_session_id")?.trim() || params.get("teaching_session_id")?.trim() || "";
+    if (sessionId) {
+      void startExtensionLearningPoll(sessionId);
+    }
+  }, [startExtensionLearningPoll]);
   const startTeachingStartupPoll = useCallback(
     (sessionId: string) => {
       stopTeachingStartupPoll();
@@ -969,7 +1374,7 @@ export default function Home() {
             return;
           }
           teachingStartupPollErrorCountRef.current = 0;
-          const data = (await res.json()) as TeachingStartupState;
+          const data = normalizeTeachingStatus((await res.json()) as TeachingStartupState);
           logTeachOverlay("startup status poll", {
             session_id: sessionId,
             status: data.status,
@@ -1013,7 +1418,10 @@ export default function Home() {
   );
 
   // Stop polling when component unmounts
-  useEffect(() => () => stopTeachingStartupPoll(), [stopTeachingStartupPoll]);
+  useEffect(() => () => {
+    stopTeachingStartupPoll();
+    stopExtensionLearningPoll();
+  }, [stopExtensionLearningPoll, stopTeachingStartupPoll]);
 
   // ── Voice (Phase 4) ──────────────────────────────────────────────────────────
   const [autoSubmitVoiceCommands, setAutoSubmitVoiceCommands] = useState<boolean>(false);
@@ -1138,7 +1546,15 @@ export default function Home() {
         workflowName: input.workflow_name,
         workflowSummary: input.workflow_summary ?? undefined,
         status: input.status,
+        startUrl: input.start_url ?? undefined,
+        observedStartUrl: input.observed_start_url ?? undefined,
+        suggestedStartUrl: input.suggested_start_url ?? undefined,
+        observedCurrentPage: input.observed_current_page ?? undefined,
         pageContextSnapshot: safeSnapshot,
+        extensionConnectionStatus: input.extension_connection_status ?? null,
+        extensionEventCount: Number(input.extension_event_count ?? 0),
+        lastExtensionEvent: input.last_extension_event ?? null,
+        extensionEvents: (input.extension_events ?? []) as Record<string, unknown>[],
       steps: (input.steps ?? []).map((step) => ({
         id: step.id,
         order: step.order,
@@ -1146,8 +1562,12 @@ export default function Home() {
         observedActions: (step.observed_actions ?? []).map((action) => ({
           id: action.id,
           type: action.type,
+          source: action.source ?? undefined,
           selector: action.selector ?? undefined,
+          selectors: action.selectors ?? undefined,
           label: action.label ?? undefined,
+          target_label: action.target_label ?? undefined,
+          target_type: action.target_type ?? undefined,
           valueRedacted: action.value_redacted ?? undefined,
           url: action.url ?? undefined,
           timestamp: action.timestamp,
@@ -1168,6 +1588,31 @@ export default function Home() {
     },
     [],
   );
+
+  const normalizeTeachingStatus = useCallback((status: TeachingStartupState): TeachingStartupState => {
+    const nested = status.teaching_session;
+    const normalizedSession: TeachingSessionApiResponse["teaching_session"] = {
+      session_id: nested?.session_id ?? status.session_id,
+      workflow_name: nested?.workflow_name ?? status.workflow_name,
+      workflow_summary: nested?.workflow_summary ?? null,
+      status: nested?.status ?? "teaching",
+      start_url: nested?.start_url ?? status.start_url ?? null,
+      observed_start_url: nested?.observed_start_url ?? null,
+      suggested_start_url: nested?.suggested_start_url ?? status.suggested_start_url ?? null,
+      observed_current_page: nested?.observed_current_page ?? status.observed_current_page ?? null,
+      extension_connection_status: nested?.extension_connection_status ?? status.extension_connection_status ?? null,
+      extension_event_count: nested?.extension_event_count ?? status.extension_event_count ?? 0,
+      last_extension_event: nested?.last_extension_event ?? status.latest_extension_event ?? null,
+      extension_events: nested?.extension_events ?? [],
+      page_context_snapshot: nested?.page_context_snapshot ?? status.page_context_snapshot ?? null,
+      steps: nested?.steps ?? status.steps ?? [],
+    };
+
+    return {
+      ...status,
+      teaching_session: normalizedSession,
+    };
+  }, []);
 
   const applyGuidedTeachingApiResponse = useCallback(
     (body: TeachingSessionApiResponse) => {
@@ -1221,25 +1666,29 @@ export default function Home() {
   );
 
   const formatObservedAction = useCallback((action: BrowserAction): string => {
+    const sourcePrefix = action.source === "extension" ? "Extension observed" : action.source === "manual" ? "Manual note" : "Bill saw";
     if (action.type === "navigate") {
       try {
         const parsed = action.url ? new URL(action.url) : null;
         const path = parsed ? `${parsed.hostname}${parsed.pathname || "/"}` : action.url || "page";
-        return `Navigated to ${path}`;
+        return `${sourcePrefix}: navigated to ${path}`;
       } catch {
-        return `Navigated to ${action.url || "page"}`;
+        return `${sourcePrefix}: navigated to ${action.url || "page"}`;
       }
     }
     if (action.type === "type") {
-      return `Typed into ${action.label || "field"}`;
+      return `${sourcePrefix}: typed into ${action.target_label || action.label || "field"}`;
     }
     if (action.type === "select") {
-      return `Selected option in ${action.label || "field"}`;
+      return `${sourcePrefix}: selected option in ${action.target_label || action.label || "field"}`;
     }
     if (action.type === "submit") {
-      return `Submitted ${action.label || "form"}`;
+      return `${sourcePrefix}: submitted ${action.target_label || action.label || "form"}`;
     }
-    return `Clicked ${action.label || "element"}`;
+    if (action.type === "focus") {
+      return `${sourcePrefix}: focused ${action.target_label || action.label || "field"}`;
+    }
+    return `${sourcePrefix}: clicked ${action.target_label || action.label || "element"}`;
   }, []);
 
   const setGuidedTeachingFromSession = useCallback((session: TeachingSession) => {
@@ -1260,8 +1709,17 @@ export default function Home() {
     const blockingReasons: string[] = [];
     const executionWarnings: string[] = [];
     const allActions = session.steps.flatMap((step) => step.observedActions ?? []);
-    const firstNavigation = allActions.find((action) => action.type === "navigate" && Boolean(action.url?.trim()));
-    const hasStartUrl = Boolean(firstNavigation?.url);
+    const confirmedStartUrl = canonicalizeTeachingUrl(session.startUrl);
+    const hasStartUrl = Boolean(confirmedStartUrl);
+    const hasRunnableInteractiveAction = allActions.some((action) => {
+      if (action.type === "navigate") {
+        return Boolean(action.url?.trim());
+      }
+      if (action.type === "click" || action.type === "submit" || action.type === "focus" || action.type === "type") {
+        return Boolean(action.selector?.trim());
+      }
+      return false;
+    });
 
     if (session.steps.length === 0) {
       blockingReasons.push("No steps were captured yet.");
@@ -1291,9 +1749,9 @@ export default function Home() {
     }
 
     return {
-      runnable: blockingReasons.length === 0,
+      runnable: blockingReasons.length === 0 && Boolean(hasStartUrl || hasRunnableInteractiveAction),
       has_start_url: hasStartUrl,
-      start_url: firstNavigation?.url ?? null,
+      start_url: confirmedStartUrl || null,
       blocking_reasons: blockingReasons,
       execution_warnings: executionWarnings,
     };
@@ -1362,7 +1820,7 @@ export default function Home() {
         continue;
       }
 
-      if (action.type === "click" || action.type === "submit") {
+      if (action.type === "click" || action.type === "submit" || action.type === "focus") {
         if ((action.selector ?? "").trim()) {
           hasRunnable = true;
         } else if ((action.label ?? "").trim()) {
@@ -1373,7 +1831,18 @@ export default function Home() {
         continue;
       }
 
-      if (action.type === "type" || action.type === "select") {
+      if (action.type === "type") {
+        if ((action.selector ?? "").trim()) {
+          hasRunnable = true;
+        } else if ((action.label ?? "").trim()) {
+          hasAmbiguity = true;
+        } else {
+          hasManualConstraint = true;
+        }
+        continue;
+      }
+
+      if (action.type === "select") {
         if ((action.selector ?? "").trim() && !action.valueRedacted) {
           hasRunnable = true;
         } else if (action.valueRedacted) {
@@ -1416,11 +1885,26 @@ export default function Home() {
     if (!guidedTeachingSession) return "";
     const fromReadiness = String(guidedTeachingEffectiveReadiness?.start_url || "").trim();
     if (fromReadiness) return fromReadiness;
-    const firstNavigation = guidedTeachingSession.steps
-      .flatMap((step) => step.observedActions ?? [])
-      .find((action) => action.type === "navigate" && Boolean(action.url?.trim()));
-    return String(firstNavigation?.url || "").trim();
+    const fromSession = canonicalizeTeachingUrl(guidedTeachingSession.startUrl);
+    if (fromSession) return fromSession;
+    return "";
   }, [guidedTeachingEffectiveReadiness?.start_url, guidedTeachingSession]);
+
+  const suggestedStartUrl = useMemo(() => {
+    if (!guidedTeachingSession) return "";
+    const explicitSuggestion = canonicalizeTeachingUrl(guidedTeachingSession.suggestedStartUrl);
+    if (explicitSuggestion) return explicitSuggestion;
+    const fromSnapshot = canonicalizeTeachingUrl(guidedTeachingSession.pageContextSnapshot?.url);
+    if (fromSnapshot && fromSnapshot !== canonicalStartUrl) return fromSnapshot;
+    return "";
+  }, [canonicalStartUrl, guidedTeachingSession]);
+
+  const observedCurrentPage = useMemo(() => {
+    const fromSession = String(guidedTeachingSession?.observedCurrentPage || "").trim();
+    if (fromSession) return fromSession;
+    const snapshot = guidedTeachingSession?.pageContextSnapshot;
+    return String(snapshot?.url || snapshot?.domain || "").trim();
+  }, [guidedTeachingSession]);
 
   const capturedButtons = useMemo(() => {
     const snapshot = guidedTeachingSession?.pageContextSnapshot;
@@ -1451,6 +1935,17 @@ export default function Home() {
     return Array.from(new Set([...(visible.length ? visible : fallback)])).slice(0, 8);
   }, [guidedTeachingSession?.pageContextSnapshot]);
 
+  const extensionConnectionStatus = guidedTeachingSession?.extensionConnectionStatus
+    ?? guidedTeachingSession?.pageContextSnapshot?.extension_connection_status
+    ?? "not paired";
+  const extensionEventCount = guidedTeachingSession?.extensionEventCount
+    ?? guidedTeachingSession?.pageContextSnapshot?.extension_event_count
+    ?? 0;
+  const latestExtensionEvent = (guidedTeachingSession?.lastExtensionEvent
+    ?? guidedTeachingSession?.pageContextSnapshot?.last_extension_event
+    ?? null) as Record<string, unknown> | null;
+  const latestExtensionEventSummary = summarizeExtensionEvent(latestExtensionEvent);
+
   const stepStatusSummary = useMemo(() => {
     const steps = guidedTeachingSession?.steps ?? [];
     let runnable = 0;
@@ -1465,11 +1960,63 @@ export default function Home() {
     return { runnable, manualOnly, needsClarification, total: steps.length };
   }, [explainStepStatus, guidedTeachingSession?.steps]);
 
+  const extensionLearningSession = useMemo(() => {
+    if (!extensionLearningState?.teaching_session) return null;
+    return mapApiTeachingSession(extensionLearningState.teaching_session);
+  }, [extensionLearningState, mapApiTeachingSession]);
+
+  const extensionLearningStepStatusSummary = useMemo(() => {
+    const steps = extensionLearningSession?.steps ?? [];
+    let runnable = 0;
+    let manualOnly = 0;
+    let needsClarification = 0;
+    for (const step of steps) {
+      const status = explainStepStatus(step);
+      if (status.label === "Runnable") runnable += 1;
+      if (status.label === "Manual-only") manualOnly += 1;
+      if (status.label === "Needs clarification") needsClarification += 1;
+    }
+    return { runnable, manualOnly, needsClarification, total: steps.length };
+  }, [explainStepStatus, extensionLearningSession?.steps]);
+
+  const extensionLearningReadiness = useMemo(() => {
+    if (!extensionLearningSession) return null;
+    const hasStart = Boolean(extensionLearningSession.pageContextSnapshot?.url || extensionLearningSession.pageContextSnapshot?.domain);
+    const hasExtensionEvents = (extensionLearningSession.extensionEventCount ?? 0) > 0;
+    const hasRunnableStep = extensionLearningStepStatusSummary.runnable > 0;
+    const reasons: string[] = [];
+
+    if (!hasExtensionEvents) {
+      reasons.push("Waiting for extension events.");
+    }
+    if (!hasStart) {
+      reasons.push("Waiting for a captured page context.");
+    }
+    if (!hasRunnableStep) {
+      reasons.push("Bill needs at least one runnable step before testing.");
+    }
+
+    return {
+      label: hasRunnableStep && hasStart ? "Ready to test" : "Still learning",
+      reasons,
+      toneClass: hasRunnableStep && hasStart ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100" : "border-amber-400/40 bg-amber-500/10 text-amber-100",
+    } satisfies ExtensionLearningReadiness;
+  }, [extensionLearningSession, extensionLearningStepStatusSummary]);
+
+  const extensionLearningVisible = Boolean(extensionLearningSessionId.trim() || extensionLearningSession || extensionLearningState);
+  const extensionLearningWorkerStatus = onlineWorkers.length > 0 ? "online" : "offline or unavailable";
+  const extensionLearningConnectionStatus = extensionLearningSession?.extensionConnectionStatus
+    ?? (extensionLearningSession?.extensionEventCount ? "watching" : "not paired");
+  const extensionLearningLatestEvent = (extensionLearningSession?.lastExtensionEvent
+    ?? extensionLearningSession?.pageContextSnapshot?.last_extension_event
+    ?? null) as Record<string, unknown> | null;
+
   const employeeReadiness = useMemo((): EmployeeReadiness => {
     const readiness = guidedTeachingEffectiveReadiness;
     const reasons: string[] = [];
     const hasStart = Boolean(readiness?.has_start_url || canonicalStartUrl);
     const hasRunnableStep = stepStatusSummary.runnable > 0;
+    const hasExtensionContext = Boolean(extensionEventCount > 0 || guidedTeachingSession?.extensionConnectionStatus === "paired");
 
     if (readiness?.runnable) {
       reasons.push("Bill has a starting page and at least one runnable step.");
@@ -1487,6 +2034,9 @@ export default function Home() {
       reasons.push("Bill still needs a starting page.");
     }
     if (!hasRunnableStep) {
+      if (hasStart && hasExtensionContext) {
+        reasons.push("Bill sees the page. Click a button or field to create the first step.");
+      }
       reasons.push("Bill needs at least one runnable step before testing.");
     }
     if ((readiness?.blocking_reasons ?? []).length > 0) {
@@ -1506,13 +2056,14 @@ export default function Home() {
       reasons,
       toneClass: "border-rose-400/40 bg-rose-500/10 text-rose-100",
     };
-  }, [canonicalStartUrl, guidedTeachingEffectiveReadiness, stepStatusSummary.manualOnly, stepStatusSummary.runnable]);
+  }, [canonicalStartUrl, extensionEventCount, guidedTeachingEffectiveReadiness, guidedTeachingSession?.extensionConnectionStatus, stepStatusSummary.manualOnly, stepStatusSummary.runnable]);
 
   const teachingCoach = useMemo(() => {
     const session = guidedTeachingSession;
     const hasPurpose = Boolean(session?.workflowSummary?.trim());
     const hasStart = Boolean(canonicalStartUrl);
     const hasSnapshot = Boolean(session?.pageContextSnapshot?.url || session?.pageContextSnapshot?.domain);
+    const hasExtensionContext = Boolean((session?.extensionEventCount ?? 0) > 0 || session?.extensionConnectionStatus === "paired");
     const latestStep =
       !session || session.steps.length === 0
         ? null
@@ -1549,7 +2100,9 @@ export default function Home() {
     if ((session?.steps.length ?? 0) === 0) {
       return {
         phase: "Teach first action",
-        guidance: "Bill sees the page. Tell Bill what to click or type next.",
+        guidance: hasExtensionContext
+          ? "Bill sees the page. Click a button or field to create the first step."
+          : "Bill sees the page. Tell Bill what to click or type next.",
         nextAction: "Capture the first click or field entry.",
         examplePhrase: "Click the Sign In button.",
       };
@@ -1872,6 +2425,46 @@ export default function Home() {
     mapApiTeachingSession,
     setGuidedTeachingFromSession,
   ]);
+
+  const confirmCurrentPageAsStartingPage = useCallback(async () => {
+    if (!guidedTeachingSession || guidedTeachingBusy) return;
+    const candidateUrl = observedCurrentPage || suggestedStartUrl;
+    if (!candidateUrl) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        { role: "assistant", message: "I can't confirm a starting page yet because no page URL is visible." },
+      ]);
+      return;
+    }
+    setGuidedTeachingBusy(true);
+    try {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        throw new Error("NEXT_PUBLIC_API_BASE is not set");
+      }
+      const response = await fetch(`${apiBase}/api/teaching/session/${guidedTeachingSession.sessionId}/confirm-start-page`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: candidateUrl }),
+      });
+      const body = (await response.json()) as TeachingSessionApiResponse & { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? `Confirm starting page failed (${response.status})`);
+      }
+      applyGuidedTeachingApiResponse(body);
+      setGuidedTeachingMessages((current) => [...current, { role: "assistant", message: body.reply }]);
+    } catch (error) {
+      setGuidedTeachingMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `I couldn't save the starting page yet: ${error instanceof Error ? error.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setGuidedTeachingBusy(false);
+    }
+  }, [applyGuidedTeachingApiResponse, guidedTeachingBusy, guidedTeachingSession, observedCurrentPage, suggestedStartUrl]);
 
   const teachingHotkeyEnabled =
     Boolean(guidedTeachingSession) &&
@@ -2347,17 +2940,235 @@ export default function Home() {
     }
   };
 
-  const fetchJson = async <T,>(url: string): Promise<T> => {
+  const setLoggedOutState = useCallback((message?: string) => {
+    setCurrentUser(null);
+    setSessionExpiresAt(null);
+    setAuthChecking(false);
+    setAuthNotice(message ?? "Please log in to continue.");
+  }, []);
+
+  const readErrorDetail = async (response: Response): Promise<string> => {
+    try {
+      const payload = (await response.clone().json()) as { detail?: string; error?: string; message?: string };
+      return payload.detail ?? payload.error ?? payload.message ?? `HTTP ${response.status}`;
+    } catch {
+      return `HTTP ${response.status}`;
+    }
+  };
+
+  const apiFetch = useCallback(
+    async (
+      url: string,
+      init?: RequestInit & { allowUnauthorized?: boolean },
+    ): Promise<Response> => {
+      const { allowUnauthorized = false, ...requestInit } = init ?? {};
+      const response = await fetch(url, {
+        cache: "no-store",
+        credentials: "include",
+        ...requestInit,
+      });
+      if (response.status === 401 && !allowUnauthorized) {
+        setLoggedOutState("Session expired. Please log in again.");
+      }
+      return response;
+    },
+    [setLoggedOutState],
+  );
+
+  const fetchJson = useCallback(async <T,>(
+    url: string,
+    init?: RequestInit & { allowUnauthorized?: boolean },
+  ): Promise<T> => {
     console.log(`[auth-proxy] fetching ${url}`);
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await apiFetch(url, init);
     console.log(`[auth-proxy] response ${response.status} for ${url}`);
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      throw new Error(await readErrorDetail(response));
     }
 
     return (await response.json()) as T;
-  };
+  }, [apiFetch]);
+
+  const resolveDownloadUrl = useCallback((downloadUrl: string): URL => {
+    const raw = String(downloadUrl || "").trim();
+    if (!raw) {
+      throw new Error("Download URL is empty.");
+    }
+
+    const looksAbsolute = /^https?:\/\//i.test(raw);
+    const resolved = looksAbsolute ? new URL(raw) : new URL(raw, getWorkerApiBase());
+
+    // Avoid mixed-content blocking when frontend is HTTPS, but only upgrade
+    // direct worker downloads targeting the configured Beanstalk backend host.
+    if (typeof window !== "undefined" && window.location.protocol === "https:" && resolved.protocol === "http:") {
+      try {
+        const workerBaseHost = new URL(getWorkerApiBase()).hostname;
+        const sameWorkerHost = resolved.hostname === workerBaseHost;
+        const isBeanstalkHost = /(?:^|\.)elasticbeanstalk\.com$/i.test(resolved.hostname);
+        if (sameWorkerHost && isBeanstalkHost) {
+          resolved.protocol = "https:";
+        }
+      } catch {
+        // Ignore base parsing issues and keep the original resolved URL.
+      }
+    }
+
+    return resolved;
+  }, []);
+
+  const triggerBrowserDownload = useCallback((downloadUrl: string): string => {
+    const resolved = resolveDownloadUrl(downloadUrl);
+    const anchor = document.createElement("a");
+    anchor.href = resolved.toString();
+    anchor.download = "";
+    anchor.target = "_self";
+    anchor.rel = "noopener noreferrer";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return resolved.toString();
+  }, [resolveDownloadUrl]);
+
+  const loadCurrentUser = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      setAuthError("NEXT_PUBLIC_API_BASE is not set. Login is unavailable.");
+      setAuthChecking(false);
+      return;
+    }
+
+    try {
+      const response = await apiFetch(`${apiBase}/api/auth/me`, { allowUnauthorized: true });
+      if (response.status === 401) {
+        setCurrentUser(null);
+        setSessionExpiresAt(null);
+        setAuthNotice("Please log in to continue.");
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      const payload = (await response.json()) as BillCurrentUserResponse;
+      setCurrentUser(payload.user);
+      setAuthError(null);
+      setAuthNotice(null);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Unable to validate login session");
+    } finally {
+      setAuthChecking(false);
+    }
+  }, [apiFetch]);
+
+  const loadAdminPanels = useCallback(async () => {
+    if (currentUser?.role !== "admin") {
+      setAdminUsers([]);
+      setAdminAuditLogs([]);
+      setAdminError(null);
+      return;
+    }
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      return;
+    }
+
+    setAdminBusy(true);
+    setAdminError(null);
+    try {
+      const [users, audits] = await Promise.all([
+        fetchJson<BillUserRecord[]>(`${apiBase}/api/admin/users?limit=100`),
+        fetchJson<BillAuditLogRecord[]>(`${apiBase}/api/admin/audit-logs?limit=50`),
+      ]);
+      setAdminUsers(Array.isArray(users) ? users : []);
+      setAdminAuditLogs(Array.isArray(audits) ? audits : []);
+    } catch (error) {
+      setAdminError(error instanceof Error ? error.message : "Admin panel failed to load");
+    } finally {
+      setAdminBusy(false);
+    }
+  }, [currentUser?.role]);
+
+  const loadKnowledgePanels = useCallback(async () => {
+    const currentRole = currentUser?.role;
+    if (!currentRole || currentRole === "viewer") {
+      setKnowledgeEntries([]);
+      setKnowledgeError(null);
+      return;
+    }
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      return;
+    }
+
+    setKnowledgeLoading(true);
+    setKnowledgeError(null);
+    try {
+      const endpoint =
+        currentRole === "admin"
+          ? `${apiBase}/api/knowledge?limit=300`
+          : `${apiBase}/api/knowledge/active?limit=300`;
+      const records = await fetchJson<KnowledgeRecord[]>(endpoint);
+      setKnowledgeEntries(Array.isArray(records) ? records : []);
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Knowledge Center failed to load");
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }, [currentUser?.role, fetchJson]);
+
+  const submitLogin = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      setAuthError("NEXT_PUBLIC_API_BASE is not set. Login is unavailable.");
+      return;
+    }
+    if (!loginEmail.trim() || !loginPassword.trim()) {
+      setAuthError("Email and password are required.");
+      return;
+    }
+
+    setLoginBusy(true);
+    setAuthError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: loginEmail.trim(),
+          password: loginPassword,
+        }),
+        allowUnauthorized: true,
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      const payload = (await response.json()) as BillLoginResponse;
+      setCurrentUser(payload.user);
+      setSessionExpiresAt(payload.session_expires_at);
+      setAuthNotice(null);
+      setLoginPassword("");
+      setAuthChecking(false);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Login failed");
+    } finally {
+      setLoginBusy(false);
+    }
+  }, [apiFetch, loginEmail, loginPassword]);
+
+  const submitLogout = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (apiBase) {
+      try {
+        await apiFetch(`${apiBase}/api/auth/logout`, {
+          method: "POST",
+          allowUnauthorized: true,
+        });
+      } catch {
+        // no-op: client state is authoritative for UI logout
+      }
+    }
+    setLoggedOutState("Logged out.");
+  }, [apiFetch, setLoggedOutState]);
 
   const loadDashboardData = async () => {
     setErrors({});
@@ -2626,22 +3437,51 @@ export default function Home() {
   };
 
   useEffect(() => {
+    void loadCurrentUser();
+  }, [loadCurrentUser]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
     void loadDashboardData();
     const interval = setInterval(() => {
       void loadDashboardData();
     }, 3000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
     void loadBrainPanels();
     const interval = setInterval(() => {
       void loadBrainPanels();
     }, 7000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (currentUser?.role !== "admin") {
+      setAdminUsers([]);
+      setAdminAuditLogs([]);
+      setAdminError(null);
+      return;
+    }
+    void loadAdminPanels();
+  }, [currentUser?.role, loadAdminPanels]);
+
+  useEffect(() => {
+    if (!currentUser || currentUser.role === "viewer") {
+      setKnowledgeEntries([]);
+      setKnowledgeError(null);
+      return;
+    }
+    void loadKnowledgePanels();
+  }, [currentUser?.role, loadKnowledgePanels]);
 
   const submitTask = async (body: Record<string, unknown>) => {
     setLoading(true);
@@ -2658,7 +3498,7 @@ export default function Home() {
         ? { ...body, target_machine_uuid: targetMachineUuid }
         : body;
       console.log(`[dashboard] Fetching URL: ${taskCreateUrl}`);
-      const res = await fetch(taskCreateUrl, {
+      const res = await apiFetch(taskCreateUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody)
@@ -2667,7 +3507,7 @@ export default function Home() {
       const data = (await res.json()) as TaskCreateResponse;
       setResponse(data);
       if (!res.ok) {
-        setActionError(`Request failed: ${res.status}`);
+        setActionError(await readErrorDetail(res));
       } else {
         await loadDashboardData();
       }
@@ -3641,7 +4481,9 @@ export default function Home() {
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approved_by: "bill-web-operator" }),
+        body: JSON.stringify({
+          approved_by: currentUser?.name || currentUser?.email || "bill-web-operator",
+        }),
       });
       const body = (await response.json()) as WorkflowLearningDraft | { detail?: unknown };
       if (!response.ok) {
@@ -4240,6 +5082,634 @@ export default function Home() {
           ? "border-slate-500/50 bg-slate-800/70"
           : "border-amber-500/40 bg-amber-500/10";
 
+  // ── Worker Download Center callbacks ──────────────────────────────────────
+
+  const loadCurrentWorkerRelease = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase || !currentUser) return;
+    const allowed = ["admin", "teacher", "runner"] as const;
+    if (!allowed.includes(currentUser.role as (typeof allowed)[number])) return;
+    setWorkerReleaseLoading(true);
+    setWorkerReleaseError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases/current`);
+      if (r.status === 404) {
+        setCurrentWorkerRelease(null);
+        return;
+      }
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setCurrentWorkerRelease((await r.json()) as WorkerReleasePublicRecord);
+    } catch (err) {
+      setWorkerReleaseError(err instanceof Error ? err.message : "Failed to load worker release");
+    } finally {
+      setWorkerReleaseLoading(false);
+    }
+  }, [apiFetch, currentUser]);
+
+  const downloadCurrentWorker = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setWorkerDownloadBusy(true);
+    setWorkerDownloadMessage(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases/${releaseId}/download-url`, {
+        method: "POST",
+      });
+      if (!r.ok) {
+        const msg = await readErrorDetail(r);
+        setWorkerDownloadMessage(`Download failed: ${msg}`);
+        return;
+      }
+      const payload = (await r.json()) as WorkerDownloadUrlResponse;
+      if (!payload.download_url) {
+        setWorkerDownloadMessage("Download failed: backend did not return a download URL.");
+        return;
+      }
+      const openedUrl = triggerBrowserDownload(payload.download_url);
+      const openedDomain = new URL(openedUrl).origin;
+      setWorkerDownloadMessage(`Download link opened from ${openedDomain}.`);
+      void loadCurrentWorkerRelease();
+    } catch (err) {
+      setWorkerDownloadMessage(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setWorkerDownloadBusy(false);
+    }
+  }, [apiFetch, loadCurrentWorkerRelease, triggerBrowserDownload]);
+
+  const loadAdminWorkerReleases = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase || currentUser?.role !== "admin") return;
+    setAdminWorkerReleasesLoading(true);
+    setAdminWorkerReleasesError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases`);
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setAdminWorkerReleases((await r.json()) as WorkerReleaseAdminRecord[]);
+    } catch (err) {
+      setAdminWorkerReleasesError(err instanceof Error ? err.message : "Failed to load releases");
+    } finally {
+      setAdminWorkerReleasesLoading(false);
+    }
+  }, [apiFetch, currentUser?.role]);
+
+  const registerWorkerRelease = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    if (!newReleaseVersion.trim() || !newReleaseFilename.trim()) {
+      setAdminWorkerReleasesError("Version and filename are required.");
+      return;
+    }
+    setAdminWorkerReleasesLoading(true);
+    setAdminWorkerReleasesError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: newReleaseVersion.trim(),
+          package_filename: newReleaseFilename.trim(),
+          release_notes: newReleaseNotes.trim() || null,
+          channel: newReleaseChannel || "stable",
+        }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setNewReleaseVersion("");
+      setNewReleaseFilename("");
+      setNewReleaseNotes("");
+      await loadAdminWorkerReleases();
+    } catch (err) {
+      setAdminWorkerReleasesError(err instanceof Error ? err.message : "Failed to register release");
+    } finally {
+      setAdminWorkerReleasesLoading(false);
+    }
+  }, [apiFetch, newReleaseVersion, newReleaseFilename, newReleaseNotes, newReleaseChannel, loadAdminWorkerReleases]);
+
+  const markReleaseCurrent = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setAdminWorkerReleasesLoading(true);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases/${releaseId}/mark-current`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      await loadAdminWorkerReleases();
+      await loadCurrentWorkerRelease();
+    } catch (err) {
+      setAdminWorkerReleasesError(err instanceof Error ? err.message : "Failed to mark release current");
+    } finally {
+      setAdminWorkerReleasesLoading(false);
+    }
+  }, [apiFetch, loadAdminWorkerReleases, loadCurrentWorkerRelease]);
+
+  const disableRelease = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setAdminWorkerReleasesLoading(true);
+    try {
+      const r = await apiFetch(`${apiBase}/api/worker-releases/${releaseId}/disable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      await loadAdminWorkerReleases();
+    } catch (err) {
+      setAdminWorkerReleasesError(err instanceof Error ? err.message : "Failed to disable release");
+    } finally {
+      setAdminWorkerReleasesLoading(false);
+    }
+  }, [apiFetch, loadAdminWorkerReleases]);
+
+  // Load worker release when a user with download permission logs in.
+  useEffect(() => {
+    if (!currentUser) {
+      setCurrentWorkerRelease(null);
+      setAdminWorkerReleases([]);
+      return;
+    }
+    const downloadRoles = ["admin", "teacher", "runner"];
+    if (downloadRoles.includes(currentUser.role)) {
+      void loadCurrentWorkerRelease();
+    }
+    if (currentUser.role === "admin") {
+      void loadAdminWorkerReleases();
+    }
+  }, [currentUser?.role, loadCurrentWorkerRelease, loadAdminWorkerReleases]);
+
+  // ── Extension Download Center callbacks ───────────────────────────────────
+
+  const loadCurrentExtensionRelease = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase || !currentUser) return;
+    const allowed = ["admin", "teacher", "runner"] as const;
+    if (!allowed.includes(currentUser.role as (typeof allowed)[number])) return;
+    setExtensionReleaseLoading(true);
+    setExtensionReleaseError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases/current`);
+      if (r.status === 404) {
+        setCurrentExtensionRelease(null);
+        return;
+      }
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setCurrentExtensionRelease((await r.json()) as ExtensionReleasePublicRecord);
+    } catch (err) {
+      setExtensionReleaseError(err instanceof Error ? err.message : "Failed to load extension release");
+    } finally {
+      setExtensionReleaseLoading(false);
+    }
+  }, [apiFetch, currentUser]);
+
+  const downloadCurrentExtension = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setExtensionDownloadBusy(true);
+    setExtensionDownloadMessage(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases/${releaseId}/download-url`, {
+        method: "POST",
+      });
+      if (!r.ok) {
+        const msg = await readErrorDetail(r);
+        setExtensionDownloadMessage(`Download failed: ${msg}`);
+        return;
+      }
+      const payload = (await r.json()) as ExtensionDownloadUrlResponse;
+      if (!payload.download_url) {
+        setExtensionDownloadMessage("Download failed: backend did not return a download URL.");
+        return;
+      }
+      const openedUrl = triggerBrowserDownload(payload.download_url);
+      const openedDomain = new URL(openedUrl).origin;
+      setExtensionDownloadMessage(`Download link opened from ${openedDomain}.`);
+      void loadCurrentExtensionRelease();
+    } catch (err) {
+      setExtensionDownloadMessage(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setExtensionDownloadBusy(false);
+    }
+  }, [apiFetch, loadCurrentExtensionRelease, triggerBrowserDownload]);
+
+  const loadAdminExtensionReleases = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase || currentUser?.role !== "admin") return;
+    setAdminExtensionReleasesLoading(true);
+    setAdminExtensionReleasesError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases`);
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setAdminExtensionReleases((await r.json()) as ExtensionReleaseAdminRecord[]);
+    } catch (err) {
+      setAdminExtensionReleasesError(err instanceof Error ? err.message : "Failed to load extension releases");
+    } finally {
+      setAdminExtensionReleasesLoading(false);
+    }
+  }, [apiFetch, currentUser?.role]);
+
+  const registerExtensionRelease = useCallback(async () => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    if (!newExtensionVersionLabel.trim() || !newExtensionFilename.trim()) {
+      setAdminExtensionReleasesError("Version label and filename are required.");
+      return;
+    }
+    setAdminExtensionReleasesLoading(true);
+    setAdminExtensionReleasesError(null);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version_label: newExtensionVersionLabel.trim(),
+          file_name: newExtensionFilename.trim(),
+          release_notes: newExtensionReleaseNotes.trim() || null,
+        }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      setNewExtensionVersionLabel("");
+      setNewExtensionFilename("");
+      setNewExtensionReleaseNotes("");
+      await loadAdminExtensionReleases();
+      await loadCurrentExtensionRelease();
+    } catch (err) {
+      setAdminExtensionReleasesError(err instanceof Error ? err.message : "Failed to register extension release");
+    } finally {
+      setAdminExtensionReleasesLoading(false);
+    }
+  }, [
+    apiFetch,
+    newExtensionVersionLabel,
+    newExtensionFilename,
+    newExtensionReleaseNotes,
+    loadAdminExtensionReleases,
+    loadCurrentExtensionRelease,
+  ]);
+
+  const markExtensionReleaseCurrent = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setAdminExtensionReleasesLoading(true);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases/${releaseId}/mark-current`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      await loadAdminExtensionReleases();
+      await loadCurrentExtensionRelease();
+    } catch (err) {
+      setAdminExtensionReleasesError(err instanceof Error ? err.message : "Failed to mark extension release current");
+    } finally {
+      setAdminExtensionReleasesLoading(false);
+    }
+  }, [apiFetch, loadAdminExtensionReleases, loadCurrentExtensionRelease]);
+
+  const disableExtensionRelease = useCallback(async (releaseId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setAdminExtensionReleasesLoading(true);
+    try {
+      const r = await apiFetch(`${apiBase}/api/extension-releases/${releaseId}/disable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!r.ok) throw new Error(await readErrorDetail(r));
+      await loadAdminExtensionReleases();
+    } catch (err) {
+      setAdminExtensionReleasesError(err instanceof Error ? err.message : "Failed to disable extension release");
+    } finally {
+      setAdminExtensionReleasesLoading(false);
+    }
+  }, [apiFetch, loadAdminExtensionReleases]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setCurrentExtensionRelease(null);
+      setAdminExtensionReleases([]);
+      return;
+    }
+    const downloadRoles = ["admin", "teacher", "runner"];
+    if (downloadRoles.includes(currentUser.role)) {
+      void loadCurrentExtensionRelease();
+    }
+    if (currentUser.role === "admin") {
+      void loadAdminExtensionReleases();
+    }
+  }, [currentUser?.role, loadCurrentExtensionRelease, loadAdminExtensionReleases]);
+
+  const createAdminUser = useCallback(async () => {
+    if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
+      setAdminError("Name, email, and password are required.");
+      return;
+    }
+    const apiBase = getApiBase();
+    if (!apiBase) {
+      return;
+    }
+
+    setAdminBusy(true);
+    setAdminError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/admin/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newUserName.trim(),
+          email: newUserEmail.trim().toLowerCase(),
+          password: newUserPassword,
+          role: newUserRole,
+          status: "active",
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      setNewUserName("");
+      setNewUserEmail("");
+      setNewUserPassword("");
+      setNewUserRole("viewer");
+      await loadAdminPanels();
+    } catch (error) {
+      setAdminError(error instanceof Error ? error.message : "Unable to create user");
+    } finally {
+      setAdminBusy(false);
+    }
+  }, [apiFetch, loadAdminPanels, newUserEmail, newUserName, newUserPassword, newUserRole]);
+
+  const updateAdminUser = useCallback(
+    async (userId: string, changes: Partial<Pick<BillUserRecord, "role" | "status">>) => {
+      const apiBase = getApiBase();
+      if (!apiBase) {
+        return;
+      }
+      setAdminBusy(true);
+      setAdminError(null);
+      try {
+        const response = await apiFetch(`${apiBase}/api/admin/users/${userId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(changes),
+        });
+        if (!response.ok) {
+          throw new Error(await readErrorDetail(response));
+        }
+        await loadAdminPanels();
+      } catch (error) {
+        setAdminError(error instanceof Error ? error.message : "Unable to update user");
+      } finally {
+        setAdminBusy(false);
+      }
+    },
+    [apiFetch, loadAdminPanels],
+  );
+
+  const createKnowledgeEntry = useCallback(async (payload: {
+    title: string;
+    category: string;
+    applies_to: string[];
+    content: string;
+    source_type: "manual" | "document" | "imported" | "system";
+    tags: string[];
+    status: "active" | "draft" | "archived";
+    tenant_id?: string | null;
+  }) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setKnowledgeActionBusyKey("knowledge-create");
+    setKnowledgeActionFeedback(null);
+    setKnowledgeError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/knowledge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      await loadKnowledgePanels();
+      setKnowledgeActionFeedback({
+        kind: "success",
+        message: "Knowledge entry created.",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Failed to create knowledge entry");
+      setKnowledgeActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to create knowledge entry",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } finally {
+      setKnowledgeActionBusyKey(null);
+    }
+  }, [apiFetch, loadKnowledgePanels]);
+
+  const updateKnowledgeEntry = useCallback(async (
+    knowledgeId: string,
+    payload: {
+      title?: string;
+      category?: string;
+      applies_to?: string[];
+      content?: string;
+      source_type?: "manual" | "document" | "imported" | "system";
+      tags?: string[];
+      status?: "active" | "draft" | "archived";
+      tenant_id?: string | null;
+    }
+  ) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setKnowledgeActionBusyKey(`knowledge-update-${knowledgeId}`);
+    setKnowledgeActionFeedback(null);
+    setKnowledgeError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/knowledge/${knowledgeId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      await loadKnowledgePanels();
+      setKnowledgeActionFeedback({
+        kind: "success",
+        message: "Knowledge entry saved.",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Failed to update knowledge entry");
+      setKnowledgeActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to update knowledge entry",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } finally {
+      setKnowledgeActionBusyKey(null);
+    }
+  }, [apiFetch, loadKnowledgePanels]);
+
+  const archiveKnowledgeEntry = useCallback(async (knowledgeId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setKnowledgeActionBusyKey(`knowledge-archive-${knowledgeId}`);
+    setKnowledgeActionFeedback(null);
+    setKnowledgeError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/knowledge/${knowledgeId}/archive`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      await loadKnowledgePanels();
+      setKnowledgeActionFeedback({
+        kind: "success",
+        message: "Knowledge entry archived.",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Failed to archive knowledge entry");
+      setKnowledgeActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to archive knowledge entry",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } finally {
+      setKnowledgeActionBusyKey(null);
+    }
+  }, [apiFetch, loadKnowledgePanels]);
+
+  const activateKnowledgeEntry = useCallback(async (knowledgeId: string) => {
+    const apiBase = getApiBase();
+    if (!apiBase) return;
+    setKnowledgeActionBusyKey(`knowledge-activate-${knowledgeId}`);
+    setKnowledgeActionFeedback(null);
+    setKnowledgeError(null);
+    try {
+      const response = await apiFetch(`${apiBase}/api/knowledge/${knowledgeId}/activate`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      await loadKnowledgePanels();
+      setKnowledgeActionFeedback({
+        kind: "success",
+        message: "Knowledge entry activated.",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "Failed to activate knowledge entry");
+      setKnowledgeActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to activate knowledge entry",
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } finally {
+      setKnowledgeActionBusyKey(null);
+    }
+  }, [apiFetch, loadKnowledgePanels]);
+
+  if (authChecking) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#070a11] px-4 text-slate-100">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 px-6 py-5 text-sm text-slate-300">
+          Checking login session...
+        </div>
+      </main>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#070a11] px-4 text-slate-100">
+        <section className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/85 p-6 shadow-xl shadow-cyan-950/30">
+          <h1 className="text-xl font-semibold text-slate-50">Bill Login</h1>
+          <p className="mt-2 text-sm text-slate-300">Sign in to access dashboard, teaching, and workflow controls.</p>
+          {authNotice && (
+            <p className="mt-3 rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{authNotice}</p>
+          )}
+          {authError && (
+            <p className="mt-3 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{authError}</p>
+          )}
+          <div className="mt-4 space-y-3">
+            <input
+              value={loginEmail}
+              onChange={(event) => setLoginEmail(event.target.value)}
+              placeholder="Email"
+              autoComplete="username"
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+            />
+            <input
+              type="password"
+              value={loginPassword}
+              onChange={(event) => setLoginPassword(event.target.value)}
+              placeholder="Password"
+              autoComplete="current-password"
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void submitLogin();
+                }
+              }}
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+            />
+            <button
+              type="button"
+              onClick={() => void submitLogin()}
+              disabled={loginBusy}
+              className="w-full rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loginBusy ? "Signing in..." : "Sign in"}
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (currentUser.role === "super_admin") {
+    return (
+      <main className="min-h-screen bg-[#070a11] px-4 py-6 text-slate-100 lg:px-6">
+        <div className="mx-auto max-w-[1600px]">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm">
+            <div className="text-slate-200">
+              <span className="font-semibold text-slate-50">{currentUser.name}</span>
+              <span className="mx-2 text-slate-500">•</span>
+              <span className="uppercase tracking-wide text-amber-200">{currentUser.role}</span>
+              <span className="mx-2 text-slate-500">•</span>
+              <span className="text-slate-400">{currentUser.email}</span>
+              {sessionExpiresAt && (
+                <span className="ml-3 text-xs text-slate-500">Session expires: {toDisplayTime(sessionExpiresAt)}</span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => void submitLogout()}
+              className={BUTTON_SECONDARY}
+            >
+              Log out
+            </button>
+          </div>
+
+          <SuperAdminControlPlane
+            apiBase={getApiBase()}
+            apiFetch={apiFetch}
+            currentUser={{
+              id: currentUser.id,
+              name: currentUser.name,
+              email: currentUser.email,
+              role: "super_admin",
+            }}
+          />
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-[#070a11] text-slate-100">
 
@@ -4256,10 +5726,635 @@ export default function Home() {
             completed24h={successfulTasks.length}
           />
 
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm">
+            <div className="text-slate-200">
+              <span className="font-semibold text-slate-50">{currentUser.name}</span>
+              <span className="mx-2 text-slate-500">•</span>
+              <span className="uppercase tracking-wide text-cyan-200">{currentUser.role}</span>
+              <span className="mx-2 text-slate-500">•</span>
+              <span className="text-slate-400">{currentUser.email}</span>
+              {sessionExpiresAt && (
+                <span className="ml-3 text-xs text-slate-500">Session expires: {toDisplayTime(sessionExpiresAt)}</span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => void submitLogout()}
+              className={BUTTON_SECONDARY}
+            >
+              Log out
+            </button>
+          </div>
+
           {errors.config && (
             <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
               {errors.config}
             </div>
+          )}
+
+          {currentUser.role === "admin" && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">User & Audit Admin</h2>
+                <button type="button" onClick={() => void loadAdminPanels()} className={BUTTON_SECONDARY} disabled={adminBusy}>
+                  {adminBusy ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+              {adminError && (
+                <p className="mt-3 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{adminError}</p>
+              )}
+              <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Create User</p>
+                  <div className="mt-2 grid gap-2 md:grid-cols-2">
+                    <input value={newUserName} onChange={(event) => setNewUserName(event.target.value)} placeholder="Name" className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+                    <input value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} placeholder="Email" className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+                    <input type="password" value={newUserPassword} onChange={(event) => setNewUserPassword(event.target.value)} placeholder="Password" className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+                    <select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value as BillUserRole)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100">
+                      <option value="viewer">viewer</option>
+                      <option value="runner">runner</option>
+                      <option value="teacher">teacher</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </div>
+                  <button type="button" onClick={() => void createAdminUser()} disabled={adminBusy} className="mt-3 rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50">
+                    Create user
+                  </button>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Recent Audit Events</p>
+                  <div className="mt-2 max-h-44 overflow-auto text-xs text-slate-300">
+                    {adminAuditLogs.length === 0 ? (
+                      <p className="text-slate-500">No audit entries loaded.</p>
+                    ) : (
+                      <table className="w-full text-left">
+                        <thead className="text-slate-500">
+                          <tr>
+                            <th className="py-1 pr-2">Time</th>
+                            <th className="py-1 pr-2">Event</th>
+                            <th className="py-1 pr-2">Actor</th>
+                            <th className="py-1">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {adminAuditLogs.slice(0, 25).map((entry) => (
+                            <tr key={entry.id} className="border-t border-slate-800/70">
+                              <td className="py-1 pr-2 text-slate-400">{toDisplayTime(entry.created_at)}</td>
+                              <td className="py-1 pr-2">{entry.event_type}</td>
+                              <td className="py-1 pr-2">{entry.actor_user_name || "system"}</td>
+                              <td className="py-1">{entry.status_code ?? "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                <p className="mb-2 text-xs uppercase tracking-[0.14em] text-slate-400">Users</p>
+                <table className="min-w-full text-left text-xs text-slate-200">
+                  <thead className="text-slate-500">
+                    <tr>
+                      <th className="py-1 pr-2">Name</th>
+                      <th className="py-1 pr-2">Email</th>
+                      <th className="py-1 pr-2">Role</th>
+                      <th className="py-1 pr-2">Status</th>
+                      <th className="py-1 pr-2">Last login</th>
+                      <th className="py-1">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminUsers.map((user) => (
+                      <tr key={user.id} className="border-t border-slate-800/70">
+                        <td className="py-1 pr-2">{user.name}</td>
+                        <td className="py-1 pr-2 text-slate-400">{user.email}</td>
+                        <td className="py-1 pr-2">{user.role}</td>
+                        <td className="py-1 pr-2">{user.status}</td>
+                        <td className="py-1 pr-2 text-slate-400">{toDisplayTime(user.last_login_at ?? undefined)}</td>
+                        <td className="py-1">
+                          <div className="flex flex-wrap gap-2">
+                            <button type="button" disabled={adminBusy} className={BUTTON_ACCENT_GHOST} onClick={() => void updateAdminUser(user.id, { status: user.status === "active" ? "inactive" : "active" })}>
+                              {user.status === "active" ? "Deactivate" : "Activate"}
+                            </button>
+                            <button type="button" disabled={adminBusy || user.role === "admin"} className={BUTTON_SECONDARY} onClick={() => void updateAdminUser(user.id, { role: "admin" })}>
+                              Promote to admin
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {/* ── Worker Download Center ────────────────────────────────────────────── */}
+          {currentUser && ["admin", "teacher", "runner"].includes(currentUser.role) && (
+            <section id="extension-download-center" className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">Worker Downloads</h2>
+                <button
+                  type="button"
+                  className={BUTTON_SECONDARY}
+                  onClick={() => void loadCurrentWorkerRelease()}
+                  disabled={workerReleaseLoading}
+                >
+                  {workerReleaseLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+
+              {workerReleaseError && (
+                <p className="mt-3 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{workerReleaseError}</p>
+              )}
+
+              {!currentWorkerRelease && !workerReleaseLoading && !workerReleaseError && (
+                <p className="mt-3 text-sm text-slate-400">No current worker release is available. Ask an admin.</p>
+              )}
+
+              {currentWorkerRelease && (
+                <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/60 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-base font-semibold text-slate-50">{currentWorkerRelease.version}</span>
+                        <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">Current Good Build</span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">{currentWorkerRelease.package_filename}</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={workerDownloadBusy}
+                      onClick={() => void downloadCurrentWorker(currentWorkerRelease.id)}
+                      className="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {workerDownloadBusy ? "Downloading..." : "Download Worker"}
+                    </button>
+                  </div>
+
+                  <dl className="mt-3 grid gap-y-1.5 text-xs sm:grid-cols-2">
+                    <div>
+                      <dt className="text-slate-500">Released</dt>
+                      <dd className="text-slate-200">{new Date(currentWorkerRelease.upload_time).toLocaleString()}</dd>
+                    </div>
+                    {currentWorkerRelease.released_by_name && (
+                      <div>
+                        <dt className="text-slate-500">Released by</dt>
+                        <dd className="text-slate-200">{currentWorkerRelease.released_by_name}</dd>
+                      </div>
+                    )}
+                    {currentWorkerRelease.file_size_bytes != null && (
+                      <div>
+                        <dt className="text-slate-500">File size</dt>
+                        <dd className="text-slate-200">{(currentWorkerRelease.file_size_bytes / 1024 / 1024).toFixed(1)} MB</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="text-slate-500">Downloads</dt>
+                      <dd className="text-slate-200">{currentWorkerRelease.download_count}</dd>
+                    </div>
+                    {currentWorkerRelease.package_sha256 && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-slate-500">SHA-256</dt>
+                        <dd className="flex items-center gap-2 break-all font-mono text-[10px] text-slate-300">
+                          {currentWorkerRelease.package_sha256}
+                          <button
+                            type="button"
+                            className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                            onClick={() => void navigator.clipboard.writeText(currentWorkerRelease.package_sha256 ?? "")}
+                          >
+                            Copy
+                          </button>
+                        </dd>
+                      </div>
+                    )}
+                    {currentWorkerRelease.release_notes && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-slate-500">Release notes</dt>
+                        <dd className="text-slate-200">{currentWorkerRelease.release_notes}</dd>
+                      </div>
+                    )}
+                  </dl>
+
+                  {workerDownloadMessage && (
+                    <p className="mt-2 text-xs text-cyan-300">{workerDownloadMessage}</p>
+                  )}
+
+                  <details className="mt-4">
+                    <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-200">Install instructions</summary>
+                    <ol className="mt-2 space-y-1 pl-4 text-xs text-slate-300" style={{listStyleType: "decimal"}}>
+                      <li>Download the zip using the button above.</li>
+                      <li>Extract the entire folder to a stable location (e.g. Desktop or Documents).</li>
+                      <li>Open the extracted folder and run <span className="font-mono">BillWorker.exe</span>.</li>
+                      <li>Keep the folder in the same location — do not move it after first run.</li>
+                      <li>If antivirus flags it, contact Jared or an admin before deleting or quarantining.</li>
+                      <li>Only use the release marked <strong>Current Good Build</strong>.</li>
+                    </ol>
+                  </details>
+                </div>
+              )}
+            </section>
+          )}
+
+          {currentUser && currentUser.role === "viewer" && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <h2 className="text-base font-semibold text-slate-50">Worker Downloads</h2>
+              <p className="mt-2 text-sm text-slate-400">You do not have permission to download the Bill Worker.</p>
+            </section>
+          )}
+
+          {/* ── Extension Download Center ─────────────────────────────────────────── */}
+          {currentUser && ["admin", "teacher", "runner"].includes(currentUser.role) && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">Extension Downloads</h2>
+                <button
+                  type="button"
+                  className={BUTTON_SECONDARY}
+                  onClick={() => void loadCurrentExtensionRelease()}
+                  disabled={extensionReleaseLoading}
+                >
+                  {extensionReleaseLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+
+              {extensionReleaseError && (
+                <p className="mt-3 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{extensionReleaseError}</p>
+              )}
+
+              {!currentExtensionRelease && !extensionReleaseLoading && !extensionReleaseError && (
+                <p className="mt-3 text-sm text-slate-400">No current extension release is available. Ask an admin.</p>
+              )}
+
+              {currentExtensionRelease && (
+                <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/60 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-base font-semibold text-slate-50">{currentExtensionRelease.version_label}</span>
+                        <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">Current Good Build</span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">{currentExtensionRelease.file_name}</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={extensionDownloadBusy}
+                      onClick={() => void downloadCurrentExtension(currentExtensionRelease.id)}
+                      className="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {extensionDownloadBusy ? "Downloading..." : "Download Extension"}
+                    </button>
+                  </div>
+
+                  <dl className="mt-3 grid gap-y-1.5 text-xs sm:grid-cols-2">
+                    <div>
+                      <dt className="text-slate-500">Released</dt>
+                      <dd className="text-slate-200">{new Date(currentExtensionRelease.released_at).toLocaleString()}</dd>
+                    </div>
+                    {currentExtensionRelease.released_by_name && (
+                      <div>
+                        <dt className="text-slate-500">Released by</dt>
+                        <dd className="text-slate-200">{currentExtensionRelease.released_by_name}</dd>
+                      </div>
+                    )}
+                    {currentExtensionRelease.file_size_bytes != null && (
+                      <div>
+                        <dt className="text-slate-500">File size</dt>
+                        <dd className="text-slate-200">{(currentExtensionRelease.file_size_bytes / 1024 / 1024).toFixed(1)} MB</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="text-slate-500">Downloads</dt>
+                      <dd className="text-slate-200">{currentExtensionRelease.download_count}</dd>
+                    </div>
+                    {currentExtensionRelease.sha256_hash && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-slate-500">SHA-256</dt>
+                        <dd className="flex items-center gap-2 break-all font-mono text-[10px] text-slate-300">
+                          {currentExtensionRelease.sha256_hash}
+                          <button
+                            type="button"
+                            className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                            onClick={() => void navigator.clipboard.writeText(currentExtensionRelease.sha256_hash ?? "")}
+                          >
+                            Copy
+                          </button>
+                        </dd>
+                      </div>
+                    )}
+                    {currentExtensionRelease.release_notes && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-slate-500">Release notes</dt>
+                        <dd className="text-slate-200">{currentExtensionRelease.release_notes}</dd>
+                      </div>
+                    )}
+                  </dl>
+
+                  {extensionDownloadMessage && <p className="mt-2 text-xs text-cyan-300">{extensionDownloadMessage}</p>}
+
+                  <details className="mt-4">
+                    <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-200">Install instructions</summary>
+                    <ol className="mt-2 space-y-1 pl-4 text-xs text-slate-300" style={{ listStyleType: "decimal" }}>
+                      <li>Download the extension zip.</li>
+                      <li>Extract it to a stable folder.</li>
+                      <li>Open Chrome.</li>
+                      <li>Go to chrome://extensions.</li>
+                      <li>Turn on Developer Mode.</li>
+                      <li>Click Load unpacked.</li>
+                      <li>Select the extracted extension folder.</li>
+                      <li>Open Bill Teaching Mode and confirm the extension is connected.</li>
+                    </ol>
+                  </details>
+                </div>
+              )}
+            </section>
+          )}
+
+          {currentUser && currentUser.role === "viewer" && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <h2 className="text-base font-semibold text-slate-50">Extension Downloads</h2>
+              <p className="mt-2 text-sm text-slate-400">You do not have permission to download the Bill Teaching Helper extension.</p>
+            </section>
+          )}
+
+          {/* ── Admin Extension Releases ─────────────────────────────────────────── */}
+          {currentUser?.role === "admin" && (
+            <section id="extension-release-management" className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">Extension Release Management</h2>
+                <button
+                  type="button"
+                  className={BUTTON_SECONDARY}
+                  onClick={() => void loadAdminExtensionReleases()}
+                  disabled={adminExtensionReleasesLoading}
+                >
+                  {adminExtensionReleasesLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+
+              {adminExtensionReleasesError && (
+                <p className="mt-2 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{adminExtensionReleasesError}</p>
+              )}
+
+              <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/60 p-3">
+                <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Register New Extension Release</p>
+                <p className="mt-1 text-[11px] text-slate-500">File must already be in the extension-packages directory on the server.</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <input
+                    value={newExtensionVersionLabel}
+                    onChange={(e) => setNewExtensionVersionLabel(e.target.value)}
+                    placeholder="Version label (e.g. 1.2.0)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  />
+                  <input
+                    value={newExtensionFilename}
+                    onChange={(e) => setNewExtensionFilename(e.target.value)}
+                    placeholder="Filename (e.g. bill-teaching-helper-1.2.0.zip)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  />
+                  <input
+                    value={newExtensionReleaseNotes}
+                    onChange={(e) => setNewExtensionReleaseNotes(e.target.value)}
+                    placeholder="Release notes (optional)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 sm:col-span-2"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={adminExtensionReleasesLoading}
+                  onClick={() => void registerExtensionRelease()}
+                  className="mt-3 rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Register extension release
+                </button>
+              </div>
+
+              {adminExtensionReleases.length > 0 && (
+                <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="mb-2 text-xs uppercase tracking-[0.14em] text-slate-400">All Extension Releases</p>
+                  <table className="min-w-full text-left text-xs text-slate-200">
+                    <thead className="text-slate-500">
+                      <tr>
+                        <th className="py-1 pr-3">Version</th>
+                        <th className="py-1 pr-3">Status</th>
+                        <th className="py-1 pr-3">File</th>
+                        <th className="py-1 pr-3">SHA-256</th>
+                        <th className="py-1 pr-3">Downloads</th>
+                        <th className="py-1 pr-3">Released</th>
+                        <th className="py-1">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminExtensionReleases.map((rel) => (
+                        <tr key={rel.id} className="border-t border-slate-800/70">
+                          <td className="py-1 pr-3 font-semibold">{rel.version_label}</td>
+                          <td className="py-1 pr-3">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                                rel.status === "current"
+                                  ? "bg-emerald-500/20 text-emerald-300"
+                                  : rel.status === "disabled"
+                                    ? "bg-rose-500/20 text-rose-300"
+                                    : rel.status === "deprecated"
+                                      ? "bg-amber-500/20 text-amber-300"
+                                      : "bg-slate-700 text-slate-300"
+                              }`}
+                            >
+                              {rel.status}
+                            </span>
+                          </td>
+                          <td className="py-1 pr-3 font-mono text-[10px] text-slate-400">{rel.file_name}</td>
+                          <td className="py-1 pr-3 font-mono text-[10px] text-slate-500" title={rel.sha256_hash ?? ""}>
+                            {rel.sha256_hash ? rel.sha256_hash.slice(0, 12) + "…" : "—"}
+                          </td>
+                          <td className="py-1 pr-3">{rel.download_count}</td>
+                          <td className="py-1 pr-3 text-slate-400">{new Date(rel.released_at).toLocaleDateString()}</td>
+                          <td className="py-1">
+                            <div className="flex gap-2">
+                              {rel.status !== "current" && rel.status !== "disabled" && (
+                                <button
+                                  type="button"
+                                  disabled={adminExtensionReleasesLoading}
+                                  onClick={() => void markExtensionReleaseCurrent(rel.id)}
+                                  className="rounded bg-cyan-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
+                                >
+                                  Mark current
+                                </button>
+                              )}
+                              {rel.status !== "disabled" && (
+                                <button
+                                  type="button"
+                                  disabled={adminExtensionReleasesLoading}
+                                  onClick={() => void disableExtensionRelease(rel.id)}
+                                  className="rounded bg-rose-700 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-rose-600 disabled:opacity-50"
+                                >
+                                  Disable
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={adminExtensionReleasesLoading || extensionDownloadBusy}
+                                onClick={() => void downloadCurrentExtension(rel.id)}
+                                className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-600 disabled:opacity-50"
+                              >
+                                Download
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* ── Admin Worker Releases ─────────────────────────────────────────────── */}
+          {currentUser?.role === "admin" && (
+            <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-slate-50">Worker Release Management</h2>
+                <button
+                  type="button"
+                  className={BUTTON_SECONDARY}
+                  onClick={() => void loadAdminWorkerReleases()}
+                  disabled={adminWorkerReleasesLoading}
+                >
+                  {adminWorkerReleasesLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+
+              {adminWorkerReleasesError && (
+                <p className="mt-2 rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">{adminWorkerReleasesError}</p>
+              )}
+
+              {/* Register new release */}
+              <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/60 p-3">
+                <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Register New Release</p>
+                <p className="mt-1 text-[11px] text-slate-500">File must already be in the worker-packages directory on the server.</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <input
+                    value={newReleaseVersion}
+                    onChange={(e) => setNewReleaseVersion(e.target.value)}
+                    placeholder="Version (e.g. 0.4.0)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  />
+                  <input
+                    value={newReleaseFilename}
+                    onChange={(e) => setNewReleaseFilename(e.target.value)}
+                    placeholder="Filename (e.g. bill-worker-0.4.0.zip)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  />
+                  <input
+                    value={newReleaseNotes}
+                    onChange={(e) => setNewReleaseNotes(e.target.value)}
+                    placeholder="Release notes (optional)"
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 sm:col-span-2"
+                  />
+                  <select
+                    value={newReleaseChannel}
+                    onChange={(e) => setNewReleaseChannel(e.target.value)}
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                  >
+                    <option value="stable">stable</option>
+                    <option value="optional">optional</option>
+                    <option value="required">required</option>
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  disabled={adminWorkerReleasesLoading}
+                  onClick={() => void registerWorkerRelease()}
+                  className="mt-3 rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Register release
+                </button>
+              </div>
+
+              {/* Releases table */}
+              {adminWorkerReleases.length > 0 && (
+                <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="mb-2 text-xs uppercase tracking-[0.14em] text-slate-400">All Releases</p>
+                  <table className="min-w-full text-left text-xs text-slate-200">
+                    <thead className="text-slate-500">
+                      <tr>
+                        <th className="py-1 pr-3">Version</th>
+                        <th className="py-1 pr-3">Status</th>
+                        <th className="py-1 pr-3">File</th>
+                        <th className="py-1 pr-3">SHA-256</th>
+                        <th className="py-1 pr-3">Downloads</th>
+                        <th className="py-1 pr-3">Uploaded</th>
+                        <th className="py-1">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminWorkerReleases.map((rel) => (
+                        <tr key={rel.id} className="border-t border-slate-800/70">
+                          <td className="py-1 pr-3 font-semibold">{rel.version}</td>
+                          <td className="py-1 pr-3">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                                rel.status === "current"
+                                  ? "bg-emerald-500/20 text-emerald-300"
+                                  : rel.status === "disabled"
+                                    ? "bg-rose-500/20 text-rose-300"
+                                    : rel.status === "deprecated"
+                                      ? "bg-amber-500/20 text-amber-300"
+                                      : "bg-slate-700 text-slate-300"
+                              }`}
+                            >
+                              {rel.status}
+                            </span>
+                          </td>
+                          <td className="py-1 pr-3 font-mono text-[10px] text-slate-400">{rel.package_filename}</td>
+                          <td className="py-1 pr-3 font-mono text-[10px] text-slate-500" title={rel.package_sha256 ?? ""}>
+                            {rel.package_sha256 ? rel.package_sha256.slice(0, 12) + "…" : "—"}
+                          </td>
+                          <td className="py-1 pr-3">{rel.download_count}</td>
+                          <td className="py-1 pr-3 text-slate-400">{new Date(rel.upload_time).toLocaleDateString()}</td>
+                          <td className="py-1">
+                            <div className="flex gap-2">
+                              {rel.status !== "current" && rel.status !== "disabled" && (
+                                <button
+                                  type="button"
+                                  disabled={adminWorkerReleasesLoading}
+                                  onClick={() => void markReleaseCurrent(rel.id)}
+                                  className="rounded bg-cyan-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
+                                >
+                                  Mark current
+                                </button>
+                              )}
+                              {rel.status !== "disabled" && (
+                                <button
+                                  type="button"
+                                  disabled={adminWorkerReleasesLoading}
+                                  onClick={() => void disableRelease(rel.id)}
+                                  className="rounded bg-rose-700 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-rose-600 disabled:opacity-50"
+                                >
+                                  Disable
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={adminWorkerReleasesLoading || workerDownloadBusy}
+                                onClick={() => void downloadCurrentWorker(rel.id)}
+                                className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-600 disabled:opacity-50"
+                              >
+                                Download
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
           )}
 
           {/* Main grid: left content + right workers panel */}
@@ -4293,6 +6388,116 @@ export default function Home() {
                 onStartTeaching={startTeachingFromCommandCenter}
               />
 
+              {extensionLearningVisible && (
+                <section className="rounded-2xl border border-cyan-500/25 bg-slate-900/80 p-5 shadow-lg shadow-cyan-950/20">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Extension Learning Session</p>
+                      <h2 className="mt-1 text-lg font-semibold text-slate-50">Review captured extension learning</h2>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-[11px] font-semibold">
+                      <span className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2 py-1 text-cyan-100">Extension status: {extensionLearningConnectionStatus}</span>
+                      <span className="rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-slate-200">Worker status: {extensionLearningWorkerStatus}</span>
+                    </div>
+                  </div>
+
+                  <p className="mt-3 max-w-4xl text-sm text-slate-300">
+                    Bill is receiving extension learning events, but the worker is offline. You can review captured learning now. Start the worker to open full Teaching Mode or test the workflow.
+                  </p>
+
+                  <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+                    <label className="block">
+                      <span className="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-400">Teaching session ID</span>
+                      <input
+                        value={extensionLearningSessionId}
+                        onChange={(event) => setExtensionLearningSessionId(event.target.value)}
+                        placeholder="Paste the active session id"
+                        className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/60"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void startExtensionLearningPoll(extensionLearningSessionId)}
+                      disabled={!extensionLearningSessionId.trim()}
+                      className="self-end rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Load captured steps
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        stopExtensionLearningPoll();
+                        setExtensionLearningState(null);
+                        setExtensionLearningSessionId("");
+                      }}
+                      className="self-end rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-200"
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  {extensionLearningSession ? (
+                    <>
+                      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+                        <section className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-xs uppercase tracking-[0.16em] text-cyan-300">Captured summary</p>
+                            <span className="text-[11px] text-slate-400">Extension events: {extensionLearningSession.extensionEventCount ?? 0}</span>
+                          </div>
+                          <div className="mt-3 space-y-2 text-sm text-slate-300">
+                            <p><span className="text-slate-400">Latest extension event:</span> {summarizeExtensionEvent(extensionLearningLatestEvent)}</p>
+                            <p><span className="text-slate-400">Captured steps:</span> {extensionLearningStepStatusSummary.total} total, {extensionLearningStepStatusSummary.runnable} runnable, {extensionLearningStepStatusSummary.manualOnly} manual-only, {extensionLearningStepStatusSummary.needsClarification} need clarification</p>
+                            <p><span className="text-slate-400">Bill summary:</span> {extensionLearningSession.workflowSummary || "Waiting for more learning"}</p>
+                          </div>
+                        </section>
+
+                        <section className={`rounded-2xl border p-4 ${extensionLearningReadiness?.toneClass || "border-slate-800 bg-slate-950/60 text-slate-200"}`}>
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-xs uppercase tracking-[0.16em]">Readiness</p>
+                            <span className="text-[11px] font-semibold">{extensionLearningReadiness?.label || "Unknown"}</span>
+                          </div>
+                          <p className="mt-2 text-sm font-semibold">{extensionLearningReadiness?.label || "Unknown"}</p>
+                          <ul className="mt-2 space-y-1 text-xs">
+                            {(extensionLearningReadiness?.reasons ?? ["Waiting for extension events."]).slice(0, 3).map((reason, index) => (
+                              <li key={`extension-readiness-${index}`}>{reason}</li>
+                            ))}
+                          </ul>
+                          <div className="mt-3 rounded-lg border border-slate-200/10 bg-slate-950/30 px-3 py-2 text-xs text-slate-300">
+                            <p><span className="text-slate-400">URL:</span> {extensionLearningSession.pageContextSnapshot?.url || "Waiting for page context"}</p>
+                            <p><span className="text-slate-400">Buttons:</span> {(extensionLearningSession.pageContextSnapshot?.visible_buttons?.length ?? 0) || (extensionLearningSession.pageContextSnapshot?.buttons?.length ?? 0)}</p>
+                            <p><span className="text-slate-400">Fields:</span> {(extensionLearningSession.pageContextSnapshot?.visible_inputs?.length ?? 0) || (extensionLearningSession.pageContextSnapshot?.inputs?.length ?? 0)}</p>
+                            <p><span className="text-slate-400">Links:</span> {(extensionLearningSession.pageContextSnapshot?.visible_links?.length ?? 0) || (extensionLearningSession.pageContextSnapshot?.links?.length ?? 0)}</p>
+                          </div>
+                        </section>
+                      </div>
+
+                      <div className="mt-4 space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Captured steps</p>
+                          <span className="text-xs text-slate-400">Source: Chrome extension</span>
+                        </div>
+                        <div className="space-y-3">
+                          {extensionLearningSession.steps.map((step) => (
+                            <TeachingStepCard
+                              key={step.id}
+                              step={step}
+                              stepNumber={step.order}
+                              status={explainStepStatus(step)}
+                              formatObservedAction={formatObservedAction}
+                              compact
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : extensionLearningSessionId.trim() ? (
+                    <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/70 px-3 py-3 text-sm text-slate-300">
+                      No extension steps have been loaded for this session yet.
+                    </div>
+                  ) : null}
+                </section>
+              )}
+
               {/* Recent Activity + Active Tasks row */}
               <div className="grid gap-6 md:grid-cols-2">
                 <RecentActivityPanel alerts={alerts} />
@@ -4309,6 +6514,7 @@ export default function Home() {
               <AdvancedToolsTabs
                 apiBase={getApiBase()}
                 billVoice={billVoice}
+                currentUserRole={currentUser?.role ?? null}
                 auditEntries={auditEntries}
                 onRefreshAudit={() => void loadBrainPanels()}
                 auditError={errors.audit}
@@ -4401,6 +6607,16 @@ export default function Home() {
                 onDeployToWorkers={(uuids) => void deployToWorkers(uuids)}
                 onRefreshBrainPanels={() => void loadBrainPanels()}
                 chatHistory={chatHistory}
+                knowledgeEntries={knowledgeEntries}
+                knowledgeLoading={knowledgeLoading}
+                knowledgeError={knowledgeError}
+                knowledgeActionBusyKey={knowledgeActionBusyKey}
+                knowledgeActionFeedback={knowledgeActionFeedback}
+                onRefreshKnowledge={() => void loadKnowledgePanels()}
+                onCreateKnowledge={(payload) => void createKnowledgeEntry(payload)}
+                onUpdateKnowledge={(knowledgeId, payload) => void updateKnowledgeEntry(knowledgeId, payload)}
+                onArchiveKnowledge={(knowledgeId) => void archiveKnowledgeEntry(knowledgeId)}
+                onActivateKnowledge={(knowledgeId) => void activateKnowledgeEntry(knowledgeId)}
               />
             </div>
 
@@ -4682,33 +6898,22 @@ export default function Home() {
                           const status = explainStepStatus(step);
                           const isEditing = editingStepId === step.id;
                           return (
-                            <article key={step.id} className="rounded-xl border border-slate-700 bg-slate-950/70 p-3 text-sm">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-xs uppercase tracking-[0.16em] text-slate-500">Step {step.order}</span>
-                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${status.label === "Runnable" ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : status.label === "Needs clarification" ? "border-amber-400/40 bg-amber-500/10 text-amber-100" : "border-slate-500/50 bg-slate-800 text-slate-200"}`}>
-                                      {status.label}
-                                    </span>
-                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${step.confirmed ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" : "border-amber-400/40 bg-amber-500/10 text-amber-100"}`}>
-                                      {step.confirmed ? "Confirmed" : "Unconfirmed"}
-                                    </span>
-                                  </div>
-                                  {isEditing ? (
-                                    <input
-                                      value={editingStepState.title}
-                                      onChange={(event) => setEditingStepState((current) => ({ ...current, title: event.target.value }))}
-                                      className="mt-2 w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"
-                                      placeholder="Step title"
-                                    />
-                                  ) : (
-                                    <h3 className="mt-2 truncate font-semibold text-white">{step.title}</h3>
-                                  )}
-                                </div>
-                              </div>
+                            <article key={step.id} className="space-y-3 rounded-xl border border-slate-700 bg-slate-950/70 p-3 text-sm">
+                              <TeachingStepCard
+                                step={step}
+                                stepNumber={step.order}
+                                status={status}
+                                formatObservedAction={formatObservedAction}
+                              />
 
                               {isEditing ? (
-                                <div className="mt-2 space-y-2">
+                                <div className="space-y-2">
+                                  <input
+                                    value={editingStepState.title}
+                                    onChange={(event) => setEditingStepState((current) => ({ ...current, title: event.target.value }))}
+                                    className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"
+                                    placeholder="Step title"
+                                  />
                                   <textarea
                                     value={editingStepState.employeeExplanation}
                                     onChange={(event) => setEditingStepState((current) => ({ ...current, employeeExplanation: event.target.value }))}
@@ -4751,15 +6956,7 @@ export default function Home() {
                                     </>
                                   )}
                                 </div>
-                              ) : (
-                                <div className="mt-2 space-y-2">
-                                  <p className="text-slate-300">{step.billSummary || "Bill is still summarizing this step."}</p>
-                                  <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2">
-                                    <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-200">Target</p>
-                                    <p className="mt-1 text-xs text-cyan-50">{step.observedActions[0]?.label || step.observedActions[0]?.selector || "Not captured yet"}</p>
-                                  </div>
-                                </div>
-                              )}
+                              ) : null}
 
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {isEditing ? (
@@ -4830,30 +7027,6 @@ export default function Home() {
                                   </>
                                 )}
                               </div>
-
-                              <details className="mt-2 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                                <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-slate-400">Show technical info</summary>
-                                <div className="mt-2 space-y-2 text-xs text-slate-300">
-                                  <p>Confidence: {(Math.max(0, Math.min(1, step.billConfidence || 0)) * 100).toFixed(0)}%</p>
-                                  <p>Employee explanation: {step.employeeExplanation || "Pending"}</p>
-                                  <p>Required data: {step.requiredInputs.join(", ") || "Pending"}</p>
-                                  <p>Decision rules: {step.decisionRules.join("; ") || "None yet"}</p>
-                                  <p>Exceptions: {step.exceptions.join("; ") || "None yet"}</p>
-                                  {step.pendingQuestion && <p>Pending question: {step.pendingQuestion}</p>}
-                                  <div>
-                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Observed browser actions</p>
-                                    {step.observedActions.length === 0 ? (
-                                      <p className="mt-1 text-slate-400">No browser actions captured yet.</p>
-                                    ) : (
-                                      <ul className="mt-1 space-y-1">
-                                        {step.observedActions.map((action) => (
-                                          <li key={action.id}>{formatObservedAction(action)}</li>
-                                        ))}
-                                      </ul>
-                                    )}
-                                  </div>
-                                </div>
-                              </details>
                             </article>
                           );
                         })
@@ -4883,11 +7056,25 @@ export default function Home() {
                       <span className="text-[11px] text-emerald-100/80">Compact summary</span>
                     </div>
                     <div className="mt-3 space-y-2 text-xs text-emerald-50">
-                      <p><span className="text-emerald-200/80">Starting page:</span> {canonicalStartUrl ? "Saved" : "Missing"}</p>
-                      <p><span className="text-emerald-200/80">Current page:</span> {guidedTeachingSession.pageContextSnapshot?.domain || guidedTeachingSession.pageContextSnapshot?.url || "Waiting for page"}</p>
+                      <p><span className="text-emerald-200/80">Current page:</span> {observedCurrentPage || "Waiting for page"}</p>
+                      <p><span className="text-emerald-200/80">Starting page:</span> {canonicalStartUrl || "Not confirmed yet"}</p>
+                      <p><span className="text-emerald-200/80">Suggested starting page:</span> {suggestedStartUrl || "None"}</p>
+                      <p><span className="text-emerald-200/80">Extension status:</span> {extensionConnectionStatus}</p>
+                      <p><span className="text-emerald-200/80">Extension events:</span> {extensionEventCount}</p>
+                      <p><span className="text-emerald-200/80">Last extension event:</span> {latestExtensionEventSummary}</p>
                       <p><span className="text-emerald-200/80">Detected controls:</span> {capturedButtons.length + capturedFields.length + capturedLinks.length} total</p>
                       <p><span className="text-emerald-200/80">Top controls:</span> {capturedButtons.slice(0, 2).join(", ") || "None yet"}</p>
                       <p><span className="text-emerald-200/80">Steps captured:</span> {stepStatusSummary.runnable} runnable, {stepStatusSummary.manualOnly} manual-only, {stepStatusSummary.needsClarification} need clarification</p>
+                      {!canonicalStartUrl && suggestedStartUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => void confirmCurrentPageAsStartingPage()}
+                          disabled={guidedTeachingBusy}
+                          className="inline-flex items-center rounded-md border border-emerald-300/40 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-semibold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Use current page as starting page
+                        </button>
+                      ) : null}
                     </div>
                     <details className="mt-3 rounded-lg border border-emerald-400/20 bg-slate-950/30 px-3 py-2">
                       <summary className="cursor-pointer text-[11px] uppercase tracking-[0.14em] text-emerald-100/80">Show technical info</summary>

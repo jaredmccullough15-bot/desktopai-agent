@@ -1,0 +1,88 @@
+{
+   "action": {
+      "default_icon": "icons/icon-avast64.png",
+      "default_title": "Avast Online Security & Privacy"
+   },
+   "author": "Avast",
+   "background": {
+      "service_worker": "background.js"
+   },
+   "commands": {
+      "_execute_action": {
+         "description": "Open AOSP UI",
+         "suggested_key": {
+            "default": "Alt+Shift+L"
+         }
+      }
+   },
+   "content_scripts": [ {
+      "js": [ "client/main.js" ],
+      "matches": [ "\u003Call_urls>" ],
+      "run_at": "document_end"
+   }, {
+      "js": [ "client/gpc.js" ],
+      "matches": [ "\u003Call_urls>" ],
+      "run_at": "document_start"
+   }, {
+      "all_frames": true,
+      "js": [ "client/cookie/cookieConsent.js" ],
+      "matches": [ "\u003Call_urls>" ],
+      "run_at": "document_start"
+   } ],
+   "declarative_net_request": {
+      "rule_resources": [ {
+         "enabled": true,
+         "id": "AdTracking_Allowed",
+         "path": "/rulesets/AdTracking_Allowed.json"
+      }, {
+         "enabled": true,
+         "id": "Others_Allowed",
+         "path": "/rulesets/Others_Allowed.json"
+      }, {
+         "enabled": true,
+         "id": "Social_Allowed",
+         "path": "/rulesets/Social_Allowed.json"
+      }, {
+         "enabled": true,
+         "id": "WebAnalytics_Allowed",
+         "path": "/rulesets/WebAnalytics_Allowed.json"
+      }, {
+         "enabled": false,
+         "id": "AdTracking",
+         "path": "/rulesets/AdTracking.json"
+      }, {
+         "enabled": false,
+         "id": "Others",
+         "path": "/rulesets/Others.json"
+      }, {
+         "enabled": false,
+         "id": "Social",
+         "path": "/rulesets/Social.json"
+      }, {
+         "enabled": false,
+         "id": "WebAnalytics",
+         "path": "/rulesets/WebAnalytics.json"
+      } ]
+   },
+   "description": "Avast browser security and web reputation plugin.",
+   "host_permissions": [ "https://*/*", "http://*/*" ],
+   "icons": {
+      "128": "icons/icon-avast128.png",
+      "32": "icons/icon-avast32.png",
+      "64": "icons/icon-avast64.png"
+   },
+   "incognito": "split",
+   "key": "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDWStseB5KE8Vqukt6RkFc3NirSBRmBTKvNolNhsOo5Q/kUlJs1pajaMckUR5rJXlpzvxfvesfNlASR/QnHKdlGBxPlyi5dxN+nohCclJYf5dXVq2ndj2ykgd++rs1qD35tw3R2v5BaeTmLgP2G/Jd53BaJXDNTGIusbkGEhvZ2rQIDAQAB",
+   "manifest_version": 3,
+   "name": "Avast Online Security & Privacy",
+   "permissions": [ "tabs", "activeTab", "scripting", "storage", "alarms", "declarativeNetRequest", "declarativeNetRequestFeedback" ],
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "22.12.9",
+   "web_accessible_resources": [ {
+      "matches": [ "\u003Call_urls>" ],
+      "resources": [ "client/*.css", "fonts/*.woff2", "icons/*.png", "icons/*.svg", "locales/*.json" ]
+   }, {
+      "matches": [ "https://*/*" ],
+      "resources": [ "client/gpcWindowSetting.js" ]
+   } ]
+}

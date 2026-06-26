@@ -495,6 +495,42 @@ class TestDisabledRelease:
 # ---------------------------------------------------------------------------
 
 class TestSecurity:
+    def test_auto_update_kill_switch_blocks_active_3_33_release(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        import main as main_module
+
+        monkeypatch.setenv("BILL_WORKER_AUTO_UPDATE_ENABLED", "false")
+        monkeypatch.setattr(
+            main_module,
+            "worker_releases",
+            [
+                {
+                    "id": "release-3-33",
+                    "version": "3.33",
+                    "channel": "stable",
+                    "is_active": True,
+                    "status": "current",
+                    "package_filename": "bill-worker-3.33.zip",
+                    "package_sha256": "a" * 64,
+                    "upload_time": "2026-06-22T00:00:00",
+                }
+            ],
+        )
+
+        register = client.post(
+            "/worker/register",
+            json={
+                "machine_name": "kill-switch-worker",
+                "machine_uuid": "kill-switch-worker-uuid",
+                "worker_version": "0.3.33",
+                "execution_mode": "interactive_visible",
+            },
+        )
+        assert register.status_code == 200, register.text
+        update = register.json()["update"]
+        assert update["update_available"] is False
+        assert update["latest_version"] is None
+        assert update["package_url"] is None
+
     def test_path_traversal_filename_rejected(self, client: TestClient) -> None:
         _make_user(client, "admin_trav@test.com", "admin")
         _login(client, "admin_trav@test.com")

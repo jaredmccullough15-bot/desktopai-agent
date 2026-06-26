@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Bill Teaching Assistant",
+  "version": "0.1.0",
+  "description": "Observes Teaching Mode pages for Bill without automating workflows.",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://go.trackvia.com/*",
+    "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Bill Teaching Assistant",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://go.trackvia.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

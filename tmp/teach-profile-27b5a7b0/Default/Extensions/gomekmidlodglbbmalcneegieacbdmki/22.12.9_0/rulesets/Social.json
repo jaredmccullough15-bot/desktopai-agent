@@ -1,0 +1,228 @@
+[
+  {
+    "id": 39,
+    "condition": {
+      "requestDomains": [
+        "google.com"
+      ],
+      "regexFilter": "apis\\.google\\.com\\/(\\_\\/[+]1\\/fastbutton|js\\/plusone\\.js)|plusone\\.google\\.com\\/\\_\\/[+]1\\/fastbutton"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 712,
+    "condition": {
+      "requestDomains": [
+        "addthis.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 715,
+    "condition": {
+      "requestDomains": [
+        "sharethis.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 776,
+    "condition": {
+      "requestDomains": [
+        "tumblr.com"
+      ],
+      "regexFilter": "platform\\.tumblr\\.com\\/v[0-9]\\/(share([0-9a-z]|-|_)?|follow([0-9a-z]|-|_)?)"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 867,
+    "condition": {
+      "requestDomains": [
+        "st-hatena.com"
+      ],
+      "regexFilter": "([0-9a-z]+\\.)?b\\.st\\-hatena\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 110,
+    "condition": {
+      "requestDomains": [
+        "linkedin.com"
+      ],
+      "regexFilter": "platform\\.linkedin\\.com\\/(in\\.js|\\/js\\/(nonSecure*Framework|secure*Framework))|www\\.linkedin\\.com\\/countserv\\/count\\/share"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 135,
+    "condition": {
+      "requestDomains": [
+        "disqus.com"
+      ],
+      "regexFilter": "mediacdn\\.disqus\\.com|disqus\\.com\\/(api|forums|embed)"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 400,
+    "condition": {
+      "requestDomains": [
+        "pinterest.com"
+      ],
+      "regexFilter": "(assets|widgets|)\\.pinterest\\.com\\/(js\\/pinit\\.js|(images\\/|)(|bm|about\\/buttons)\\/(pidgets|[a-z-]*button)\\.png)|\\/*.json|\\/v3\\/*"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 703,
+    "condition": {
+      "requestDomains": [
+        "facebook.com",
+        "facebook.net"
+      ],
+      "regexFilter": "((badge|connect|api|graph)\\.facebook\\.(com|net))|(facebook\\.(com|net)\\/(badge|plugins|widgets|([a-z]+\\/u\\.php)))"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 704,
+    "condition": {
+      "requestDomains": [
+        "twitter.com",
+        "twimg.com"
+      ],
+      "regexFilter": "r\\.twimg\\.com\\/jot|((platform|p|(cdn|urls)\\.api)\\.|)twitter\\.com\\/(widgets|(f|t)\\.gif|\\.*\\/(count|show)\\.json|javascripts\\/[0-9a-z]+\\.js)"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 807,
+    "condition": {
+      "requestDomains": [
+        "po.st",
+        "gwallet.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 848,
+    "condition": {
+      "requestDomains": [
+        "stumbleupon.com"
+      ],
+      "regexFilter": "(www|badge|platform)\\.stumbleupon\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 852,
+    "condition": {
+      "requestDomains": [
+        "feedburner.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 881,
+    "condition": {
+      "requestDomains": [
+        "weibo.com"
+      ],
+      "regexFilter": "api\\.weibo\\.com\\/.*\\/(shorten|counts)\\.json|(widget|service)\\.weibo\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 888,
+    "condition": {
+      "requestDomains": [
+        "linkwithin.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 890,
+    "condition": {
+      "requestDomains": [
+        "idqqimg.com",
+        "gtimg.com"
+      ],
+      "regexFilter": "pub\\.idqqimg\\.com|[0-9a-z]+\\.gtimg\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 892,
+    "condition": {
+      "requestDomains": [
+        "uservoice.com"
+      ],
+      "regexFilter": "(widget|cdn)\\.uservoice\\.com|by\\.uservoice\\.com\\/.*\\/track\\.js"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 896,
+    "condition": {
+      "requestDomains": [
+        "99widgets.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 923,
+    "condition": {
+      "requestDomains": [
+        "buzzfeed.com"
+      ],
+      "regexFilter": "ct\\.buzzfeed\\.com\\/wd\\/UserWidget|buzzbox\\.buzzfeed\\.com\\/wd\\/BuzzBox"
+    },
+    "action": {
+      "type": "block"
+    }
+  }
+]

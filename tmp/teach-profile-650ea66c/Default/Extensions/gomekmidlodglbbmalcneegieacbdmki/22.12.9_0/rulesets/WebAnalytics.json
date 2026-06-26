@@ -1,0 +1,402 @@
+[
+  {
+    "id": 706,
+    "condition": {
+      "requestDomains": [
+        "google-analytics.com"
+      ],
+      "regexFilter": "([0-9a-z]+\\.)?google-analytics\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 710,
+    "condition": {
+      "requestDomains": [
+        "gstatic.com"
+      ],
+      "regexFilter": "([0-9a-z]+\\.)?metric\\.gstatic\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 711,
+    "condition": {
+      "requestDomains": [
+        "scorecardresearch.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 726,
+    "condition": {
+      "requestDomains": [
+        "cnzz.com",
+        "cnzz.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 727,
+    "condition": {
+      "requestDomains": [
+        "statcounter.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 728,
+    "condition": {
+      "requestDomains": [
+        "chartbeat.com",
+        "chartbeat.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 755,
+    "condition": {
+      "requestDomains": [
+        "amung.us"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 756,
+    "condition": {
+      "requestDomains": [
+        "mediaplex.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 758,
+    "condition": {
+      "requestDomains": [
+        "2o7.net"
+      ],
+      "regexFilter": "[0-9a-z]+\\.122\\.2o7\\.net|[0-9a-z]+\\.112\\.2o7\\.net"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 760,
+    "condition": {
+      "requestDomains": [
+        "histats.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 762,
+    "condition": {
+      "requestDomains": [
+        "ivwbox.de"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 769,
+    "condition": {
+      "requestDomains": [
+        "effectivemeasure.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 778,
+    "condition": {
+      "requestDomains": [
+        "optimizely.com"
+      ],
+      "regexFilter": "cdn([0-9]?)\\.optimizely\\.com\\/(js|img)"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 779,
+    "condition": {
+      "requestDomains": [
+        "omtrdc.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 780,
+    "condition": {
+      "requestDomains": [
+        "rambler.ru"
+      ],
+      "regexFilter": "counter\\.rambler\\.ru\\/top100([0-9a-z]|-|_)?"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 782,
+    "condition": {
+      "requestDomains": [
+        "mail.ru"
+      ],
+      "regexFilter": "[0-9a-z]+\\.mail\\.ru\\/(counter[0-9a-z]?|share[0-9a-z]?)|cdn\\.connect\\.mail\\.ru\\/js\\/(loader\\.js|share\\/[0-9]+\\/share\\.js)"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 783,
+    "condition": {
+      "requestDomains": [
+        "xiti.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 785,
+    "condition": {
+      "requestDomains": [
+        "newrelic.com"
+      ],
+      "regexFilter": "beacon-[0-9]\\.newrelic\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 792,
+    "condition": {
+      "requestDomains": [
+        "googletagmanager.com"
+      ],
+      "regexFilter": "[0-9a-z]+\\.googletagmanager\\.com\\/gtm\\.js"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 797,
+    "condition": {
+      "requestDomains": [
+        "alexa.com"
+      ],
+      "regexFilter": "(xsltcache|xslt)\\.alexa\\.com\\/site_stats\\/(gif|js)\\/.*"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 810,
+    "condition": {
+      "requestDomains": [
+        "feedjit.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 824,
+    "condition": {
+      "requestDomains": [
+        "krxd.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 838,
+    "condition": {
+      "requestDomains": [
+        "webtrendslive.com"
+      ],
+      "regexFilter": "statse\\.webtrendslive\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 844,
+    "condition": {
+      "requestDomains": [
+        "coremetrics.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 850,
+    "condition": {
+      "requestDomains": [
+        "sitemeter.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 866,
+    "condition": {
+      "requestDomains": [
+        "kissmetrics.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 868,
+    "condition": {
+      "requestDomains": [
+        "getclicky.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 871,
+    "condition": {
+      "requestDomains": [
+        "cedexis-radar.net",
+        "cedexis.com"
+      ],
+      "regexFilter": "[0-9a-z]+\\.cedexis\\-radar\\.net|(radar|probes)\\.cedexis\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 877,
+    "condition": {
+      "requestDomains": [
+        "51.la"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 880,
+    "condition": {
+      "requestDomains": [
+        "clicktale.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 898,
+    "condition": {
+      "requestDomains": [
+        "openstat.net"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 904,
+    "condition": {
+      "requestDomains": [
+        "truehits.in.th"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 916,
+    "condition": {
+      "requestDomains": [
+        "i2i.jp"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 917,
+    "condition": {
+      "requestDomains": [
+        "visualrevenue.com"
+      ],
+      "regexFilter": "(a|t|p)\\.visualrevenue\\.com"
+    },
+    "action": {
+      "type": "block"
+    }
+  },
+  {
+    "id": 920,
+    "condition": {
+      "requestDomains": [
+        "mixpanel.com"
+      ]
+    },
+    "action": {
+      "type": "block"
+    }
+  }
+]

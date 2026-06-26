@@ -1,0 +1,128 @@
+[
+  {
+    "name": "quote",
+    "task_type": "browser_workflow",
+    "description": "Awaiting observed demonstration capture.",
+    "payload": {
+      "task_type": "browser_workflow",
+      "mode": "interactive_visible",
+      "step_delay_ms": 800,
+      "steps": [
+        {
+          "action": "open_url",
+          "url": "https://www.healthcare.gov/see-plans/#/"
+        },
+        {
+          "action": "type_text",
+          "selector": "#autocomplete--13",
+          "value": "48026",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "click_selector",
+          "selector": "li:has-text(\"Macomb County\"), [role='option']:has-text(\"Macomb County\"), .autocomplete__option:has-text(\"Macomb County\")",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "open_url",
+          "url": "https://www.healthcare.gov/see-plans/#/steps"
+        },
+        {
+          "action": "click_selector",
+          "selector": "button:has-text(\"Continue\")",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "open_url",
+          "url": "https://www.healthcare.gov/see-plans/#/household"
+        },
+        {
+          "action": "click_selector",
+          "selector": "a:has-text(\"Start Tell us about you & your household\")",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "type_text",
+          "selector": "#choice--69",
+          "value": "false",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "open_url",
+          "url": "https://www.healthcare.gov/see-plans/#/household/member/1"
+        },
+        {
+          "action": "click_selector",
+          "selector": "button:has-text(\"Continue\")",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "type_text",
+          "selector": "#text-field--88",
+          "value": "36",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "type_text",
+          "selector": "#choice-list--89__choice--0",
+          "value": "Male",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "type_text",
+          "selector": "#choice-list--90__choice--4",
+          "value": "none",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "open_url",
+          "url": "https://www.healthcare.gov/see-plans/#/household/review"
+        },
+        {
+          "action": "click_selector",
+          "selector": "button:has-text(\"Continue\")",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "open_url",
+          "url": "https://www.healthcare.gov/see-plans/#/income"
+        },
+        {
+          "action": "click_selector",
+          "selector": "button:has-text(\"Confirm\")",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "type_text",
+          "selector": "#text-field--135",
+          "value": "29900",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "open_url",
+          "url": "https://www.healthcare.gov/see-plans/#/aptc"
+        },
+        {
+          "action": "click_selector",
+          "selector": "button:has-text(\"Continue\")",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "open_url",
+          "url": "https://www.healthcare.gov/see-plans/#/plan/results"
+        },
+        {
+          "action": "click_selector",
+          "selector": "button:has-text(\"View plans\")",
+          "timeout_ms": 20000
+        },
+        {
+          "action": "click_selector",
+          "selector": "#dialog--199__close",
+          "timeout_ms": 20000
+        }
+      ],
+      "workflow_learning_source": "published_draft"
+    }
+  }
+]

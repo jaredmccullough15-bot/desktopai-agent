@@ -1,0 +1,16 @@
+[
+  {
+    "bundle_id": "starter-bundle",
+    "name": "Starter Bundle",
+    "description": null,
+    "templates": [
+      {
+        "source_tenant_id": "source-tenant",
+        "workflow_id": "renewal-audit",
+        "activate": false
+      }
+    ],
+    "created_at": "2026-06-25T12:55:15.223068Z",
+    "updated_at": "2026-06-25T12:55:15.223074Z"
+  }
+]

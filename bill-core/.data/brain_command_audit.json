@@ -1,0 +1,672 @@
+[
+  {
+    "timestamp": "2026-05-05T12:41:16.475391",
+    "original_user_text": "Let's create a new workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": null,
+    "selected_worker": null,
+    "queued_task_id": null,
+    "before_execution": "I recognized a request to start teaching a new workflow.",
+    "after_execution": "What should we call this workflow?"
+  },
+  {
+    "timestamp": "2026-05-05T12:41:16.492840",
+    "original_user_text": "Let's create a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims_Intake",
+    "selected_worker": null,
+    "queued_task_id": null,
+    "before_execution": "I recognized a request to start a new teaching workflow.",
+    "after_execution": "No online worker is available to open the teaching browser."
+  },
+  {
+    "timestamp": "2026-05-05T12:41:32.989462",
+    "original_user_text": "Teach this process called Renewal Assist",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Renewal_Assist",
+    "selected_worker": "test-worker-123",
+    "queued_task_id": "ad74e8e5-2f7a-40ba-9207-6a58029e06c9",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Renewal_Assist' as task ad74e8e5-2f7a-40ba-9207-6a58029e06c9 on TestWorker (test-worker-123)."
+  },
+  {
+    "timestamp": "2026-05-05T12:54:47.791728",
+    "original_user_text": "Let's start a new workflow called Enrollment Followup",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Enrollment_Followup",
+    "selected_worker": "demo-worker",
+    "queued_task_id": "7c0e1363-2268-4c0d-8c28-f722b05a9152",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Enrollment_Followup' as task 7c0e1363-2268-4c0d-8c28-f722b05a9152 on DemoWorker (demo-worker)."
+  },
+  {
+    "timestamp": "2026-05-05T12:54:52.788368",
+    "original_user_text": "Teach this process",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": null,
+    "selected_worker": null,
+    "queued_task_id": null,
+    "before_execution": "I recognized a request to start teaching a new workflow.",
+    "after_execution": "What should we call this workflow?"
+  },
+  {
+    "timestamp": "2026-05-06T17:33:03.485132",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims_Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Claims_Intake' as task task-brain-1 on Worker-A (worker-uuid-1)."
+  },
+  {
+    "timestamp": "2026-05-06T17:33:30.339830",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims_Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Claims_Intake' as task task-brain-1 on Worker-A (worker-uuid-1)."
+  },
+  {
+    "timestamp": "2026-05-06T18:35:02.085036",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims_Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Claims_Intake' as task task-brain-1 on Worker-A (worker-uuid-1)."
+  },
+  {
+    "timestamp": "2026-05-06T18:43:19.942591",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims_Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Claims_Intake' as task task-brain-1 on Worker-A (worker-uuid-1)."
+  },
+  {
+    "timestamp": "2026-05-06T18:50:54.888393",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims_Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Claims_Intake' as task task-brain-1 on Worker-A (worker-uuid-1)."
+  },
+  {
+    "timestamp": "2026-05-06T18:58:39.642701",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims_Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Claims_Intake' as task task-brain-1 on Worker-A (worker-uuid-1)."
+  },
+  {
+    "timestamp": "2026-05-06T21:53:01.251859",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Claims Intake' as task task-brain-1 on Worker-A (worker-uuid-1)."
+  },
+  {
+    "timestamp": "2026-05-06T21:53:01.278568",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Test Workflow' as task task-brain-intro on Worker-Intro (worker-uuid-intro)."
+  },
+  {
+    "timestamp": "2026-05-06T21:53:18.232735",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Claims Intake' as task task-brain-1 on Worker-A (worker-uuid-1)."
+  },
+  {
+    "timestamp": "2026-05-06T21:53:18.254045",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Test Workflow' as task task-brain-intro on Worker-Intro (worker-uuid-intro)."
+  },
+  {
+    "timestamp": "2026-05-07T13:01:44.021352",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": null,
+    "queued_task_id": null,
+    "before_execution": "I recognized a request to start a new teaching workflow.",
+    "after_execution": "No online worker is available to open the teaching browser."
+  },
+  {
+    "timestamp": "2026-05-07T14:29:03.803396",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Claims Intake' as task task-brain-1 on Worker-A (worker-uuid-1)."
+  },
+  {
+    "timestamp": "2026-05-07T14:29:03.822098",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Test Workflow' as task task-brain-intro on Worker-Intro (worker-uuid-intro)."
+  },
+  {
+    "timestamp": "2026-05-07T18:04:59.290163",
+    "original_user_text": "create a new workflow called submission",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "submission",
+    "selected_worker": null,
+    "queued_task_id": null,
+    "before_execution": "I recognized a request to start a new teaching workflow.",
+    "after_execution": "No online worker is available to open the teaching browser."
+  },
+  {
+    "timestamp": "2026-05-08T12:06:02.944085",
+    "original_user_text": "start a new workflow called Golden Path Test",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Golden Path Test",
+    "selected_worker": null,
+    "queued_task_id": null,
+    "before_execution": "I recognized a request to start a new teaching workflow.",
+    "after_execution": "No online worker is available to open the teaching browser."
+  },
+  {
+    "timestamp": "2026-05-08T12:07:32.124308",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Started teaching workflow 'Test Workflow' as task task-brain-intro on Worker-Intro (worker-uuid-intro)."
+  },
+  {
+    "timestamp": "2026-05-11T12:31:09.981670",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims_Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims_Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-11T12:31:10.008338",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test_Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test_Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-11T12:31:54.637853",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-11T12:31:54.684955",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-11T12:35:18.871201",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-11T12:35:18.907824",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-11T13:40:30.719213",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-11T13:40:30.735918",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-11T13:42:37.835750",
+    "original_user_text": "Let us create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "229014bd-e7de-4f54-99a4-818d63729648",
+    "queued_task_id": "aca7b989-d58d-45de-a9bc-b0869198787b",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on audit-machine."
+  },
+  {
+    "timestamp": "2026-05-11T13:43:35.671630",
+    "original_user_text": "Let us create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "8a98b976-de92-4ff4-991c-2aa91a4245bd",
+    "queued_task_id": "a114a5d4-abec-4541-b433-5c43cffa84cb",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on audit-machine."
+  },
+  {
+    "timestamp": "2026-05-11T13:43:51.066533",
+    "original_user_text": "Let us create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "b7554118-ef70-4644-b510-554ec8897d79",
+    "queued_task_id": "a1c40b92-4f73-48f0-834c-c3c85dd2d80e",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on test."
+  },
+  {
+    "timestamp": "2026-05-11T13:44:41.774818",
+    "original_user_text": "Let us create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "a94aa291-7680-465c-9c5c-748a17c3c708",
+    "queued_task_id": "b9a720f7-f42d-4933-97c0-e5a5d796e953",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on test."
+  },
+  {
+    "timestamp": "2026-05-14T14:10:46.084293",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T14:10:46.149758",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T14:10:52.767540",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T14:10:52.831287",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T14:11:44.300818",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T14:11:44.398765",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T14:23:35.696410",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T14:23:35.782598",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T14:42:57.184231",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T14:42:57.264907",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T18:24:39.331777",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T18:24:39.409312",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T18:25:57.295311",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T18:25:57.394900",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T18:26:11.549509",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T18:26:11.640866",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T18:26:25.795079",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T18:26:25.882929",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T18:26:47.455254",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T18:26:47.534741",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T18:34:06.272157",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T18:34:06.354885",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-14T18:37:10.567385",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-14T18:37:10.665949",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-05-20T14:44:45.806153",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-05-20T14:44:45.921548",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-06-01T17:59:53.242629",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-06-01T17:59:53.316899",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-06-02T13:48:30.163550",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-06-02T13:48:30.253272",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-06-02T14:12:36.035394",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-06-02T14:12:36.117404",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  },
+  {
+    "timestamp": "2026-06-02T14:29:22.825745",
+    "original_user_text": "start a new workflow called Claims Intake",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Claims Intake",
+    "selected_worker": "worker-uuid-1",
+    "queued_task_id": "task-brain-1",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Claims Intake'. The browser will open shortly on Worker-A."
+  },
+  {
+    "timestamp": "2026-06-02T14:29:22.927830",
+    "original_user_text": "Let's create a new workflow called Test Workflow",
+    "interpreted_intent": "start_new_workflow",
+    "selected_workflow": "Test Workflow",
+    "selected_worker": "worker-uuid-intro",
+    "queued_task_id": "task-brain-intro",
+    "before_execution": "I created a teach-mode draft and prepared a worker-targeted teaching session.",
+    "after_execution": "Teaching session started for 'Test Workflow'. The browser will open shortly on Worker-Intro."
+  }
+]

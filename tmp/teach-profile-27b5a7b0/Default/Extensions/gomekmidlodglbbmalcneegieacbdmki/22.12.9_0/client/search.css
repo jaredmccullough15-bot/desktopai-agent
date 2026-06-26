@@ -1,0 +1,132 @@
+/* stylus:/home/tcagent/.buildAgent/work/88949828c26bdeb4/src/client/ui/styles/singular/Search.styl */
+@font-face {
+  font-family: "Nitro Font";
+  font-style: normal;
+  font-weight: 400;
+  src: url(../fonts/NitroFont-400.woff2) format("woff2");
+}
+@font-face {
+  font-family: "Nitro Font";
+  font-weight: 700;
+  font-style: normal;
+  src: url(../fonts/NitroFont-700.woff2) format("woff2");
+}
+.avs kin-icon *,
+.aosp-serp-tooltip kin-icon *,
+.avs kin-icon *:before,
+.aosp-serp-tooltip kin-icon *:before,
+.avs kin-icon *:after,
+.aosp-serp-tooltip kin-icon *:after {
+  -moz-box-sizing: border-box;
+  -webkit-box-sizing: border-box;
+  box-sizing: border-box;
+}
+.avs kin-icon .kin_icon,
+.aosp-serp-tooltip kin-icon .kin_icon {
+  stroke: currentColor;
+  fill: transparent;
+  stroke-width: var(--icon-stroke);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.avs kin-icon .kin_icon.-no-stroke,
+.aosp-serp-tooltip kin-icon .kin_icon.-no-stroke {
+  stroke-width: 0;
+}
+.avs kin-icon .kin_icon.-tiny,
+.aosp-serp-tooltip kin-icon .kin_icon.-tiny {
+  stroke-width: 0.5px;
+}
+.avs kin-icon .kin_icon.-small,
+.aosp-serp-tooltip kin-icon .kin_icon.-small {
+  stroke-width: var(--icon-stroke-small);
+}
+.avs kin-icon .kin_icon.-large,
+.aosp-serp-tooltip kin-icon .kin_icon.-large {
+  stroke-width: var(--icon-stroke-large);
+}
+.avs kin-icon .kin_icon.-flip.-rtl,
+.aosp-serp-tooltip kin-icon .kin_icon.-flip.-rtl {
+  transform: scaleX(-1);
+}
+.avs kin-icon .kin_icon .-no-stroke,
+.aosp-serp-tooltip kin-icon .kin_icon .-no-stroke {
+  stroke-width: 0;
+}
+:root {
+  --color-ok: #388700;
+  --app-bg-simple: #fffcfa;
+  --color-ok-text: #fff;
+  --color-critical: #e46;
+  --color-critical-text: #fff;
+  --color-text: #071d2b;
+  --icon-stroke: 1px;
+  --icon-stroke-small: 1px;
+  --icon-stroke-large: 1px;
+  --c-success: #388800;
+  --c-critical: #da3511;
+  --c-on-success: #fff;
+  --c-on-critical: #fff;
+}
+kin-icon.kin_icon {
+  fill: transparent;
+  stroke: currentColor;
+}
+.aosp-serp-tooltip {
+  display: inline-block;
+  position: relative;
+  height: 20px;
+  margin-right: 5px;
+  color: var(--color-text);
+  cursor: default;
+}
+.kin-dropdown-wrap {
+  position: absolute;
+  z-index: 110000;
+}
+.kin_dropdown.-tooltip.aosp-serp-tooltip {
+  display: flex;
+  align-items: center;
+  padding: 15px 18px;
+  border-radius: 8px;
+  background: var(--app-bg-simple);
+  box-shadow: 0 8px 12px rgba(0, 0, 0, 0.24), 0 0 12px rgba(0, 0, 0, 0.12);
+  color: var(--color-text);
+}
+.kin_dropdown.-tooltip.aosp-serp-tooltip::after {
+  content: "";
+  position: absolute;
+  display: block;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 8px solid var(--app-bg-simple);
+}
+.kin_dropdown.-tooltip.aosp-serp-tooltip.position-top-left {
+  transform: translate(-30px, -13px);
+}
+.kin_dropdown.-tooltip.aosp-serp-tooltip.position-top-left::after {
+  bottom: -8px;
+  left: 32px;
+}
+.kin_dropdown.-tooltip.aosp-serp-tooltip.position-top-right {
+  transform: translate(30px, -15px);
+}
+.kin_dropdown.-tooltip.aosp-serp-tooltip.position-top-right::after {
+  bottom: -8px;
+  right: 32px;
+}
+.kin_dropdown.-tooltip.aosp-serp-tooltip .status-icon {
+  height: 20px;
+}
+.kin_dropdown.-tooltip.aosp-serp-tooltip .h4 {
+  margin: 0 14px 0 6px;
+  padding: 0 12px 0 0;
+  border-right: 1px #ebedee solid;
+  color: var(--color-text);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 26px;
+}
+.kin_dropdown.-tooltip.aosp-serp-tooltip .extension-icon {
+  height: 24px;
+}

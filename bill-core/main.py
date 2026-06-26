@@ -26,6 +26,7 @@ from uuid import uuid4
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from cryptography.fernet import Fernet, InvalidToken
 
 from error_explainer import (
     classify_error,
@@ -54,6 +55,14 @@ from schemas import (
     KnowledgeRecord,
     KnowledgeCreateRequest,
     KnowledgeUpdateRequest,
+    SuperAdminTenantRecord,
+    SuperAdminTenantCreateRequest,
+    SuperAdminTenantUpdateRequest,
+    SuperAdminCopyKnowledgeRequest,
+    SuperAdminCopyWorkflowRequest,
+    IntegrationCredentialRecord,
+    IntegrationCredentialCreateRequest,
+    IntegrationCredentialUpdateRequest,
     BillCreateUserRequest,
     BillCurrentUserResponse,
     BillLoginRequest,
@@ -300,18 +309,162 @@ def _path_requires_user_auth(path: str, method: str, request: Request | None = N
 
 def _required_roles_for_path(path: str, method: str) -> set[str] | None:
     upper_method = method.upper()
+    if path.startswith("/api/super-admin/"):
+        return {"super_admin"}
     if path.startswith("/api/admin/"):
-        return {"admin"}
+        return {"admin", "super_admin"}
     if path.startswith("/api/brain/workflow-learning/drafts"):
         if upper_method in {"POST", "PUT", "PATCH", "DELETE"}:
-            return {"teacher", "admin"}
+            return {"teacher", "admin", "super_admin"}
     if path.startswith("/api/workflows/") and path.endswith("/run-taught"):
-        return {"runner", "teacher", "admin"}
+        return {"runner", "teacher", "admin", "super_admin"}
     if path == "/api/tasks" and upper_method == "POST":
-        return {"runner", "teacher", "admin"}
+        return {"runner", "teacher", "admin", "super_admin"}
     if path.startswith("/api/procedures/") and path.endswith("/run"):
-        return {"runner", "teacher", "admin"}
+        return {"runner", "teacher", "admin", "super_admin"}
     return None
+
+
+def _is_super_admin_user(user: dict[str, Any] | None) -> bool:
+    return str((user or {}).get("role") or "").strip().lower() == "super_admin"
+
+
+def _normalize_tenant_id_value(value: str | None) -> str:
+    tenant_id = str(value or "").strip()
+    return tenant_id or "default"
+
+
+def _resolve_effective_tenant_id(user: dict[str, Any]) -> str:
+    return _normalize_tenant_id_value(str(user.get("tenant_id") or "default"))
+
+
+def _require_super_admin(request: Request) -> dict[str, Any]:
+    return require_user_role(request, {"super_admin"})
+
+
+def _safe_tenant_id(value: str | None) -> str:
+    return "".join(c for c in str(value or "") if c.isalnum() or c in ("-", "_")).strip("-_")
+
+
+def _iso_now() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _mask_secret(secret: str) -> str:
+    text = str(secret or "")
+    if not text:
+        return ""
+    if len(text) <= 4:
+        return "*" * len(text)
+    return f"{text[:2]}{'*' * (len(text) - 4)}{text[-2:]}"
+
+
+def _normalize_settings(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return dict(value)
+
+
+def _load_tenant_profiles_store() -> dict[str, dict[str, Any]]:
+    if not TENANT_PROFILES_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(TENANT_PROFILES_PATH.read_text(encoding="utf-8-sig"))
+    except Exception as error:
+        logger.error("Failed loading tenant profiles %s: %s", TENANT_PROFILES_PATH, error)
+        return {}
+
+    records: dict[str, dict[str, Any]] = {}
+    if isinstance(raw, dict):
+        iterable = raw.values()
+    elif isinstance(raw, list):
+        iterable = raw
+    else:
+        return records
+
+    for item in iterable:
+        if not isinstance(item, dict):
+            continue
+        tenant_id = _safe_tenant_id(item.get("tenant_id"))
+        if not tenant_id:
+            continue
+        now_iso = _iso_now()
+        records[tenant_id] = {
+            "tenant_id": tenant_id,
+            "name": str(item.get("name") or tenant_id).strip() or tenant_id,
+            "status": str(item.get("status") or "active").strip().lower() or "active",
+            "contact_email": str(item.get("contact_email") or "").strip() or None,
+            "notes": str(item.get("notes") or "").strip() or None,
+            "settings": _normalize_settings(item.get("settings") or {}),
+            "created_at": str(item.get("created_at") or now_iso),
+            "updated_at": str(item.get("updated_at") or now_iso),
+        }
+    return records
+
+
+def _save_tenant_profiles_store(records: dict[str, dict[str, Any]]) -> None:
+    TENANT_PROFILES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = [records[key] for key in sorted(records.keys())]
+    TENANT_PROFILES_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _load_global_template_bundles() -> list[dict[str, Any]]:
+    return _load_json_list(GLOBAL_TEMPLATE_BUNDLES_PATH, "global template bundles")
+
+
+def _save_global_template_bundles(records: list[dict[str, Any]]) -> None:
+    _save_json_list(GLOBAL_TEMPLATE_BUNDLES_PATH, records, max_entries=500)
+
+
+INTEGRATION_SECRET_KEY_PATH: Path | None = None
+_integration_fernet_instance: Fernet | None = None
+
+
+def _get_integration_fernet() -> Fernet:
+    global _integration_fernet_instance
+    global INTEGRATION_SECRET_KEY_PATH
+    if _integration_fernet_instance is not None:
+        return _integration_fernet_instance
+
+    key_path = INTEGRATION_SECRET_KEY_PATH
+    if key_path is None:
+        key_path = _resolve_data_file_path(
+            "BILL_CORE_INTEGRATION_SECRET_KEY_PATH",
+            "integration_secret.key",
+        )
+        INTEGRATION_SECRET_KEY_PATH = key_path
+
+    raw_env_key = (os.getenv("BILL_CORE_INTEGRATION_SECRET_KEY") or "").strip()
+    key: bytes
+    if raw_env_key:
+        key = raw_env_key.encode("utf-8")
+    else:
+        if key_path.exists():
+            key = key_path.read_text(encoding="utf-8").strip().encode("utf-8")
+        else:
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key = Fernet.generate_key()
+            key_path.write_text(key.decode("utf-8"), encoding="utf-8")
+
+    try:
+        _integration_fernet_instance = Fernet(key)
+    except Exception as error:
+        raise RuntimeError(
+            "Invalid integration secret key. Provide a valid Fernet key via BILL_CORE_INTEGRATION_SECRET_KEY."
+        ) from error
+    return _integration_fernet_instance
+
+
+def _encrypt_integration_secret(value: str) -> str:
+    return _get_integration_fernet().encrypt(str(value).encode("utf-8")).decode("utf-8")
+
+
+def _decrypt_integration_secret(ciphertext: str) -> str:
+    try:
+        raw = _get_integration_fernet().decrypt(str(ciphertext).encode("utf-8"))
+    except InvalidToken as error:
+        raise HTTPException(status_code=500, detail="Integration secret cannot be decrypted") from error
+    return raw.decode("utf-8")
 
 
 def _infer_audit_event(request: Request, status_code: int) -> str | None:
@@ -406,13 +559,32 @@ async def bill_request_middleware(request: Request, call_next):
 _BILL_CORE_ROOT = Path(__file__).resolve().parent
 
 
+def _path_is_writable_or_creatable(path: Path) -> bool:
+    if path.exists():
+        return os.access(path, os.W_OK)
+    for ancestor in (path, *path.parents):
+        if ancestor.exists():
+            return os.access(ancestor, os.W_OK)
+    return False
+
+
 def _default_data_root() -> Path:
     configured = (os.getenv("BILL_CORE_DATA_DIR") or "").strip()
     if configured:
-        return Path(configured)
-    if os.name != "nt":
-        return Path("/var/app/data/bill-core")
-    return _BILL_CORE_ROOT
+        configured_path = Path(configured)
+        if _path_is_writable_or_creatable(configured_path):
+            return configured_path
+        logger.warning(
+            "BILL_CORE_DATA_DIR is not writable (%s); falling back to app-local data root",
+            configured_path,
+        )
+    # Keep local defaults inside the app folder to avoid unwritable platform paths.
+    return _BILL_CORE_ROOT / ".data"
+
+
+def _release_storage_backend_env() -> str:
+    backend = (os.getenv("BILL_RELEASE_STORAGE_BACKEND") or "local").strip().lower()
+    return "s3" if backend == "s3" else "local"
 
 
 BILL_CORE_DATA_ROOT = _default_data_root()
@@ -432,14 +604,39 @@ def _resolve_data_dir_path(env_name: str, dirname: str) -> Path:
     return BILL_CORE_DATA_ROOT / dirname
 
 
+def _path_parent_is_writable(path: Path) -> bool:
+    parent = path.parent
+    if parent.exists():
+        return os.access(parent, os.W_OK)
+    for ancestor in parent.parents:
+        if ancestor.exists():
+            return os.access(ancestor, os.W_OK)
+    return False
+
+
 def _migrate_legacy_file(new_path: Path, legacy_path: Path) -> None:
     if new_path == legacy_path:
         return
     if new_path.exists() or not legacy_path.exists() or not legacy_path.is_file():
         return
-    new_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(legacy_path, new_path)
-    logger.info("Migrated legacy data file %s -> %s", legacy_path, new_path)
+    if not _path_parent_is_writable(new_path):
+        logger.warning(
+            "Skipping legacy data file migration because destination is not writable: %s -> %s",
+            legacy_path,
+            new_path,
+        )
+        return
+    try:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(legacy_path, new_path)
+        logger.info("Migrated legacy data file %s -> %s", legacy_path, new_path)
+    except PermissionError as error:
+        logger.warning(
+            "Skipping legacy data file migration due to permission error: %s -> %s (%s)",
+            legacy_path,
+            new_path,
+            error,
+        )
 
 
 def _migrate_legacy_directory(new_path: Path, legacy_path: Path) -> None:
@@ -447,9 +644,24 @@ def _migrate_legacy_directory(new_path: Path, legacy_path: Path) -> None:
         return
     if new_path.exists() or not legacy_path.exists() or not legacy_path.is_dir():
         return
-    new_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(legacy_path, new_path)
-    logger.info("Migrated legacy data directory %s -> %s", legacy_path, new_path)
+    if not _path_parent_is_writable(new_path):
+        logger.warning(
+            "Skipping legacy data directory migration because destination is not writable: %s -> %s",
+            legacy_path,
+            new_path,
+        )
+        return
+    try:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(legacy_path, new_path)
+        logger.info("Migrated legacy data directory %s -> %s", legacy_path, new_path)
+    except PermissionError as error:
+        logger.warning(
+            "Skipping legacy data directory migration due to permission error: %s -> %s (%s)",
+            legacy_path,
+            new_path,
+            error,
+        )
 
 _STARTUP_REQUIRED_FILES = [
     "main.py",
@@ -659,8 +871,11 @@ _extension_releases_lock = threading.Lock()
 _migrate_legacy_file(WORKERS_STORE_PATH, _BILL_CORE_ROOT / "workers_store.json")
 _migrate_legacy_file(WORKER_RELEASES_PATH, _BILL_CORE_ROOT / "worker_releases.json")
 _migrate_legacy_file(EXTENSION_RELEASES_PATH, _BILL_CORE_ROOT / "extension_releases.json")
-_migrate_legacy_directory(WORKER_PACKAGES_DIR, _BILL_CORE_ROOT / "worker-packages")
-_migrate_legacy_directory(EXTENSION_PACKAGES_DIR, _BILL_CORE_ROOT / "extension-packages")
+if _release_storage_backend_env() == "s3":
+    logger.info("Skipping local worker/extension package migration because BILL_RELEASE_STORAGE_BACKEND=s3")
+else:
+    _migrate_legacy_directory(WORKER_PACKAGES_DIR, _BILL_CORE_ROOT / "worker-packages")
+    _migrate_legacy_directory(EXTENSION_PACKAGES_DIR, _BILL_CORE_ROOT / "extension-packages")
 
 
 def _load_worker_releases() -> list[dict]:
@@ -733,6 +948,8 @@ WORKFLOW_DRAFTS_PATH = _resolve_data_file_path("BILL_CORE_WORKFLOW_DRAFTS", "wor
 LEARNED_PROCEDURES_PATH = _resolve_data_file_path("BILL_CORE_LEARNED_PROCEDURES", "learned_procedure_templates.json")
 NAVIGATION_RULES_PATH = _resolve_data_file_path("BILL_CORE_NAVIGATION_RULES", "navigation_rules_by_tenant.json")
 KNOWLEDGE_CENTER_PATH = _resolve_data_file_path("BILL_CORE_KNOWLEDGE_CENTER", "knowledge_center.json")
+TENANT_PROFILES_PATH = _resolve_data_file_path("BILL_CORE_TENANT_PROFILES", "tenant_profiles.json")
+GLOBAL_TEMPLATE_BUNDLES_PATH = _resolve_data_file_path("BILL_CORE_TEMPLATE_BUNDLES", "global_template_bundles.json")
 
 _migrate_legacy_file(WORKFLOWS_CONFIG_PATH, _BILL_CORE_ROOT / "workflows_registry.json")
 _migrate_legacy_file(BRAIN_AUDIT_PATH, _BILL_CORE_ROOT / "brain_command_audit.json")
@@ -746,6 +963,8 @@ _migrate_legacy_file(WORKFLOW_DRAFTS_PATH, _BILL_CORE_ROOT / "workflow_learning_
 _migrate_legacy_file(LEARNED_PROCEDURES_PATH, _BILL_CORE_ROOT / "learned_procedure_templates.json")
 _migrate_legacy_file(NAVIGATION_RULES_PATH, _BILL_CORE_ROOT / "navigation_rules_by_tenant.json")
 _migrate_legacy_file(KNOWLEDGE_CENTER_PATH, _BILL_CORE_ROOT / "knowledge_center.json")
+_migrate_legacy_file(TENANT_PROFILES_PATH, _BILL_CORE_ROOT / "tenant_profiles.json")
+_migrate_legacy_file(GLOBAL_TEMPLATE_BUNDLES_PATH, _BILL_CORE_ROOT / "global_template_bundles.json")
 
 DEFAULT_WORKFLOW_RECORDS: list[dict[str, Any]] = [
     {
@@ -853,20 +1072,33 @@ def auth_me(request: Request) -> BillCurrentUserResponse:
 
 
 @app.get("/api/admin/users", response_model=list[BillUserRecord])
-def admin_list_users(request: Request, limit: int = 100) -> list[BillUserRecord]:
-    require_user_role(request, {"admin"})
+def admin_list_users(request: Request, limit: int = 100, tenant_id: str | None = None) -> list[BillUserRecord]:
+    user = require_user_role(request, {"admin", "super_admin"})
     safe_limit = max(1, min(limit, 500))
     from models_db import UserAccount
 
     with SessionLocal() as session:
-        rows = session.query(UserAccount).order_by(UserAccount.created_at.desc()).limit(safe_limit).all()
+        query = session.query(UserAccount)
+        if _is_super_admin_user(user):
+            if tenant_id is not None:
+                query = query.filter_by(tenant_id=_normalize_tenant_id_value(tenant_id))
+        else:
+            query = query.filter_by(tenant_id=_resolve_effective_tenant_id(user))
+        rows = query.order_by(UserAccount.created_at.desc()).limit(safe_limit).all()
         return [BillUserRecord(**build_user_record(row)) for row in rows]
 
 
 @app.post("/api/admin/users", response_model=BillUserRecord)
 def admin_create_user(request: Request, payload: BillCreateUserRequest) -> BillUserRecord:
-    require_user_role(request, {"admin"})
-    user = create_user_account(payload.model_dump())
+    actor = require_user_role(request, {"admin", "super_admin"})
+    payload_dict = payload.model_dump()
+    if _is_super_admin_user(actor):
+        payload_dict["tenant_id"] = _normalize_tenant_id_value(payload_dict.get("tenant_id"))
+    else:
+        payload_dict["tenant_id"] = _resolve_effective_tenant_id(actor)
+        if str(payload_dict.get("role") or "").strip().lower() == "super_admin":
+            raise HTTPException(status_code=403, detail="Only super_admin can assign super_admin role")
+    user = create_user_account(payload_dict)
     record_audit_event(
         "user_created",
         request=request,
@@ -881,18 +1113,25 @@ def admin_create_user(request: Request, payload: BillCreateUserRequest) -> BillU
 
 @app.patch("/api/admin/users/{user_id}", response_model=BillUserRecord)
 def admin_update_user(request: Request, user_id: str, payload: BillUpdateUserRequest) -> BillUserRecord:
-    require_user_role(request, {"admin"})
+    actor = require_user_role(request, {"admin", "super_admin"})
     from models_db import UserAccount
 
     with SessionLocal() as session:
         user_row = session.get(UserAccount, user_id)
         if user_row is None:
             raise HTTPException(status_code=404, detail="User not found")
+        if not _is_super_admin_user(actor) and _normalize_tenant_id_value(user_row.tenant_id) != _resolve_effective_tenant_id(actor):
+            raise HTTPException(status_code=403, detail="You do not have permission to update this user")
         if payload.name is not None:
             user_row.name = payload.name.strip() or user_row.name
         if payload.email is not None:
             user_row.email = payload.email.strip().lower() or user_row.email
         if payload.role is not None:
+            if (
+                str(payload.role or "").strip().lower() == "super_admin"
+                and not _is_super_admin_user(actor)
+            ):
+                raise HTTPException(status_code=403, detail="Only super_admin can assign super_admin role")
             user_row.role = payload.role
         if payload.status is not None:
             user_row.status = payload.status.strip().lower() or user_row.status
@@ -920,9 +1159,919 @@ def admin_update_user(request: Request, user_id: str, payload: BillUpdateUserReq
 
 @app.get("/api/admin/audit-logs", response_model=list[BillAuditLogRecord])
 def admin_list_audit_logs(request: Request, limit: int = 100) -> list[BillAuditLogRecord]:
-    require_user_role(request, {"admin"})
+    actor = require_user_role(request, {"admin", "super_admin"})
     records = list_audit_logs(limit=limit)
+    if not _is_super_admin_user(actor):
+        tenant_id = _resolve_effective_tenant_id(actor)
+        records = [item for item in records if _normalize_tenant_id_value(item.get("tenant_id")) == tenant_id]
     return [BillAuditLogRecord(**item) for item in records]
+
+
+def _list_super_admin_tenants() -> list[SuperAdminTenantRecord]:
+    from models_db import Tenant
+
+    profiles = _load_tenant_profiles_store()
+    records: dict[str, dict[str, Any]] = {}
+
+    with SessionLocal() as session:
+        db_rows = session.query(Tenant).all()
+
+    for row in db_rows:
+        tenant_id = _safe_tenant_id(row.id)
+        if not tenant_id:
+            continue
+        profile = profiles.get(tenant_id) or {}
+        records[tenant_id] = {
+            "tenant_id": tenant_id,
+            "name": str(profile.get("name") or row.name or tenant_id).strip() or tenant_id,
+            "status": str(profile.get("status") or "active").strip().lower() or "active",
+            "contact_email": profile.get("contact_email"),
+            "notes": profile.get("notes"),
+            "settings": _normalize_settings(profile.get("settings") or {}),
+            "created_at": str(profile.get("created_at") or row.created_at.isoformat() + "Z"),
+            "updated_at": str(profile.get("updated_at") or row.updated_at.isoformat() + "Z"),
+        }
+
+    for tenant_id, profile in profiles.items():
+        if tenant_id in records:
+            continue
+        records[tenant_id] = {
+            "tenant_id": tenant_id,
+            "name": str(profile.get("name") or tenant_id).strip() or tenant_id,
+            "status": str(profile.get("status") or "active").strip().lower() or "active",
+            "contact_email": profile.get("contact_email"),
+            "notes": profile.get("notes"),
+            "settings": _normalize_settings(profile.get("settings") or {}),
+            "created_at": str(profile.get("created_at") or _iso_now()),
+            "updated_at": str(profile.get("updated_at") or _iso_now()),
+        }
+
+    return [SuperAdminTenantRecord(**records[key]) for key in sorted(records.keys())]
+
+
+def _require_tenant_exists(tenant_id: str) -> None:
+    from models_db import Tenant
+
+    with SessionLocal() as session:
+        if session.get(Tenant, tenant_id) is None:
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+
+
+def _require_active_tenant(tenant_id: str) -> None:
+    safe_tenant = _safe_tenant_id(tenant_id)
+    if not safe_tenant:
+        raise HTTPException(status_code=422, detail="Invalid tenant_id")
+    _require_tenant_exists(safe_tenant)
+    tenant = next((item for item in _list_super_admin_tenants() if item.tenant_id == safe_tenant), None)
+    if tenant is not None and str(tenant.status or "").strip().lower() != "active":
+        raise HTTPException(status_code=409, detail=f"Tenant is not active: {safe_tenant}")
+
+
+def _require_tenant_scoped_role(
+    request: Request,
+    tenant_id: str,
+    allowed_roles: set[str],
+) -> tuple[dict[str, Any], str]:
+    user = require_user_role(request, allowed_roles)
+    safe_tenant = _safe_tenant_id(tenant_id)
+    if not safe_tenant:
+        raise HTTPException(status_code=422, detail="Invalid tenant_id")
+    if _is_super_admin_user(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Use /api/super-admin endpoints for cross-tenant or platform operations",
+        )
+    if _resolve_effective_tenant_id(user) != safe_tenant:
+        raise HTTPException(status_code=403, detail="You do not have permission to access this tenant")
+    return user, safe_tenant
+
+
+def _worker_rows_for_tenant(tenant_id: str) -> list[dict[str, Any]]:
+    safe_tenant = _safe_tenant_id(tenant_id)
+    if not safe_tenant:
+        return []
+    with _workers_lock:
+        workers_snapshot = dict(registered_workers)
+    rows: list[dict[str, Any]] = []
+    for machine_uuid, worker in workers_snapshot.items():
+        if _normalize_tenant_id_value(worker.get("tenant_id")) != safe_tenant:
+            continue
+        rows.append({**worker, "machine_uuid": machine_uuid, "tenant_id": safe_tenant})
+    rows.sort(key=lambda row: str(row.get("last_seen") or ""), reverse=True)
+    return rows
+
+
+@app.get("/api/super-admin/tenants", response_model=list[SuperAdminTenantRecord])
+def super_admin_list_tenants(request: Request) -> list[SuperAdminTenantRecord]:
+    _require_super_admin(request)
+    return _list_super_admin_tenants()
+
+
+@app.post("/api/super-admin/tenants", response_model=SuperAdminTenantRecord, status_code=201)
+def super_admin_create_tenant(request: Request, payload: SuperAdminTenantCreateRequest) -> SuperAdminTenantRecord:
+    actor = _require_super_admin(request)
+    from models_db import Tenant
+
+    tenant_id = _safe_tenant_id(payload.tenant_id)
+    if not tenant_id:
+        raise HTTPException(status_code=422, detail="Invalid tenant_id")
+
+    now_iso = _iso_now()
+    with SessionLocal() as session:
+        existing = session.get(Tenant, tenant_id)
+        if existing is not None:
+            raise HTTPException(status_code=409, detail=f"Tenant already exists: {tenant_id}")
+        row = Tenant(
+            id=tenant_id,
+            name=str(payload.name or tenant_id).strip() or tenant_id,
+            is_internal=(tenant_id == "default"),
+        )
+        session.add(row)
+        session.commit()
+
+    profiles = _load_tenant_profiles_store()
+    profiles[tenant_id] = {
+        "tenant_id": tenant_id,
+        "name": str(payload.name or tenant_id).strip() or tenant_id,
+        "status": "active",
+        "contact_email": str(payload.contact_email or "").strip() or None,
+        "notes": str(payload.notes or "").strip() or None,
+        "settings": {},
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    _save_tenant_profiles_store(profiles)
+
+    record_audit_event(
+        "super_admin_tenant_created",
+        request=request,
+        details={"tenant_id": tenant_id, "name": payload.name},
+        target_type="tenant",
+        target_id=tenant_id,
+        status_code=201,
+        source="super_admin",
+    )
+    return SuperAdminTenantRecord(**profiles[tenant_id])
+
+
+@app.patch("/api/super-admin/tenants/{tenant_id}", response_model=SuperAdminTenantRecord)
+def super_admin_update_tenant(
+    request: Request,
+    tenant_id: str,
+    payload: SuperAdminTenantUpdateRequest,
+) -> SuperAdminTenantRecord:
+    _require_super_admin(request)
+    from models_db import Tenant
+
+    safe_tenant_id = _safe_tenant_id(tenant_id)
+    if not safe_tenant_id:
+        raise HTTPException(status_code=422, detail="Invalid tenant_id")
+
+    profiles = _load_tenant_profiles_store()
+    existing = profiles.get(safe_tenant_id) or {
+        "tenant_id": safe_tenant_id,
+        "name": safe_tenant_id,
+        "status": "active",
+        "contact_email": None,
+        "notes": None,
+        "settings": {},
+        "created_at": _iso_now(),
+        "updated_at": _iso_now(),
+    }
+
+    with SessionLocal() as session:
+        row = session.get(Tenant, safe_tenant_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {safe_tenant_id}")
+        if payload.name is not None:
+            row.name = str(payload.name or row.name).strip() or row.name
+            existing["name"] = row.name
+        session.commit()
+
+    if payload.contact_email is not None:
+        existing["contact_email"] = str(payload.contact_email or "").strip() or None
+    if payload.notes is not None:
+        existing["notes"] = str(payload.notes or "").strip() or None
+    if payload.settings is not None:
+        existing["settings"] = _normalize_settings(payload.settings)
+    if payload.status is not None:
+        existing["status"] = str(payload.status or "active").strip().lower() or "active"
+    existing["updated_at"] = _iso_now()
+    profiles[safe_tenant_id] = existing
+    _save_tenant_profiles_store(profiles)
+
+    record_audit_event(
+        "super_admin_tenant_updated",
+        request=request,
+        details={"tenant_id": safe_tenant_id},
+        target_type="tenant",
+        target_id=safe_tenant_id,
+        status_code=200,
+        source="super_admin",
+    )
+    return SuperAdminTenantRecord(**existing)
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/users", response_model=list[BillUserRecord])
+def super_admin_list_tenant_users(request: Request, tenant_id: str, limit: int = 200) -> list[BillUserRecord]:
+    _require_super_admin(request)
+    _require_tenant_exists(_safe_tenant_id(tenant_id))
+    from models_db import UserAccount
+
+    safe_limit = max(1, min(limit, 500))
+    with SessionLocal() as session:
+        rows = (
+            session.query(UserAccount)
+            .filter_by(tenant_id=_safe_tenant_id(tenant_id))
+            .order_by(UserAccount.created_at.desc())
+            .limit(safe_limit)
+            .all()
+        )
+        return [BillUserRecord(**build_user_record(row)) for row in rows]
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/workers")
+def super_admin_list_tenant_workers(request: Request, tenant_id: str) -> dict[str, Any]:
+    _require_super_admin(request)
+    safe_tenant = _safe_tenant_id(tenant_id)
+    _require_tenant_exists(safe_tenant)
+    return {"tenant_id": safe_tenant, "workers": _worker_rows_for_tenant(safe_tenant)}
+
+
+@app.get("/api/super-admin/workers")
+def super_admin_list_workers(request: Request) -> dict[str, Any]:
+    _require_super_admin(request)
+    with _workers_lock:
+        workers_snapshot = dict(registered_workers)
+    workers: list[dict[str, Any]] = []
+    for machine_uuid, worker in workers_snapshot.items():
+        workers.append(
+            {
+                **worker,
+                "machine_uuid": machine_uuid,
+                "tenant_id": _normalize_tenant_id_value(worker.get("tenant_id")),
+            }
+        )
+    workers.sort(
+        key=lambda row: (
+            str(row.get("tenant_id") or ""),
+            str(row.get("last_seen") or ""),
+        ),
+        reverse=True,
+    )
+    return {"count": len(workers), "workers": workers}
+
+
+@app.get("/api/admin/tenants/{tenant_id}/workers")
+def admin_list_tenant_workers(request: Request, tenant_id: str) -> dict[str, Any]:
+    _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
+    _require_tenant_exists(safe_tenant)
+    return {"tenant_id": safe_tenant, "workers": _worker_rows_for_tenant(safe_tenant)}
+
+
+@app.patch("/api/admin/tenants/{tenant_id}/workers/{machine_uuid}/name")
+def admin_rename_tenant_worker(
+    request: Request,
+    tenant_id: str,
+    machine_uuid: str,
+    payload: dict = Body(...),
+) -> dict[str, str]:
+    _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
+    new_name = str(payload.get("machine_name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=422, detail="machine_name is required")
+    with _workers_lock:
+        worker = registered_workers.get(machine_uuid)
+        if worker is None or _normalize_tenant_id_value(worker.get("tenant_id")) != safe_tenant:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        worker["machine_name"] = new_name
+        worker["updated_at"] = datetime.utcnow().isoformat()
+        _save_workers_store()
+    return {"machine_uuid": machine_uuid, "machine_name": new_name}
+
+
+@app.delete("/api/admin/tenants/{tenant_id}/workers/{machine_uuid}")
+def admin_delete_tenant_worker(request: Request, tenant_id: str, machine_uuid: str) -> dict[str, str]:
+    _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
+    with _workers_lock:
+        worker = registered_workers.get(machine_uuid)
+        if worker is None or _normalize_tenant_id_value(worker.get("tenant_id")) != safe_tenant:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        del registered_workers[machine_uuid]
+        _save_workers_store()
+    delete_worker_db(machine_uuid)
+    return {"deleted": machine_uuid}
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/knowledge", response_model=list[KnowledgeRecord])
+def super_admin_list_tenant_knowledge(request: Request, tenant_id: str, limit: int = 200) -> list[KnowledgeRecord]:
+    _require_super_admin(request)
+    safe_tenant = _safe_tenant_id(tenant_id)
+    _require_tenant_exists(safe_tenant)
+    safe_limit = max(1, min(limit, 1000))
+    rows = [
+        dict(item)
+        for item in knowledge_records
+        if _normalize_tenant_id_value(item.get("tenant_id")) == safe_tenant
+    ]
+    rows.sort(key=lambda value: str(value.get("updated_at") or ""), reverse=True)
+    return [KnowledgeRecord(**item) for item in rows[:safe_limit]]
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/workflows")
+def super_admin_list_tenant_workflows(request: Request, tenant_id: str) -> dict[str, Any]:
+    _require_super_admin(request)
+    safe_tenant = _safe_tenant_id(tenant_id)
+    _require_tenant_exists(safe_tenant)
+    if not _tenant_templates_available:
+        return {"tenant_id": safe_tenant, "workflows": []}
+    items = list_templates_for_tenant(safe_tenant)
+    return {
+        "tenant_id": safe_tenant,
+        "workflows": [
+            {
+                "workflow_id": item.workflow_id,
+                "workflow_name": item.workflow_name,
+                "enabled": item.enabled,
+                "version": item.version,
+            }
+            for item in items
+        ],
+    }
+
+
+@app.post("/api/super-admin/knowledge/copy", response_model=KnowledgeRecord)
+def super_admin_copy_knowledge(request: Request, payload: SuperAdminCopyKnowledgeRequest) -> KnowledgeRecord:
+    actor = _require_super_admin(request)
+    source_tenant_id = _safe_tenant_id(payload.source_tenant_id)
+    target_tenant_id = _safe_tenant_id(payload.target_tenant_id)
+    if not source_tenant_id or not target_tenant_id:
+        raise HTTPException(status_code=422, detail="Invalid source_tenant_id or target_tenant_id")
+    _require_tenant_exists(source_tenant_id)
+    _require_tenant_exists(target_tenant_id)
+
+    _, source_item = _knowledge_by_id(payload.source_knowledge_id)
+    if source_item is None:
+        raise HTTPException(status_code=404, detail="Source knowledge entry not found")
+    if _normalize_tenant_id_value(source_item.get("tenant_id")) != source_tenant_id:
+        raise HTTPException(status_code=422, detail="Source knowledge entry does not belong to source tenant")
+
+    now_iso = datetime.utcnow().isoformat()
+    copied = dict(source_item)
+    copied["knowledge_id"] = str(uuid4())
+    copied["tenant_id"] = target_tenant_id
+    copied["status"] = "active" if payload.activate else "draft"
+    copied["created_at"] = now_iso
+    copied["updated_at"] = now_iso
+    copied["version"] = 1
+    copied["created_by_user_id"] = actor.get("id")
+    copied["created_by_name"] = actor.get("name")
+    copied["copied_from_tenant_id"] = source_tenant_id
+    copied["copied_from_record_id"] = payload.source_knowledge_id
+    copied["copied_by_user_id"] = actor.get("id")
+    copied["copied_at"] = now_iso
+
+    normalized = _normalize_knowledge_record(copied)
+    if normalized is None:
+        raise HTTPException(status_code=400, detail="Copied knowledge entry is invalid")
+
+    knowledge_records.append(normalized)
+    _save_knowledge_records()
+    record_audit_event(
+        "super_admin_knowledge_copied",
+        request=request,
+        details={
+            "source_tenant_id": source_tenant_id,
+            "source_knowledge_id": payload.source_knowledge_id,
+            "target_tenant_id": target_tenant_id,
+            "copied_knowledge_id": normalized.get("knowledge_id"),
+        },
+        target_type="knowledge",
+        target_id=normalized.get("knowledge_id"),
+        status_code=200,
+        source="super_admin",
+    )
+    return KnowledgeRecord(**normalized)
+
+
+@app.post("/api/super-admin/workflows/copy")
+def super_admin_copy_workflow(request: Request, payload: SuperAdminCopyWorkflowRequest) -> dict[str, Any]:
+    actor = _require_super_admin(request)
+    if not _tenant_templates_available:
+        raise HTTPException(status_code=503, detail="Tenant template system unavailable")
+
+    source_tenant_id = _safe_tenant_id(payload.source_tenant_id)
+    target_tenant_id = _safe_tenant_id(payload.target_tenant_id)
+    if not source_tenant_id or not target_tenant_id:
+        raise HTTPException(status_code=422, detail="Invalid source_tenant_id or target_tenant_id")
+    _require_tenant_exists(source_tenant_id)
+    _require_tenant_exists(target_tenant_id)
+
+    try:
+        source_template = _load_template(source_tenant_id, payload.source_workflow_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Source workflow template not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    target_template = source_template.model_copy(deep=True)
+    new_workflow_id = f"{source_template.workflow_id}-copy-{uuid4().hex[:8]}"
+    target_template.tenant_id = target_tenant_id
+    target_template.workflow_id = new_workflow_id
+    target_template.enabled = bool(payload.activate)
+    copy_timestamp = _iso_now()
+    target_template.updated_at = copy_timestamp
+    target_template.metadata = {
+        **dict(target_template.metadata or {}),
+        "copied_from_tenant_id": source_tenant_id,
+        "copied_from_record_id": source_template.workflow_id,
+        "copied_by_user_id": actor.get("id"),
+        "copied_at": copy_timestamp,
+    }
+    save_template(target_template)
+
+    if _tenants_available:
+        ensure_tenant_workflow_link(
+            tenant_id=target_tenant_id,
+            workflow_id=target_template.workflow_id,
+            systems=[s.system_key for s in target_template.systems],
+        )
+
+    record_audit_event(
+        "super_admin_workflow_copied",
+        request=request,
+        details={
+            "source_tenant_id": source_tenant_id,
+            "source_workflow_id": payload.source_workflow_id,
+            "target_tenant_id": target_tenant_id,
+            "target_workflow_id": target_template.workflow_id,
+            "copied_by_user_id": actor.get("id"),
+        },
+        target_type="workflow_template",
+        target_id=target_template.workflow_id,
+        status_code=200,
+        source="super_admin",
+    )
+    return {
+        "tenant_id": target_tenant_id,
+        "workflow_id": target_template.workflow_id,
+        "enabled": target_template.enabled,
+    }
+
+
+@app.get("/api/super-admin/template-bundles")
+def super_admin_list_template_bundles(request: Request) -> list[dict[str, Any]]:
+    _require_super_admin(request)
+    bundles = _load_global_template_bundles()
+    return sorted(bundles, key=lambda item: str(item.get("name") or item.get("bundle_id") or "").lower())
+
+
+@app.post("/api/super-admin/template-bundles", status_code=201)
+def super_admin_create_template_bundle(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    _require_super_admin(request)
+    bundle_id = _safe_tenant_id(payload.get("bundle_id")) or f"bundle-{uuid4().hex[:8]}"
+    name = str(payload.get("name") or bundle_id).strip() or bundle_id
+    description = str(payload.get("description") or "").strip() or None
+    templates_raw = payload.get("templates") if isinstance(payload.get("templates"), list) else []
+
+    templates: list[dict[str, Any]] = []
+    for item in templates_raw:
+        if not isinstance(item, dict):
+            continue
+        source_tenant_id = _safe_tenant_id(item.get("source_tenant_id"))
+        workflow_id = str(item.get("workflow_id") or "").strip()
+        if not source_tenant_id or not workflow_id:
+            continue
+        templates.append(
+            {
+                "source_tenant_id": source_tenant_id,
+                "workflow_id": workflow_id,
+                "activate": bool(item.get("activate", False)),
+            }
+        )
+
+    if not templates:
+        raise HTTPException(status_code=422, detail="Bundle must include at least one template mapping")
+
+    bundles = _load_global_template_bundles()
+    if any(_safe_tenant_id(item.get("bundle_id")) == bundle_id for item in bundles):
+        raise HTTPException(status_code=409, detail=f"Template bundle already exists: {bundle_id}")
+
+    record = {
+        "bundle_id": bundle_id,
+        "name": name,
+        "description": description,
+        "templates": templates,
+        "created_at": _iso_now(),
+        "updated_at": _iso_now(),
+    }
+    bundles.append(record)
+    _save_global_template_bundles(bundles)
+
+    record_audit_event(
+        "super_admin_template_bundle_created",
+        request=request,
+        details={"bundle_id": bundle_id, "template_count": len(templates)},
+        target_type="template_bundle",
+        target_id=bundle_id,
+        status_code=201,
+        source="super_admin",
+    )
+    return record
+
+
+@app.post("/api/super-admin/tenants/{tenant_id}/template-bundles/{bundle_id}/apply")
+def super_admin_apply_template_bundle(request: Request, tenant_id: str, bundle_id: str) -> dict[str, Any]:
+    actor = _require_super_admin(request)
+    target_tenant = _safe_tenant_id(tenant_id)
+    bundle_key = _safe_tenant_id(bundle_id)
+    if not target_tenant or not bundle_key:
+        raise HTTPException(status_code=422, detail="Invalid tenant_id or bundle_id")
+    _require_tenant_exists(target_tenant)
+    if not _tenant_templates_available:
+        raise HTTPException(status_code=503, detail="Tenant template system unavailable")
+
+    bundles = _load_global_template_bundles()
+    bundle = next((item for item in bundles if _safe_tenant_id(item.get("bundle_id")) == bundle_key), None)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail=f"Template bundle not found: {bundle_key}")
+
+    copied_workflow_ids: list[str] = []
+    for item in list(bundle.get("templates") or []):
+        if not isinstance(item, dict):
+            continue
+        source_tenant_id = _safe_tenant_id(item.get("source_tenant_id"))
+        source_workflow_id = str(item.get("workflow_id") or "").strip()
+        if not source_tenant_id or not source_workflow_id:
+            continue
+        try:
+            source_template = _load_template(source_tenant_id, source_workflow_id)
+        except FileNotFoundError:
+            continue
+
+        target_template = source_template.model_copy(deep=True)
+        target_template.tenant_id = target_tenant
+        target_template.workflow_id = f"{source_template.workflow_id}-copy-{uuid4().hex[:8]}"
+        target_template.enabled = bool(item.get("activate", False))
+        copied_at = _iso_now()
+        target_template.updated_at = copied_at
+        target_template.metadata = {
+            **dict(target_template.metadata or {}),
+            "copied_from_tenant_id": source_tenant_id,
+            "copied_from_record_id": source_template.workflow_id,
+            "copied_by_user_id": actor.get("id"),
+            "copied_at": copied_at,
+            "bundle_id": bundle_key,
+        }
+        save_template(target_template)
+        copied_workflow_ids.append(target_template.workflow_id)
+
+        if _tenants_available:
+            ensure_tenant_workflow_link(
+                tenant_id=target_tenant,
+                workflow_id=target_template.workflow_id,
+                systems=[s.system_key for s in target_template.systems],
+            )
+
+    record_audit_event(
+        "super_admin_template_bundle_applied",
+        request=request,
+        details={
+            "bundle_id": bundle_key,
+            "target_tenant_id": target_tenant,
+            "copied_workflow_ids": copied_workflow_ids,
+        },
+        target_type="template_bundle",
+        target_id=bundle_key,
+        status_code=200,
+        source="super_admin",
+    )
+
+    return {
+        "bundle_id": bundle_key,
+        "target_tenant_id": target_tenant,
+        "copied_workflow_ids": copied_workflow_ids,
+        "copied_count": len(copied_workflow_ids),
+    }
+
+
+@app.get(
+    "/api/super-admin/tenants/{tenant_id}/integration-credentials",
+    response_model=list[IntegrationCredentialRecord],
+)
+def super_admin_list_integration_credentials(request: Request, tenant_id: str) -> list[IntegrationCredentialRecord]:
+    _require_super_admin(request)
+    safe_tenant = _safe_tenant_id(tenant_id)
+    _require_tenant_exists(safe_tenant)
+    from models_db import IntegrationCredential
+
+    with SessionLocal() as session:
+        rows = (
+            session.query(IntegrationCredential)
+            .filter_by(tenant_id=safe_tenant)
+            .order_by(IntegrationCredential.created_at.desc())
+            .all()
+        )
+        return [_integration_credential_to_record(row) for row in rows]
+
+
+def _integration_credential_to_record(row: Any) -> IntegrationCredentialRecord:
+    return IntegrationCredentialRecord(
+        integration_id=row.id,
+        tenant_id=row.tenant_id,
+        integration_type=row.integration_type,
+        name=row.name,
+        status=row.status,
+        settings=json.loads(row.settings_json) if row.settings_json else {},
+        secret_masked=row.secret_masked,
+        created_by_user_id=row.created_by_user_id,
+        created_by_name=row.created_by_name,
+        updated_by_user_id=row.updated_by_user_id,
+        updated_by_name=row.updated_by_name,
+        created_at=row.created_at.isoformat(),
+        updated_at=row.updated_at.isoformat(),
+    )
+
+
+@app.post(
+    "/api/super-admin/tenants/{tenant_id}/integration-credentials",
+    response_model=IntegrationCredentialRecord,
+    status_code=201,
+)
+def super_admin_create_integration_credential(
+    request: Request,
+    tenant_id: str,
+    payload: IntegrationCredentialCreateRequest,
+) -> IntegrationCredentialRecord:
+    actor = _require_super_admin(request)
+    safe_tenant = _safe_tenant_id(tenant_id)
+    _require_tenant_exists(safe_tenant)
+    from models_db import IntegrationCredential
+
+    integration_id = str(uuid4())
+    row = IntegrationCredential(
+        id=integration_id,
+        tenant_id=safe_tenant,
+        integration_type=str(payload.integration_type or "").strip(),
+        name=str(payload.name or "").strip(),
+        status=str(payload.status or "active").strip().lower() or "active",
+        settings_json=json.dumps(_normalize_settings(payload.settings)),
+        secret_encrypted=_encrypt_integration_secret(payload.secret),
+        secret_masked=_mask_secret(payload.secret),
+        created_by_user_id=actor.get("id"),
+        created_by_name=actor.get("name"),
+        updated_by_user_id=actor.get("id"),
+        updated_by_name=actor.get("name"),
+    )
+
+    with SessionLocal() as session:
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+
+    record_audit_event(
+        "super_admin_integration_credential_created",
+        request=request,
+        details={
+            "tenant_id": safe_tenant,
+            "integration_id": integration_id,
+            "integration_type": row.integration_type,
+            "name": row.name,
+        },
+        target_type="integration_credential",
+        target_id=integration_id,
+        status_code=201,
+        source="super_admin",
+    )
+
+    return _integration_credential_to_record(row)
+
+
+@app.patch(
+    "/api/super-admin/tenants/{tenant_id}/integration-credentials/{integration_id}",
+    response_model=IntegrationCredentialRecord,
+)
+def super_admin_update_integration_credential(
+    request: Request,
+    tenant_id: str,
+    integration_id: str,
+    payload: IntegrationCredentialUpdateRequest,
+) -> IntegrationCredentialRecord:
+    actor = _require_super_admin(request)
+    safe_tenant = _safe_tenant_id(tenant_id)
+    _require_tenant_exists(safe_tenant)
+    from models_db import IntegrationCredential
+
+    with SessionLocal() as session:
+        row = session.get(IntegrationCredential, integration_id)
+        if row is None or _safe_tenant_id(row.tenant_id) != safe_tenant:
+            raise HTTPException(status_code=404, detail="Integration credential not found")
+        if payload.name is not None:
+            row.name = str(payload.name or "").strip() or row.name
+        if payload.status is not None:
+            row.status = str(payload.status or row.status).strip().lower() or row.status
+        if payload.settings is not None:
+            row.settings_json = json.dumps(_normalize_settings(payload.settings))
+        if payload.secret is not None:
+            row.secret_encrypted = _encrypt_integration_secret(payload.secret)
+            row.secret_masked = _mask_secret(payload.secret)
+        row.updated_by_user_id = actor.get("id")
+        row.updated_by_name = actor.get("name")
+        row.updated_at = datetime.utcnow()
+        session.commit()
+        session.refresh(row)
+
+    record_audit_event(
+        "super_admin_integration_credential_updated",
+        request=request,
+        details={"tenant_id": safe_tenant, "integration_id": integration_id},
+        target_type="integration_credential",
+        target_id=integration_id,
+        status_code=200,
+        source="super_admin",
+    )
+
+    return _integration_credential_to_record(row)
+
+
+@app.delete(
+    "/api/super-admin/tenants/{tenant_id}/integration-credentials/{integration_id}",
+    response_model=IntegrationCredentialRecord,
+)
+def super_admin_archive_integration_credential(
+    request: Request,
+    tenant_id: str,
+    integration_id: str,
+) -> IntegrationCredentialRecord:
+    actor = _require_super_admin(request)
+    safe_tenant = _safe_tenant_id(tenant_id)
+    _require_tenant_exists(safe_tenant)
+    from models_db import IntegrationCredential
+
+    with SessionLocal() as session:
+        row = session.get(IntegrationCredential, integration_id)
+        if row is None or _safe_tenant_id(row.tenant_id) != safe_tenant:
+            raise HTTPException(status_code=404, detail="Integration credential not found")
+        row.status = "archived"
+        row.updated_by_user_id = actor.get("id")
+        row.updated_by_name = actor.get("name")
+        row.updated_at = datetime.utcnow()
+        session.commit()
+        session.refresh(row)
+
+    record_audit_event(
+        "super_admin_integration_credential_deleted",
+        request=request,
+        details={"tenant_id": safe_tenant, "integration_id": integration_id},
+        target_type="integration_credential",
+        target_id=integration_id,
+        status_code=200,
+        source="super_admin",
+    )
+    return _integration_credential_to_record(row)
+
+
+@app.get(
+    "/api/admin/tenants/{tenant_id}/integration-credentials",
+    response_model=list[IntegrationCredentialRecord],
+)
+def admin_list_integration_credentials(request: Request, tenant_id: str) -> list[IntegrationCredentialRecord]:
+    _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
+    from models_db import IntegrationCredential
+
+    with SessionLocal() as session:
+        rows = (
+            session.query(IntegrationCredential)
+            .filter_by(tenant_id=safe_tenant)
+            .order_by(IntegrationCredential.created_at.desc())
+            .all()
+        )
+        return [_integration_credential_to_record(row) for row in rows]
+
+
+@app.post(
+    "/api/admin/tenants/{tenant_id}/integration-credentials",
+    response_model=IntegrationCredentialRecord,
+    status_code=201,
+)
+def admin_create_integration_credential(
+    request: Request,
+    tenant_id: str,
+    payload: IntegrationCredentialCreateRequest,
+) -> IntegrationCredentialRecord:
+    actor, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
+    from models_db import IntegrationCredential
+
+    integration_id = str(uuid4())
+    row = IntegrationCredential(
+        id=integration_id,
+        tenant_id=safe_tenant,
+        integration_type=str(payload.integration_type or "").strip(),
+        name=str(payload.name or "").strip(),
+        status=str(payload.status or "active").strip().lower() or "active",
+        settings_json=json.dumps(_normalize_settings(payload.settings)),
+        secret_encrypted=_encrypt_integration_secret(payload.secret),
+        secret_masked=_mask_secret(payload.secret),
+        created_by_user_id=actor.get("id"),
+        created_by_name=actor.get("name"),
+        updated_by_user_id=actor.get("id"),
+        updated_by_name=actor.get("name"),
+    )
+
+    with SessionLocal() as session:
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+
+    record_audit_event(
+        "admin_integration_credential_created",
+        request=request,
+        details={"tenant_id": safe_tenant, "integration_id": integration_id, "name": row.name},
+        target_type="integration_credential",
+        target_id=integration_id,
+        status_code=201,
+        source="admin",
+    )
+    return _integration_credential_to_record(row)
+
+
+@app.patch(
+    "/api/admin/tenants/{tenant_id}/integration-credentials/{integration_id}",
+    response_model=IntegrationCredentialRecord,
+)
+def admin_update_integration_credential(
+    request: Request,
+    tenant_id: str,
+    integration_id: str,
+    payload: IntegrationCredentialUpdateRequest,
+) -> IntegrationCredentialRecord:
+    actor, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
+    from models_db import IntegrationCredential
+
+    with SessionLocal() as session:
+        row = session.get(IntegrationCredential, integration_id)
+        if row is None or _safe_tenant_id(row.tenant_id) != safe_tenant:
+            raise HTTPException(status_code=404, detail="Integration credential not found")
+        if payload.name is not None:
+            row.name = str(payload.name or "").strip() or row.name
+        if payload.status is not None:
+            row.status = str(payload.status or row.status).strip().lower() or row.status
+        if payload.settings is not None:
+            row.settings_json = json.dumps(_normalize_settings(payload.settings))
+        if payload.secret is not None:
+            row.secret_encrypted = _encrypt_integration_secret(payload.secret)
+            row.secret_masked = _mask_secret(payload.secret)
+        row.updated_by_user_id = actor.get("id")
+        row.updated_by_name = actor.get("name")
+        row.updated_at = datetime.utcnow()
+        session.commit()
+        session.refresh(row)
+
+    record_audit_event(
+        "admin_integration_credential_updated",
+        request=request,
+        details={"tenant_id": safe_tenant, "integration_id": integration_id},
+        target_type="integration_credential",
+        target_id=integration_id,
+        status_code=200,
+        source="admin",
+    )
+    return _integration_credential_to_record(row)
+
+
+@app.delete(
+    "/api/admin/tenants/{tenant_id}/integration-credentials/{integration_id}",
+    response_model=IntegrationCredentialRecord,
+)
+def admin_archive_integration_credential(
+    request: Request,
+    tenant_id: str,
+    integration_id: str,
+) -> IntegrationCredentialRecord:
+    actor, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
+    from models_db import IntegrationCredential
+
+    with SessionLocal() as session:
+        row = session.get(IntegrationCredential, integration_id)
+        if row is None or _safe_tenant_id(row.tenant_id) != safe_tenant:
+            raise HTTPException(status_code=404, detail="Integration credential not found")
+        row.status = "archived"
+        row.updated_by_user_id = actor.get("id")
+        row.updated_by_name = actor.get("name")
+        row.updated_at = datetime.utcnow()
+        session.commit()
+        session.refresh(row)
+
+    record_audit_event(
+        "admin_integration_credential_deleted",
+        request=request,
+        details={"tenant_id": safe_tenant, "integration_id": integration_id},
+        target_type="integration_credential",
+        target_id=integration_id,
+        status_code=200,
+        source="admin",
+    )
+    return _integration_credential_to_record(row)
 
 
 def _knowledge_by_id(knowledge_id: str) -> tuple[int | None, dict[str, Any] | None]:
@@ -933,7 +2082,7 @@ def _knowledge_by_id(knowledge_id: str) -> tuple[int | None, dict[str, Any] | No
 
 
 def _knowledge_visible_to_user(item: dict[str, Any], user: dict[str, Any]) -> bool:
-    if user_has_role(user, {"admin"}):
+    if user_has_role(user, {"admin", "super_admin"}):
         return True
     return str(item.get("status") or "").strip().lower() == "active"
 
@@ -945,9 +2094,12 @@ def list_knowledge(
     category: str | None = None,
     tag: str | None = None,
     search: str | None = None,
+    tenant_id: str | None = None,
     limit: int = 200,
 ) -> list[KnowledgeRecord]:
-    user = require_user_role(request, {"admin", "teacher", "runner"})
+    user = require_user_role(request, {"super_admin", "admin", "teacher", "runner"})
+    is_super_admin = _is_super_admin_user(user)
+    target_tenant_id = _normalize_tenant_id_value(tenant_id) if is_super_admin and tenant_id else _resolve_effective_tenant_id(user)
     status_filter = str(status or "").strip().lower()
     category_filter = str(category or "").strip().lower()
     tag_filter = str(tag or "").strip().lower()
@@ -956,6 +2108,9 @@ def list_knowledge(
 
     records: list[dict[str, Any]] = []
     for item in knowledge_records:
+        item_tenant_id = _normalize_tenant_id_value(item.get("tenant_id"))
+        if item_tenant_id != target_tenant_id:
+            continue
         if not _knowledge_visible_to_user(item, user):
             continue
         item_status = str(item.get("status") or "").strip().lower()
@@ -993,17 +2148,21 @@ def list_active_knowledge(
     tag: str | None = None,
     limit: int = 50,
 ) -> list[KnowledgeRecord]:
-    user = require_user_role(request, {"admin", "teacher", "runner"})
+    user = require_user_role(request, {"super_admin", "admin", "teacher", "runner"})
+    is_super_admin = _is_super_admin_user(user)
+    target_tenant_id = _resolve_effective_tenant_id(user)
     safe_limit = max(1, min(limit, 200))
 
     if context and str(context).strip():
-        tenant_id = str(user.get("tenant_id") or "").strip() or None
-        records = get_relevant_knowledge(str(context), limit=safe_limit, tenant_id=tenant_id)
+        records = get_relevant_knowledge(str(context), limit=safe_limit, tenant_id=target_tenant_id)
     else:
         category_filter = str(category or "").strip().lower()
         tag_filter = str(tag or "").strip().lower()
         records = []
         for item in knowledge_records:
+            item_tenant_id = _normalize_tenant_id_value(item.get("tenant_id"))
+            if item_tenant_id != target_tenant_id and not is_super_admin:
+                continue
             if str(item.get("status") or "").strip().lower() != "active":
                 continue
             if category_filter and category_filter not in str(item.get("category") or "").strip().lower():
@@ -1021,10 +2180,13 @@ def list_active_knowledge(
 
 @app.get("/api/knowledge/{knowledge_id}", response_model=KnowledgeRecord)
 def get_knowledge(request: Request, knowledge_id: str) -> KnowledgeRecord:
-    user = require_user_role(request, {"admin", "teacher", "runner"})
+    user = require_user_role(request, {"super_admin", "admin", "teacher", "runner"})
+    is_super_admin = _is_super_admin_user(user)
     _, item = _knowledge_by_id(knowledge_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Knowledge entry not found")
+    if _normalize_tenant_id_value(item.get("tenant_id")) != _resolve_effective_tenant_id(user) and not is_super_admin:
+        raise HTTPException(status_code=403, detail="You do not have permission to view this knowledge entry")
     if not _knowledge_visible_to_user(item, user):
         raise HTTPException(status_code=403, detail="You do not have permission to view this knowledge entry")
     return KnowledgeRecord(**item)
@@ -1032,7 +2194,10 @@ def get_knowledge(request: Request, knowledge_id: str) -> KnowledgeRecord:
 
 @app.post("/api/knowledge", response_model=KnowledgeRecord, status_code=201)
 def create_knowledge(request: Request, payload: KnowledgeCreateRequest) -> KnowledgeRecord:
-    user = require_user_role(request, {"admin"})
+    user = require_user_role(request, {"admin", "super_admin"})
+    tenant_id = _resolve_effective_tenant_id(user)
+    if _is_super_admin_user(user) and payload.tenant_id is not None:
+        tenant_id = _normalize_tenant_id_value(payload.tenant_id)
 
     now_iso = datetime.utcnow().isoformat()
     record = {
@@ -1049,7 +2214,7 @@ def create_knowledge(request: Request, payload: KnowledgeCreateRequest) -> Knowl
         "created_at": now_iso,
         "updated_at": now_iso,
         "version": 1,
-        "tenant_id": str(payload.tenant_id or "").strip() or None,
+        "tenant_id": tenant_id,
     }
     normalized = _normalize_knowledge_record(record)
     if normalized is None:
@@ -1075,10 +2240,13 @@ def create_knowledge(request: Request, payload: KnowledgeCreateRequest) -> Knowl
 
 @app.patch("/api/knowledge/{knowledge_id}", response_model=KnowledgeRecord)
 def update_knowledge(request: Request, knowledge_id: str, payload: KnowledgeUpdateRequest) -> KnowledgeRecord:
-    require_user_role(request, {"admin"})
+    user = require_user_role(request, {"admin", "super_admin"})
+    is_super_admin = _is_super_admin_user(user)
     idx, current = _knowledge_by_id(knowledge_id)
     if idx is None or current is None:
         raise HTTPException(status_code=404, detail="Knowledge entry not found")
+    if _normalize_tenant_id_value(current.get("tenant_id")) != _resolve_effective_tenant_id(user) and not is_super_admin:
+        raise HTTPException(status_code=403, detail="You do not have permission to update this knowledge entry")
 
     updated = dict(current)
     changed = False
@@ -1119,6 +2287,8 @@ def update_knowledge(request: Request, knowledge_id: str, payload: KnowledgeUpda
             updated["status"] = status
             changed = True
     if payload.tenant_id is not None:
+        if not is_super_admin:
+            raise HTTPException(status_code=403, detail="Only super_admin can reassign tenant ownership")
         tenant_id = str(payload.tenant_id or "").strip() or None
         if tenant_id != updated.get("tenant_id"):
             updated["tenant_id"] = tenant_id
@@ -1152,10 +2322,13 @@ def update_knowledge(request: Request, knowledge_id: str, payload: KnowledgeUpda
 
 @app.post("/api/knowledge/{knowledge_id}/archive", response_model=KnowledgeRecord)
 def archive_knowledge(request: Request, knowledge_id: str) -> KnowledgeRecord:
-    require_user_role(request, {"admin"})
+    user = require_user_role(request, {"admin", "super_admin"})
+    is_super_admin = _is_super_admin_user(user)
     idx, current = _knowledge_by_id(knowledge_id)
     if idx is None or current is None:
         raise HTTPException(status_code=404, detail="Knowledge entry not found")
+    if _normalize_tenant_id_value(current.get("tenant_id")) != _resolve_effective_tenant_id(user) and not is_super_admin:
+        raise HTTPException(status_code=403, detail="You do not have permission to archive this knowledge entry")
 
     updated = dict(current)
     updated["status"] = "archived"
@@ -1177,10 +2350,13 @@ def archive_knowledge(request: Request, knowledge_id: str) -> KnowledgeRecord:
 
 @app.post("/api/knowledge/{knowledge_id}/activate", response_model=KnowledgeRecord)
 def activate_knowledge(request: Request, knowledge_id: str) -> KnowledgeRecord:
-    require_user_role(request, {"admin"})
+    user = require_user_role(request, {"admin", "super_admin"})
+    is_super_admin = _is_super_admin_user(user)
     idx, current = _knowledge_by_id(knowledge_id)
     if idx is None or current is None:
         raise HTTPException(status_code=404, detail="Knowledge entry not found")
+    if _normalize_tenant_id_value(current.get("tenant_id")) != _resolve_effective_tenant_id(user) and not is_super_admin:
+        raise HTTPException(status_code=403, detail="You do not have permission to activate this knowledge entry")
 
     updated = dict(current)
     updated["status"] = "active"
@@ -1215,8 +2391,7 @@ _DOWNLOAD_URL_TTL_SECONDS = max(
 
 
 def _get_release_storage_backend() -> str:
-    backend = (os.getenv("BILL_RELEASE_STORAGE_BACKEND") or "local").strip().lower()
-    return "s3" if backend == "s3" else "local"
+    return _release_storage_backend_env()
 
 
 def _get_release_signed_url_ttl_seconds() -> int:
@@ -2751,8 +3926,15 @@ def _load_workflow_registry() -> list[WorkflowRecord]:
 
     if not raw_records:
         raw_records = list(DEFAULT_WORKFLOW_RECORDS)
-        WORKFLOWS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        WORKFLOWS_CONFIG_PATH.write_text(json.dumps(raw_records, indent=2), encoding="utf-8")
+        try:
+            WORKFLOWS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            WORKFLOWS_CONFIG_PATH.write_text(json.dumps(raw_records, indent=2), encoding="utf-8")
+        except PermissionError as error:
+            logger.warning(
+                "Skipping workflow registry bootstrap write due to permission error at %s: %s",
+                WORKFLOWS_CONFIG_PATH,
+                error,
+            )
 
     records: list[WorkflowRecord] = []
     for item in raw_records:
@@ -2864,6 +4046,10 @@ def _normalize_knowledge_record(raw: dict[str, Any]) -> dict[str, Any] | None:
         "updated_at": updated_at,
         "version": version,
         "tenant_id": str(raw.get("tenant_id") or "").strip() or None,
+        "copied_from_tenant_id": str(raw.get("copied_from_tenant_id") or "").strip() or None,
+        "copied_from_record_id": str(raw.get("copied_from_record_id") or "").strip() or None,
+        "copied_by_user_id": str(raw.get("copied_by_user_id") or "").strip() or None,
+        "copied_at": str(raw.get("copied_at") or "").strip() or None,
     }
 
 
@@ -3052,9 +4238,13 @@ def _create_task_record(normalized_payload: dict) -> TaskCreateResponse:
     if _is_smart_sherpa_payload(normalized_payload):
         _log_smart_sherpa_final_payload(normalized_payload)
 
+    task_tenant_id = _normalize_tenant_id_value(normalized_payload.get("tenant_id"))
+    normalized_payload["tenant_id"] = task_tenant_id
+
     task_id = str(uuid4())
     task = {
         "id": task_id,
+        "tenant_id": task_tenant_id,
         "payload": normalized_payload,
         "status": "queued",
         "assigned_machine_uuid": None,
@@ -3097,13 +4287,23 @@ def version() -> dict[str, str]:
 @app.post("/worker/register", response_model=WorkerRegisterResponse)
 def register_worker(payload: WorkerRegisterRequest) -> WorkerRegisterResponse:
     now_iso = datetime.utcnow().isoformat()
+    requested_tenant_id = _safe_tenant_id(payload.tenant_id)
     with _workers_lock:
         existing_worker = registered_workers.get(payload.machine_uuid)
         existing = existing_worker is not None
+        existing_tenant_id = _normalize_tenant_id_value((existing_worker or {}).get("tenant_id"))
+        if existing and requested_tenant_id and requested_tenant_id != existing_tenant_id:
+            raise HTTPException(status_code=409, detail=f"Worker is already registered to tenant {existing_tenant_id}")
+
+        tenant_id = existing_tenant_id if existing else requested_tenant_id
+        tenant_id = _normalize_tenant_id_value(tenant_id)
+        _require_active_tenant(tenant_id)
+
         token = str((existing_worker or {}).get("token") or uuid4())
         # Preserve any manually-set name; only use worker-reported name on first registration
         preserved_name = (existing_worker or {}).get("machine_name") or payload.machine_name
         registered_workers[payload.machine_uuid] = {
+            "tenant_id": tenant_id,
             "machine_name": preserved_name,
             "token": token,
             "last_seen": now_iso,
@@ -3162,6 +4362,7 @@ def worker_update_check(machine_uuid: str, current_version: str) -> WorkerUpdate
 
 @app.post("/worker/heartbeat")
 def worker_heartbeat(payload: WorkerHeartbeatRequest) -> dict[str, str]:
+    requested_tenant_id = _safe_tenant_id(payload.tenant_id)
     with _workers_lock:
         worker = registered_workers.get(payload.machine_uuid)
         if worker is None:
@@ -3173,11 +4374,17 @@ def worker_heartbeat(payload: WorkerHeartbeatRequest) -> dict[str, str]:
             )
             raise HTTPException(status_code=400, detail="Worker not registered")
 
+        worker_tenant_id = _normalize_tenant_id_value(worker.get("tenant_id"))
+        if requested_tenant_id and requested_tenant_id != worker_tenant_id:
+            raise HTTPException(status_code=409, detail=f"Worker belongs to tenant {worker_tenant_id}")
+        _require_active_tenant(worker_tenant_id)
+
         old_status = worker.get("status")
         old_last_seen = worker.get("last_seen")
         # Only update machine_name from heartbeat if no name has been set manually
         if not worker.get("machine_name"):
             worker["machine_name"] = payload.machine_name
+        worker["tenant_id"] = worker_tenant_id
         worker["status"] = payload.status
         worker["last_seen"] = datetime.utcnow().isoformat()
         worker["updated_at"] = datetime.utcnow().isoformat()
@@ -12759,11 +13966,20 @@ def bill_chat(payload: dict = Body(default={})) -> dict:
 def list_machines() -> list[MachineRecord]:
     now = datetime.utcnow()
     machines: list[MachineRecord] = []
+    identity = get_current_identity() or {}
+    current_user = identity.get("user") if isinstance(identity, dict) else None
+    is_super_admin = _is_super_admin_user(current_user if isinstance(current_user, dict) else None)
+    scoped_tenant = None
+    if isinstance(current_user, dict) and not is_super_admin:
+        scoped_tenant = _resolve_effective_tenant_id(current_user)
 
     with _workers_lock:
         workers_snapshot = dict(registered_workers)
 
     for machine_uuid, worker in workers_snapshot.items():
+        worker_tenant = _normalize_tenant_id_value(worker.get("tenant_id"))
+        if scoped_tenant and worker_tenant != scoped_tenant:
+            continue
         last_seen = worker.get("last_seen")
         online = False
         if isinstance(last_seen, str):
@@ -12776,6 +13992,7 @@ def list_machines() -> list[MachineRecord]:
             MachineRecord(
                 machine_uuid=machine_uuid,
                 machine_name=worker.get("machine_name", "unknown"),
+                tenant_id=worker_tenant,
                 status=worker.get("status", "unknown"),
                 worker_version=worker.get("worker_version", "unknown"),
                 last_seen=last_seen,
@@ -12791,7 +14008,8 @@ def list_machines() -> list[MachineRecord]:
 
 
 @app.patch("/api/machines/{machine_uuid}/name")
-def rename_machine(machine_uuid: str, payload: dict = Body(...)) -> dict:
+def rename_machine(request: Request, machine_uuid: str, payload: dict = Body(...)) -> dict:
+    user = require_user_role(request, {"admin", "super_admin"})
     new_name = (payload.get("machine_name") or "").strip()
     if not new_name:
         raise HTTPException(status_code=422, detail="machine_name is required")
@@ -12799,18 +14017,26 @@ def rename_machine(machine_uuid: str, payload: dict = Body(...)) -> dict:
     with _workers_lock:
         if machine_uuid not in registered_workers:
             raise HTTPException(status_code=404, detail="Machine not found")
+        worker_tenant = _normalize_tenant_id_value(registered_workers[machine_uuid].get("tenant_id"))
+        if not _is_super_admin_user(user) and _resolve_effective_tenant_id(user) != worker_tenant:
+            raise HTTPException(status_code=403, detail="You do not have permission to manage this worker")
         old_name = registered_workers[machine_uuid].get("machine_name")
         registered_workers[machine_uuid]["machine_name"] = new_name
+        registered_workers[machine_uuid]["updated_at"] = datetime.utcnow().isoformat()
     _save_workers_store()   # outside lock (I/O)
     logger.info("worker renamed: uuid=%s old_name=%r new_name=%r", machine_uuid, old_name, new_name)
     return {"machine_uuid": machine_uuid, "machine_name": new_name}
 
 
 @app.delete("/api/machines/{machine_uuid}")
-def delete_machine(machine_uuid: str) -> dict:
+def delete_machine(request: Request, machine_uuid: str) -> dict:
+    user = require_user_role(request, {"admin", "super_admin"})
     with _workers_lock:
         if machine_uuid not in registered_workers:
             raise HTTPException(status_code=404, detail="Machine not found")
+        worker_tenant = _normalize_tenant_id_value(registered_workers[machine_uuid].get("tenant_id"))
+        if not _is_super_admin_user(user) and _resolve_effective_tenant_id(user) != worker_tenant:
+            raise HTTPException(status_code=403, detail="You do not have permission to manage this worker")
         del registered_workers[machine_uuid]
         _save_workers_store()
     delete_worker_db(machine_uuid)
@@ -13830,29 +15056,33 @@ except Exception as _tenant_workflow_schema_err:
 if _tenants_available:
 
     @app.post("/api/tenants", response_model=TenantRecord, status_code=201, tags=["Tenants"])
-    def tenant_create(payload: TenantCreateRequest) -> TenantRecord:
-        try:
-            return _create_tenant(payload)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+    def tenant_create(request: Request, payload: TenantCreateRequest) -> TenantRecord:
+        user = require_user_role(request, {"admin", "super_admin"})
+        if _is_super_admin_user(user):
+            raise HTTPException(status_code=403, detail="Use /api/super-admin/tenants to create tenants")
+        raise HTTPException(status_code=403, detail="Tenant admins cannot create tenants")
 
     @app.get("/api/tenants", response_model=list[TenantRecord], tags=["Tenants"])
-    def tenants_list() -> list[TenantRecord]:
-        return _list_tenants()
+    def tenants_list(request: Request) -> list[TenantRecord]:
+        user = require_user_role(request, {"admin", "teacher", "runner", "viewer"})
+        tenant = _get_tenant(_resolve_effective_tenant_id(user))
+        return [tenant] if tenant else []
 
     @app.get("/api/tenants/{tenant_id}", response_model=TenantRecord, tags=["Tenants"])
-    def tenant_get(tenant_id: str) -> TenantRecord:
-        tenant = _get_tenant(tenant_id)
+    def tenant_get(request: Request, tenant_id: str) -> TenantRecord:
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin", "teacher", "runner", "viewer"})
+        tenant = _get_tenant(safe_tenant)
         if tenant is None:
-            raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {safe_tenant}")
         return tenant
 
     @app.put("/api/tenants/{tenant_id}", response_model=TenantRecord, tags=["Tenants"])
-    def tenant_update(tenant_id: str, payload: TenantUpdateRequest) -> TenantRecord:
+    def tenant_update(request: Request, tenant_id: str, payload: TenantUpdateRequest) -> TenantRecord:
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
         try:
-            return _update_tenant(tenant_id, payload)
+            return _update_tenant(safe_tenant, payload)
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {safe_tenant}")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
@@ -14338,38 +15568,45 @@ if _tenant_templates_available:
         tags=["Tenants"],
     )
     def run_tenant_workflow_endpoint(
+        request: Request,
         tenant_id: str,
         workflow_id: str,
         input_data: TenantWorkflowRunRequest | dict[str, Any] = Body(default={}),
     ) -> TenantWorkflowRunResult:
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"runner", "teacher", "admin"})
         try:
-            return run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_id, input_data=input_data or {})
+            return run_tenant_workflow(tenant_id=safe_tenant, workflow_id=workflow_id, input_data=input_data or {})
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"Template not found: tenant={tenant_id} workflow={workflow_id}")
+            raise HTTPException(status_code=404, detail=f"Template not found: tenant={safe_tenant} workflow={workflow_id}")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
     @app.get("/api/tenant-templates", response_model=list[TemplateListItem], tags=["Tenant Templates"])
-    def tenant_templates_list() -> list[TemplateListItem]:
-        """List all tenant workflow templates."""
-        return list_templates()
+    def tenant_templates_list(request: Request) -> list[TemplateListItem]:
+        """List tenant workflow templates for the caller's tenant only."""
+        user = require_user_role(request, {"admin", "teacher", "runner", "viewer"})
+        if _is_super_admin_user(user):
+            raise HTTPException(status_code=403, detail="Use /api/super-admin/tenants/{tenant_id}/workflows")
+        return list_templates_for_tenant(_resolve_effective_tenant_id(user))
 
     @app.get("/api/tenant-templates/{tenant_id}", response_model=list[TemplateListItem], tags=["Tenant Templates"])
-    def tenant_templates_for_tenant(tenant_id: str) -> list[TemplateListItem]:
+    def tenant_templates_for_tenant(request: Request, tenant_id: str) -> list[TemplateListItem]:
         """List all workflow templates for a specific tenant."""
-        return list_templates_for_tenant(tenant_id)
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin", "teacher", "runner", "viewer"})
+        return list_templates_for_tenant(safe_tenant)
 
     @app.get(
         "/api/tenant-templates/{tenant_id}/workflows/{workflow_id}",
         response_model=TenantWorkflowTemplate,
         tags=["Tenant Templates"],
     )
-    def tenant_template_get(tenant_id: str, workflow_id: str) -> TenantWorkflowTemplate:
+    def tenant_template_get(request: Request, tenant_id: str, workflow_id: str) -> TenantWorkflowTemplate:
         """Retrieve a single tenant workflow template."""
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin", "teacher", "runner", "viewer"})
         try:
-            return _load_template(tenant_id, workflow_id)
+            return _load_template(safe_tenant, workflow_id)
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"Template not found: tenant={tenant_id} workflow={workflow_id}")
+            raise HTTPException(status_code=404, detail=f"Template not found: tenant={safe_tenant} workflow={workflow_id}")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
@@ -14379,13 +15616,14 @@ if _tenant_templates_available:
         status_code=201,
         tags=["Tenant Templates"],
     )
-    def tenant_template_create(tenant_id: str, template: TenantWorkflowTemplate) -> TenantWorkflowTemplate:
+    def tenant_template_create(request: Request, tenant_id: str, template: TenantWorkflowTemplate) -> TenantWorkflowTemplate:
         """Create a new tenant workflow template."""
-        template.tenant_id = tenant_id
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
+        template.tenant_id = safe_tenant
         save_template(template)
         if _tenants_available:
             ensure_tenant_workflow_link(
-                tenant_id=tenant_id,
+                tenant_id=safe_tenant,
                 workflow_id=template.workflow_id,
                 systems=[s.system_key for s in template.systems],
             )
@@ -14396,14 +15634,15 @@ if _tenant_templates_available:
         response_model=TenantWorkflowTemplate,
         tags=["Tenant Templates"],
     )
-    def tenant_template_update(tenant_id: str, workflow_id: str, template: TenantWorkflowTemplate) -> TenantWorkflowTemplate:
+    def tenant_template_update(request: Request, tenant_id: str, workflow_id: str, template: TenantWorkflowTemplate) -> TenantWorkflowTemplate:
         """Create or replace a tenant workflow template."""
-        template.tenant_id = tenant_id
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin"})
+        template.tenant_id = safe_tenant
         template.workflow_id = workflow_id
         save_template(template)
         if _tenants_available:
             ensure_tenant_workflow_link(
-                tenant_id=tenant_id,
+                tenant_id=safe_tenant,
                 workflow_id=workflow_id,
                 systems=[s.system_key for s in template.systems],
             )
@@ -14414,12 +15653,13 @@ if _tenant_templates_available:
         response_model=TemplateValidationResult,
         tags=["Tenant Templates"],
     )
-    def tenant_template_validate(tenant_id: str, workflow_id: str) -> TemplateValidationResult:
+    def tenant_template_validate(request: Request, tenant_id: str, workflow_id: str) -> TemplateValidationResult:
         """Run semantic validation on a stored tenant workflow template."""
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin", "teacher"})
         try:
-            template = _load_template(tenant_id, workflow_id)
+            template = _load_template(safe_tenant, workflow_id)
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"Template not found: {tenant_id}/{workflow_id}")
+            raise HTTPException(status_code=404, detail=f"Template not found: {safe_tenant}/{workflow_id}")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
         return validate_template(template)
@@ -14430,6 +15670,7 @@ if _tenant_templates_available:
         tags=["Tenant Templates"],
     )
     def tenant_template_test_identity(
+        request: Request,
         tenant_id: str,
         workflow_id: str,
         payload: IdentityScoreRequest,
@@ -14440,10 +15681,11 @@ if _tenant_templates_available:
         Provide source_record and target_contact as flat dicts using either
         generic_key names or tenant_alias names (use_aliases=true, the default).
         """
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin", "teacher"})
         try:
-            template = _load_template(tenant_id, workflow_id)
+            template = _load_template(safe_tenant, workflow_id)
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"Template not found: {tenant_id}/{workflow_id}")
+            raise HTTPException(status_code=404, detail=f"Template not found: {safe_tenant}/{workflow_id}")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
         return score_identity_match(
@@ -14459,6 +15701,7 @@ if _tenant_templates_available:
         tags=["Tenant Templates"],
     )
     def tenant_template_test_decision(
+        request: Request,
         tenant_id: str,
         workflow_id: str,
         payload: DecisionTestRequest,
@@ -14470,10 +15713,11 @@ if _tenant_templates_available:
             {"audit": {"status": "past_due", "agent_of_record": true}}
         Returns the first matching rule and the action_key it selects.
         """
+        _, safe_tenant = _require_tenant_scoped_role(request, tenant_id, {"admin", "teacher"})
         try:
-            template = _load_template(tenant_id, workflow_id)
+            template = _load_template(safe_tenant, workflow_id)
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"Template not found: {tenant_id}/{workflow_id}")
+            raise HTTPException(status_code=404, detail=f"Template not found: {safe_tenant}/{workflow_id}")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
         return decide_next_action(template, payload.audit_context)
@@ -14833,16 +16077,24 @@ def get_recovery_timeline_analytics(
 @app.get("/worker/tasks/next", response_model=TaskRecord | None)
 def get_next_task(machine_uuid: str):
     with _workers_lock:
-        known_worker = machine_uuid in registered_workers
-    if not known_worker:
+        worker = registered_workers.get(machine_uuid)
+    if worker is None:
         raise HTTPException(status_code=400, detail="Worker not registered")
+
+    worker_tenant_id = _normalize_tenant_id_value(worker.get("tenant_id"))
+    _require_active_tenant(worker_tenant_id)
 
     for task in tasks:
         if task["status"] == "queued":
+            task_tenant_id = _normalize_tenant_id_value(task.get("tenant_id") or (task.get("payload") or {}).get("tenant_id"))
+            if task_tenant_id != worker_tenant_id:
+                continue
+
             target_machine_uuid = str((task.get("payload") or {}).get("target_machine_uuid") or "").strip()
             if target_machine_uuid and target_machine_uuid != machine_uuid:
                 continue
 
+            task["tenant_id"] = task_tenant_id
             task["status"] = "assigned"
             task["assigned_machine_uuid"] = machine_uuid
             task["updated_at"] = datetime.utcnow().isoformat()
@@ -14856,7 +16108,7 @@ def get_next_task(machine_uuid: str):
             else:
                 _append_task_log(task, f"Task assigned to machine_uuid={machine_uuid}")
             save_task_db(task)
-            logger.info("Task assigned: id=%s machine_uuid=%s", task["id"], machine_uuid)
+            logger.info("Task assigned: id=%s machine_uuid=%s tenant_id=%s", task["id"], machine_uuid, worker_tenant_id)
             return TaskRecord(**task)
 
     return None
