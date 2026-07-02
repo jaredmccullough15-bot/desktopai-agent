@@ -11,7 +11,8 @@ applications:
             - test -n "$BILL_CORE_DASHBOARD_API_KEY" || (echo "Missing BILL_CORE_DASHBOARD_API_KEY in Amplify environment variables" && exit 1)
             - rm -f .env.production
             - env | grep -e '^BILL_CORE_DASHBOARD_API_KEY=' >> .env.production
-            - env | grep -e '^BILL_CORE_API_BASE=' >> .env.production || true
+            - echo "BILL_CORE_API_BASE=http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com" >> .env.production
+            - echo "NEXT_PUBLIC_API_BASE=http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com" >> .env.production
             - npm run build
       artifacts:
         baseDirectory: .next

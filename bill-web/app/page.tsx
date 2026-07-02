@@ -871,7 +871,8 @@ type TeachOverlayQuestionResponse = {
   settings?: TeachOverlaySettings;
 };
 
-const NEXT_PUBLIC_API_BASE_DEFAULT = "https://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
+const NEXT_PUBLIC_API_BASE_DEFAULT = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
+const DEPRECATED_BACKEND_HOSTS = new Set(["api.bill-core.com", "core.bill-core.com"]);
 const COMMAND_CENTER_VOICE_PREF_KEY = "bill.command-center.voice.enabled";
 const COMMAND_CENTER_AUTO_SUBMIT_PREF_KEY = "bill.command-center.voice.autoSubmit.enabled";
 const TEACHING_STARTUP_POLL_TIMEOUT_MS = 60000;
@@ -879,7 +880,23 @@ const TEACHING_STARTUP_MAX_POLL_ERRORS = 5;
 
 const getConfiguredApiBase = (): string => {
   const configured = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim();
-  return configured ? configured.replace(/\/$/, "") : NEXT_PUBLIC_API_BASE_DEFAULT;
+  if (!configured) {
+    return NEXT_PUBLIC_API_BASE_DEFAULT;
+  }
+
+  const sanitized = configured.replace(/\/$/, "");
+  try {
+    const hostname = new URL(sanitized).hostname.toLowerCase();
+    if (DEPRECATED_BACKEND_HOSTS.has(hostname)) {
+      console.warn(`[auth-proxy] Ignoring deprecated NEXT_PUBLIC_API_BASE=${sanitized}`);
+      return NEXT_PUBLIC_API_BASE_DEFAULT;
+    }
+  } catch {
+    // Ignore invalid override values and use the default.
+    return NEXT_PUBLIC_API_BASE_DEFAULT;
+  }
+
+  return sanitized;
 };
 
 const getApiBase = (): string => {

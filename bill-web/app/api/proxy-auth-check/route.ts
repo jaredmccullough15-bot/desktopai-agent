@@ -4,6 +4,16 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const DEFAULT_BACKEND = "http://bill-core-env.eba-e7menpcq.us-east-2.elasticbeanstalk.com";
+const DEPRECATED_BACKEND_HOSTS = new Set(["api.bill-core.com", "core.bill-core.com"]);
+
+function isDeprecatedBackend(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return DEPRECATED_BACKEND_HOSTS.has(hostname);
+  } catch {
+    return false;
+  }
+}
 
 function resolveBackendBase(): string {
   const candidates = [
@@ -19,6 +29,9 @@ function resolveBackendBase(): string {
     try {
       const parsed = new URL(value);
       if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        if (isDeprecatedBackend(value)) {
+          continue;
+        }
         return value;
       }
     } catch {
