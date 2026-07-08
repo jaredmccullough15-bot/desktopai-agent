@@ -235,13 +235,19 @@ class BatchRunRowRecord(BaseModel):
     mapped: dict[str, str] = Field(default_factory=dict)
     required_missing: list[str] = Field(default_factory=list)
     status: str
-    payment_status: Literal["good", "bad", "needs_review"]
+    payment_status: Literal["pending", "good", "bad", "needs_review"]
     decision_reason: str
     paid_through_date: str | None = None
     current_month_end_date: str | None = None
+    client_found: bool | None = None
+    match_confidence: str | None = None
+    policy_status: str | None = None
+    evidence: str | None = None
     child_task_id: str | None = None
     task_id: str | None = None
     child_task_status: str | None = None
+    followup_task_id: str | None = None
+    followup_task_status: str | None = None
     assigned_machine_uuid: str | None = None
     worker_name: str | None = None
     matched_client_name: str | None = None

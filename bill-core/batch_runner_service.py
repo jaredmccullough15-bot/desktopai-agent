@@ -42,6 +42,14 @@ def _normalize_cell(value: object) -> str:
     return str(value).strip()
 
 
+def _coalesce_non_empty(*values: object) -> str:
+    for value in values:
+        candidate = str(value or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
 def _is_blank_row(values: list[str]) -> bool:
     return all(not str(value or "").strip() for value in values)
 
@@ -128,12 +136,16 @@ def validate_mapping(headers: list[str], mapping: dict[str, Any], required_field
     missing: list[str] = []
     invalid: list[str] = []
 
+    for field_name, target in normalized_mapping.items():
+        if target not in available and field_name not in invalid:
+            invalid.append(field_name)
+
     for field in required_fields:
         target = normalized_mapping.get(field)
         if not target:
             missing.append(field)
             continue
-        if target not in available:
+        if target not in available and field not in invalid:
             invalid.append(field)
 
     valid = not missing and not invalid
@@ -213,20 +225,38 @@ def build_batch_rows(
     normalized_mapping = _normalize_column_mapping(mapping)
     rows: list[dict[str, Any]] = []
 
-    required_target_keys = ["member_name", "member_id", "paid_through_date"]
-
     for index, source_row in enumerate(parsed_rows):
         mapped: dict[str, str] = {}
         for target_key, source_header in normalized_mapping.items():
             mapped[target_key] = str(source_row.get(source_header, "")).strip()
 
-        required_missing = [
-            key
-            for key in required_target_keys
-            if not str(mapped.get(key) or "").strip()
-        ]
+        client_name = _coalesce_non_empty(mapped.get("client_name"), mapped.get("member_name"))
+        first_name = str(mapped.get("first_name") or "").strip()
+        last_name = str(mapped.get("last_name") or "").strip()
+        full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+        if client_name:
+            mapped["client_name"] = client_name
+        elif full_name:
+            mapped["client_name"] = full_name
 
-        decision = evaluate_paid_through_date(mapped.get("paid_through_date"))
+        # Preserve the legacy member_name field so the existing dashboard UI can
+        # still show a client name without requiring a separate migration step.
+        if not str(mapped.get("member_name") or "").strip():
+            mapped["member_name"] = mapped.get("client_name") or full_name
+
+        required_missing: list[str] = []
+        if not mapped.get("client_name") and not (first_name and last_name):
+            required_missing.append("client_name_or_first_name_and_last_name")
+
+        paid_through_value = str(mapped.get("paid_through_date") or "").strip()
+        if paid_through_value:
+            decision = evaluate_paid_through_date(paid_through_value)
+        else:
+            decision = evaluate_paid_through_date(None)
+            decision["payment_status"] = "pending"
+            decision["decision_reason"] = "awaiting_lookup"
+            decision["paid_through_date"] = None
+
         initial_status = "ready" if not required_missing else "invalid"
 
         rows.append(
@@ -241,8 +271,14 @@ def build_batch_rows(
                 "decision_reason": decision.get("decision_reason"),
                 "paid_through_date": decision.get("paid_through_date"),
                 "current_month_end_date": decision.get("current_month_end_date"),
+                "client_found": None,
+                "match_confidence": None,
+                "policy_status": None,
+                "evidence": None,
                 "child_task_id": None,
                 "child_task_status": None,
+                "followup_task_id": None,
+                "followup_task_status": None,
                 "error": None,
                 "created_at": _iso_now(),
                 "updated_at": _iso_now(),
@@ -290,6 +326,8 @@ def row_filter_status(row: dict[str, Any]) -> str:
         return "skipped"
     if status == "failed":
         return "failed"
+    if payment == "pending":
+        return "pending"
     if payment == "needs_review":
         return "needs_review"
     if payment == "good":

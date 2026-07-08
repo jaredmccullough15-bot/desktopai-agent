@@ -4,6 +4,7 @@ import { useState } from "react";
 import RecoveryPanel from "./RecoveryPanel";
 import RecoveryAnalyticsPanel from "./RecoveryAnalyticsPanel";
 import BillVoiceControls from "./BillVoiceControls";
+import { BatchRunnerTab } from "./BatchRunnerTab";
 import type { useBillVoice } from "../hooks/useBillVoice";
 
 type BillVoiceHandle = ReturnType<typeof useBillVoice>;
@@ -155,6 +156,7 @@ function shortTaskId(id?: string): string {
 
 const TABS = [
   "Advanced Tools",
+  "Batch Runner",
   "Recovery",
   "Analytics",
   "Voice",
@@ -348,6 +350,10 @@ export function AdvancedToolsTabs(props: AdvancedToolsTabsProps) {
           <p className="text-sm text-slate-400">
             Advanced system tools and analytics. Click a tab above to access.
           </p>
+        )}
+
+        {activeTab === "Batch Runner" && (
+          <BatchRunnerTab machines={props.machines} />
         )}
 
         {activeTab === "Recovery" && (

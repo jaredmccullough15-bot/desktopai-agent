@@ -120,10 +120,13 @@ async function proxyRequest(
     );
   }
 
-  let body: string | undefined;
+  let body: BodyInit | undefined;
   if (method !== "GET" && method !== "DELETE") {
     try {
-      body = await request.text();
+      const raw = await request.arrayBuffer();
+      if (raw.byteLength > 0) {
+        body = raw;
+      }
     } catch {
       /* no body */
     }

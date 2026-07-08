@@ -46,7 +46,20 @@ from timeout_recovery import (
     get_or_create_recovery_state,
     clear_recovery_state,
 )
-from db import SessionLocal
+from batch_runner_service import (
+    BatchRunnerStore,
+    build_batch_rows,
+    build_batch_run_record,
+    compute_dashboard_summary,
+    derive_batch_status,
+    parse_spreadsheet_upload,
+    row_filter_status,
+    summarize_rows,
+    to_csv_bytes,
+    validate_mapping,
+)
+from ci_checks_decision import evaluate_paid_through_date
+from db import SessionLocal, get_database_mode_summary
 from auth import enforce_request_auth
 from schemas import (
     BrainCommandRequest,
@@ -4823,7 +4836,7 @@ async def create_task(payload: TaskCreateRequest, request: Request) -> TaskCreat
 async def upload_batch_run(
     request: Request,
     spreadsheet: UploadFile = File(...),
-    workflow_name: str = Form("ci_checks"),
+    workflow_name: str = Form("CI Check - Single Client Lookup"),
     target_machine_uuid: str = Form(...),
     column_mapping: str | None = Form(None),
 ) -> BatchRunUploadResponse:
@@ -4866,12 +4879,15 @@ async def upload_batch_run(
 
     required_fields = _batch_required_fields(workflow_name)
     lower_headers = {str(h).strip().lower() for h in headers}
-    for field_name in required_fields:
+    for field_name in _batch_supported_fields(workflow_name):
         if field_name not in mapping_payload and field_name in lower_headers:
             mapping_payload[field_name] = field_name
 
     mapping_validation = validate_mapping(headers, mapping_payload, required_fields)
     normalized_mapping = dict(mapping_validation.get("normalized_mapping") or {})
+    identity_mapping_errors = _batch_identity_mapping_errors(normalized_mapping)
+    mapping_validation["missing_required_fields"] = identity_mapping_errors
+    mapping_validation["valid"] = bool(mapping_validation.get("valid")) and not identity_mapping_errors
 
     tenant_id = _effective_tenant_for_batch(user, worker)
     rows = build_batch_rows(
@@ -4890,6 +4906,12 @@ async def upload_batch_run(
         row.setdefault("matched_client_name", None)
         row.setdefault("keap_task_created", False)
         row.setdefault("keap_task_id", None)
+        row.setdefault("client_found", None)
+        row.setdefault("match_confidence", None)
+        row.setdefault("policy_status", None)
+        row.setdefault("evidence", None)
+        row.setdefault("followup_task_id", None)
+        row.setdefault("followup_task_status", None)
         row.setdefault("notes", None)
         row.setdefault("row_started_at", None)
         row.setdefault("completed_at", None)
@@ -4901,7 +4923,7 @@ async def upload_batch_run(
         created_by_user_id=str(user.get("id") or "").strip() or None,
         created_by_name=str(user.get("name") or user.get("email") or "").strip() or None,
         tenant_id=tenant_id,
-        workflow_name=str(workflow_name or "ci_checks").strip() or "ci_checks",
+        workflow_name=str(workflow_name or "CI Check - Single Client Lookup").strip() or "CI Check - Single Client Lookup",
         target_machine_uuid=explicit_target_uuid,
         filename=spreadsheet.filename,
         headers=headers,
@@ -5023,7 +5045,9 @@ def start_batch_run(request: Request, batch_id: str) -> BatchRunStartResponse:
         raise HTTPException(status_code=409, detail="Batch run is canceled")
 
     mapping = dict(batch.get("mapping") or {})
-    validation = validate_mapping(batch.get("headers") or [], mapping, _batch_required_fields(str(batch.get("workflow_name") or "ci_checks")))
+    validation = validate_mapping(batch.get("headers") or [], mapping, _batch_required_fields(str(batch.get("workflow_name") or "CI Check - Single Client Lookup")))
+    validation["missing_required_fields"] = _batch_identity_mapping_errors(dict(validation.get("normalized_mapping") or {}))
+    validation["valid"] = bool(validation.get("valid")) and not bool(validation.get("missing_required_fields"))
     if not validation.get("valid"):
         raise HTTPException(status_code=422, detail=f"Batch mapping invalid: {validation}")
 
@@ -5334,9 +5358,127 @@ def _effective_tenant_for_batch(user: dict[str, Any] | None, worker: dict[str, A
 
 
 def _batch_required_fields(workflow_name: str) -> list[str]:
-    # CI Checks currently requires these canonical mapped fields.
+    # CI Checks row validity is identity-based (client_name OR first_name+last_name),
+    # so mapping-level validation is handled separately.
     _ = workflow_name
-    return ["member_name", "member_id", "paid_through_date"]
+    return []
+
+
+def _batch_supported_fields(workflow_name: str) -> list[str]:
+    _ = workflow_name
+    return [
+        "client_name",
+        "first_name",
+        "last_name",
+        "dob",
+        "keap_id",
+        "policy_id",
+        "member_id",
+        "member_name",
+        "phone",
+        "email",
+        "notes",
+        "paid_through_date",
+    ]
+
+
+def _batch_identity_mapping_errors(mapping: dict[str, str]) -> list[str]:
+    has_client_name = bool(str(mapping.get("client_name") or mapping.get("member_name") or "").strip())
+    has_first_last = bool(str(mapping.get("first_name") or "").strip()) and bool(str(mapping.get("last_name") or "").strip())
+    if has_client_name or has_first_last:
+        return []
+    return ["client_name or first_name+last_name"]
+
+
+def _row_client_name(row: dict[str, Any]) -> str:
+    mapped = dict(row.get("mapped") or {})
+    client_name = str(mapped.get("client_name") or mapped.get("member_name") or "").strip()
+    if client_name:
+        return client_name
+    first_name = str(mapped.get("first_name") or "").strip()
+    last_name = str(mapped.get("last_name") or "").strip()
+    return " ".join(part for part in (first_name, last_name) if part).strip()
+
+
+def _row_has_high_confidence_match(row: dict[str, Any]) -> bool:
+    confidence = str(row.get("match_confidence") or "").strip().lower()
+    if confidence not in {"high", "exact", "confident"}:
+        return False
+    if row.get("client_found") is False:
+        return False
+    return bool(str(row.get("matched_client_name") or _row_client_name(row)).strip())
+
+
+def _apply_lookup_decision(row: dict[str, Any]) -> None:
+    status = str(row.get("status") or "").strip().lower()
+    if str(row.get("followup_task_status") or "").strip().lower() in {"queued", "assigned", "running", "in_progress"}:
+        return
+
+    confidence = str(row.get("match_confidence") or "").strip().lower()
+    if status == "completed":
+        if row.get("client_found") is False:
+            row["payment_status"] = "needs_review"
+            row["decision_reason"] = "client_not_found"
+            return
+        if confidence and confidence not in {"high", "exact", "confident"}:
+            row["payment_status"] = "needs_review"
+            row["decision_reason"] = "uncertain_match"
+            return
+
+    paid_through_date = str(row.get("paid_through_date") or "").strip()
+    if paid_through_date:
+        decision = evaluate_paid_through_date(paid_through_date)
+        row["paid_through_date"] = decision.get("paid_through_date")
+        row["current_month_end_date"] = decision.get("current_month_end_date")
+        row["payment_status"] = decision.get("payment_status")
+        row["decision_reason"] = decision.get("decision_reason")
+        return
+
+    if status in {"ready", "queued", "assigned", "running", "in_progress"}:
+        row["payment_status"] = "pending"
+        row["decision_reason"] = "awaiting_lookup"
+        return
+
+    row["payment_status"] = "needs_review"
+    row["decision_reason"] = "missing_or_unparseable_date"
+
+
+def _queue_keap_followup_task(batch: dict[str, Any], row: dict[str, Any]) -> str:
+    tenant_id = str(batch.get("tenant_id") or "default").strip() or "default"
+    target_machine_uuid = str(batch.get("target_machine_uuid") or "").strip()
+    worker_name = str(batch.get("target_worker_name") or row.get("worker_name") or "").strip()
+    mapped = dict(row.get("mapped") or {})
+    client_name = _row_client_name(row)
+    notes = str(row.get("notes") or "").strip()
+    payload = {
+        "workflow_id": "Create Keap Payment Follow-Up Task",
+        "workflow_name": "Create Keap Payment Follow-Up Task",
+        "task_type": "Create Keap Payment Follow-Up Task",
+        "tenant_id": tenant_id,
+        "target_machine_uuid": target_machine_uuid,
+        "selected_worker_uuid": target_machine_uuid,
+        "selected_worker_name": worker_name,
+        "assignment_source": "admin_selected_worker",
+        "client_name": client_name,
+        "keap_id": str(mapped.get("keap_id") or "").strip(),
+        "paid_through_date": row.get("paid_through_date"),
+        "payment_status": row.get("payment_status"),
+        "notes": notes,
+        "metadata": {
+            "selected_worker_uuid": target_machine_uuid,
+            "target_machine_uuid": target_machine_uuid,
+            "selected_worker_name": worker_name,
+            "assignment_source": "admin_selected_worker",
+            "source_batch_id": batch.get("batch_id"),
+            "source_row_id": row.get("row_id"),
+        },
+    }
+    queued = run_tenant_workflow(
+        tenant_id=tenant_id,
+        workflow_id="Create Keap Payment Follow-Up Task",
+        input_data=payload,
+    ).queued_task
+    return queued.id
 
 
 def _sync_batch_rows_with_tasks(batch: dict[str, Any]) -> dict[str, Any]:
@@ -5399,6 +5541,42 @@ def _sync_batch_rows_with_tasks(batch: dict[str, Any]) -> dict[str, Any]:
             changed = True
             row_changed = True
 
+        task_paid_through = str(task_result.get("paid_through_date") or "").strip() or None
+        if task_paid_through != row.get("paid_through_date"):
+            row["paid_through_date"] = task_paid_through
+            changed = True
+            row_changed = True
+
+        task_policy_status = str(task_result.get("policy_status") or "").strip() or None
+        if task_policy_status != row.get("policy_status"):
+            row["policy_status"] = task_policy_status
+            changed = True
+            row_changed = True
+
+        task_match_confidence = str(task_result.get("match_confidence") or "").strip() or None
+        if task_match_confidence != row.get("match_confidence"):
+            row["match_confidence"] = task_match_confidence
+            changed = True
+            row_changed = True
+
+        task_client_found = task_result.get("client_found") if "client_found" in task_result else row.get("client_found")
+        if task_client_found != row.get("client_found"):
+            row["client_found"] = task_client_found
+            changed = True
+            row_changed = True
+
+        task_notes = str(task_result.get("notes") or "").strip() or None
+        if task_notes != row.get("notes"):
+            row["notes"] = task_notes
+            changed = True
+            row_changed = True
+
+        task_evidence = str(task_result.get("evidence") or task_result.get("screenshot") or "").strip() or None
+        if task_evidence != row.get("evidence"):
+            row["evidence"] = task_evidence
+            changed = True
+            row_changed = True
+
         if not row.get("row_started_at") and task.get("started_at"):
             row["row_started_at"] = task.get("started_at")
             changed = True
@@ -5437,6 +5615,62 @@ def _sync_batch_rows_with_tasks(batch: dict[str, Any]) -> dict[str, Any]:
                 changed = True
                 row_changed = True
 
+        _apply_lookup_decision(row)
+
+        if task_status == "completed" and row.get("payment_status") == "bad" and _row_has_high_confidence_match(row):
+            followup_task_id = str(row.get("followup_task_id") or "").strip()
+            if not followup_task_id and not bool(row.get("keap_task_created")):
+                try:
+                    queued_followup_id = _queue_keap_followup_task(batch, row)
+                    row["followup_task_id"] = queued_followup_id
+                    row["followup_task_status"] = "queued"
+                    row["status"] = "queued"
+                    changed = True
+                    row_changed = True
+                except Exception as exc:
+                    row["payment_status"] = "needs_review"
+                    row["decision_reason"] = "keap_followup_queue_failed"
+                    row["error"] = f"keap_followup_queue_failed: {exc.__class__.__name__}: {exc}"
+                    changed = True
+                    row_changed = True
+
+        followup_task_id = str(row.get("followup_task_id") or "").strip()
+        if followup_task_id:
+            followup_task = _task_by_id(followup_task_id)
+            if isinstance(followup_task, dict):
+                followup_status = str(followup_task.get("status") or "").strip().lower() or None
+                if followup_status != row.get("followup_task_status"):
+                    row["followup_task_status"] = followup_status
+                    changed = True
+                    row_changed = True
+
+                followup_result = dict(followup_task.get("result_json") or {})
+                followup_keap_task_id = str(followup_result.get("keap_task_id") or followup_result.get("crm_task_id") or "").strip() or None
+                if followup_keap_task_id and followup_keap_task_id != row.get("keap_task_id"):
+                    row["keap_task_id"] = followup_keap_task_id
+                    changed = True
+                    row_changed = True
+                if followup_keap_task_id or bool(followup_result.get("keap_task_created")):
+                    if not bool(row.get("keap_task_created")):
+                        row["keap_task_created"] = True
+                        changed = True
+                        row_changed = True
+
+                if followup_status in {"queued", "assigned", "running", "in_progress"}:
+                    row["status"] = followup_status
+                    changed = True
+                    row_changed = True
+                elif followup_status in {"completed", "failed", "canceled", "cancelled"}:
+                    row["status"] = "canceled" if followup_status in {"canceled", "cancelled"} else followup_status
+                    changed = True
+                    row_changed = True
+                    if followup_status == "failed":
+                        followup_error = str(followup_task.get("error") or "").strip() or None
+                        if followup_error != row.get("error"):
+                            row["error"] = followup_error
+                            changed = True
+                            row_changed = True
+
         if row_changed:
             row["updated_at"] = now_iso
 
@@ -5457,12 +5691,13 @@ def _sync_batch_rows_with_tasks(batch: dict[str, Any]) -> dict[str, Any]:
 
 
 def _queue_batch_row_task(batch: dict[str, Any], row: dict[str, Any]) -> str:
-    workflow_name = str(batch.get("workflow_name") or "ci_checks")
+    workflow_name = str(batch.get("workflow_name") or "CI Check - Single Client Lookup")
     target_machine_uuid = str(batch.get("target_machine_uuid") or "").strip()
     tenant_id = str(batch.get("tenant_id") or "default").strip() or "default"
 
     mapped = dict(row.get("mapped") or {})
     worker_name = str(batch.get("target_worker_name") or row.get("worker_name") or "").strip()
+    client_name = _row_client_name(row)
     source_payload = {
         "workflow_id": workflow_name,
         "workflow_name": workflow_name,
@@ -5472,20 +5707,37 @@ def _queue_batch_row_task(batch: dict[str, Any], row: dict[str, Any]) -> str:
         "selected_worker_uuid": target_machine_uuid,
         "selected_worker_name": worker_name,
         "assignment_source": "admin_selected_worker",
+        "client_name": client_name,
+        "first_name": str(mapped.get("first_name") or "").strip(),
+        "last_name": str(mapped.get("last_name") or "").strip(),
+        "dob": str(mapped.get("dob") or "").strip(),
+        "keap_id": str(mapped.get("keap_id") or "").strip(),
+        "policy_id": str(mapped.get("policy_id") or "").strip(),
+        "member_id": str(mapped.get("member_id") or "").strip(),
+        "phone": str(mapped.get("phone") or "").strip(),
+        "email": str(mapped.get("email") or "").strip(),
+        "notes": str(mapped.get("notes") or row.get("notes") or "").strip(),
+        "batch_id": batch.get("batch_id"),
+        "row_number": row.get("row_number"),
         "source_record": {
             "source_system": "spreadsheet",
             "external_contact_id": mapped.get("member_id") or "",
-            "client_name": mapped.get("member_name") or "",
+            "client_name": client_name,
             "policy_number": mapped.get("policy_number") or "",
             "raw": dict(row.get("source") or {}),
         },
         "target_contact": {
             "target_system": "keap",
-            "external_contact_id": mapped.get("member_id") or "",
-            "full_name": mapped.get("member_name") or "",
+            "external_contact_id": mapped.get("keap_id") or mapped.get("member_id") or "",
+            "full_name": client_name,
             "raw": {
-                "member_name": mapped.get("member_name"),
+                "client_name": client_name,
+                "first_name": mapped.get("first_name"),
+                "last_name": mapped.get("last_name"),
                 "member_id": mapped.get("member_id"),
+                "keap_id": mapped.get("keap_id"),
+                "policy_id": mapped.get("policy_id"),
+                "dob": mapped.get("dob"),
                 "paid_through_date": row.get("paid_through_date"),
                 "payment_status": row.get("payment_status"),
             },
@@ -5504,7 +5756,7 @@ def _queue_batch_row_task(batch: dict[str, Any], row: dict[str, Any]) -> str:
             "assignment_source": "admin_selected_worker",
         },
         "requires_human_approval": False,
-        "dry_run": str(row.get("payment_status") or "") == "needs_review",
+        "dry_run": False,
     }
 
     queued = run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_name, input_data=source_payload).queued_task

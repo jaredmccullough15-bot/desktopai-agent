@@ -14,6 +14,8 @@ logger = logging.getLogger("bill-core.build-eb-zip")
 
 REQUIRED_ROOT_FILES = [
     "main.py",
+    "batch_runner_service.py",  # Batch Dashboard: batch parsing/store/export helpers
+    "ci_checks_decision.py",  # Batch Dashboard: CI checks paid-through decision helper
     "user_auth.py",
     "teaching_copilot_service.py",  # Teaching Co-Pilot API/service layer
     "Procfile",
@@ -45,6 +47,7 @@ REQUIRED_ROOT_FILES = [
     "teaching_reasoning_service.py",  # Teaching Mode deterministic reasoning layer
     "auth.py",  # Wave 1 Priority 3: API authentication and worker authorization
     "structured_logging.py",  # Observability helper used by runtime logging
+    "worker_releases.json",  # Worker release metadata (active release/version mapping)
 ]
 
 REQUIRED_DIRS = [
@@ -53,6 +56,7 @@ REQUIRED_DIRS = [
     "conversational",
     "worker-packages",  # Worker Download Center package files
     "extension-packages",  # Chrome Extension Download Center package files
+    ".ebextensions",  # EB environment configuration
     ".platform",  # EB platform nginx/custom hooks
 ]
 
@@ -61,6 +65,10 @@ EXCLUDE_DIR_NAMES = {
     "__pycache__",
     ".venv",
     "logs",
+    "package-output",
+    "build",
+    "dist",
+    "updates",
 }
 
 EXCLUDE_FILE_NAMES = {
@@ -70,10 +78,29 @@ EXCLUDE_FILE_NAMES = {
 
 EXCLUDE_SUFFIXES = {
     ".pyc",
+    ".zip",
+    ".exe",
+    ".msi",
+    ".7z",
+    ".dmg",
+    ".pkg",
+}
+
+EXCLUDE_PATH_GLOBS = {
+    "tenant_templates/default/smart_sherpa_sync.json",
+    "tenant_templates/target-tenant/renewal-audit-copy-*.json",
 }
 
 
 def should_exclude_file(path: Path) -> bool:
+    normalized_candidates = {
+        os.path.relpath(path, BASE_DIR).replace("\\", "/"),
+        os.path.relpath(path.resolve(), BASE_DIR.resolve()).replace("\\", "/"),
+    }
+    for normalized in normalized_candidates:
+        for pattern in EXCLUDE_PATH_GLOBS:
+            if Path(normalized).match(pattern):
+                return True
     if path.name in EXCLUDE_FILE_NAMES:
         return True
     if path.suffix.lower() in EXCLUDE_SUFFIXES:

@@ -165,6 +165,178 @@ def test_batch_selected_worker_never_creates_unassigned_tasks(monkeypatch: pytes
         assert payload.get("target_machine_uuid") == "worker-a"
 
 
+def test_batch_upload_with_client_name_only_and_no_paid_through_date_is_valid(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+) -> None:
+    _login_as(client, "admin-client-name@bill.test", "admin", "tenant-a")
+    _register_worker("worker-a", "tenant-a")
+    _install_fake_run_tenant_workflow(monkeypatch)
+
+    upload = client.post(
+        "/api/batch-runs/upload",
+        data={
+            "workflow_name": "CI Check - Single Client Lookup",
+            "target_machine_uuid": "worker-a",
+            "column_mapping": '{"client_name":"client_name","member_id":"member_id"}',
+        },
+        files={
+            "spreadsheet": (
+                "ci-checks.csv",
+                "client_name,member_id\nAlice Example,001\n",
+                "text/csv",
+            )
+        },
+    )
+    assert upload.status_code == 200, upload.text
+    row = upload.json()["batch"]["rows"][0]
+    assert row["status"] == "ready"
+    assert row["payment_status"] == "pending"
+    assert row["paid_through_date"] is None
+    assert row["required_missing"] == []
+
+
+def test_batch_upload_with_first_and_last_name_only_and_no_paid_through_date_is_valid(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+) -> None:
+    _login_as(client, "admin-first-last@bill.test", "admin", "tenant-a")
+    _register_worker("worker-a", "tenant-a")
+    _install_fake_run_tenant_workflow(monkeypatch)
+
+    upload = client.post(
+        "/api/batch-runs/upload",
+        data={
+            "workflow_name": "CI Check - Single Client Lookup",
+            "target_machine_uuid": "worker-a",
+            "column_mapping": '{"first_name":"first_name","last_name":"last_name","dob":"dob"}',
+        },
+        files={
+            "spreadsheet": (
+                "ci-checks.csv",
+                "first_name,last_name,dob\nAlice,Example,01/01/1980\n",
+                "text/csv",
+            )
+        },
+    )
+    assert upload.status_code == 200, upload.text
+    row = upload.json()["batch"]["rows"][0]
+    assert row["status"] == "ready"
+    assert row["payment_status"] == "pending"
+    assert row["required_missing"] == []
+    assert row["mapped"]["client_name"] == "Alice Example"
+
+
+def test_batch_start_payload_includes_identity_fields(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    _login_as(client, "admin-identity-payload@bill.test", "admin", "tenant-a")
+    _register_worker("worker-a", "tenant-a")
+
+    captured: list[dict[str, Any]] = []
+
+    def _fake_run_tenant_workflow(tenant_id: str, workflow_id: str, input_data: dict[str, Any]):
+        captured.append({
+            "tenant_id": tenant_id,
+            "workflow_id": workflow_id,
+            "input_data": dict(input_data),
+        })
+        payload = dict(input_data)
+        payload.setdefault("tenant_id", tenant_id)
+        payload.setdefault("workflow_id", workflow_id)
+        payload.setdefault("workflow_name", workflow_id)
+        queued_task = m._create_task_record(payload)
+        return SimpleNamespace(queued_task=queued_task)
+
+    monkeypatch.setattr(m, "run_tenant_workflow", _fake_run_tenant_workflow)
+
+    upload = client.post(
+        "/api/batch-runs/upload",
+        data={
+            "workflow_name": "CI Check - Single Client Lookup",
+            "target_machine_uuid": "worker-a",
+            "column_mapping": '{"client_name":"client_name","dob":"dob","keap_id":"keap_id","policy_id":"policy_id","member_id":"member_id","notes":"notes"}',
+        },
+        files={
+            "spreadsheet": (
+                "ci-checks.csv",
+                "client_name,dob,keap_id,policy_id,member_id,notes\nAlice Example,01/01/1980,KEAP-1,POL-1,M-1,Check this client\n",
+                "text/csv",
+            )
+        },
+    )
+    assert upload.status_code == 200, upload.text
+    batch_id = upload.json()["batch"]["batch_id"]
+
+    start = client.post(f"/api/batch-runs/{batch_id}/start")
+    assert start.status_code == 200, start.text
+    assert captured
+    payload = captured[0]["input_data"]
+    assert captured[0]["workflow_id"] == "CI Check - Single Client Lookup"
+    assert payload["client_name"] == "Alice Example"
+    assert payload["dob"] == "01/01/1980"
+    assert payload["keap_id"] == "KEAP-1"
+    assert payload["policy_id"] == "POL-1"
+    assert payload["member_id"] == "M-1"
+    assert payload["notes"] == "Check this client"
+    assert payload["batch_id"] == batch_id
+    assert payload["row_number"] == 2
+
+
+def test_batch_decision_is_deferred_until_worker_result_when_paid_through_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+) -> None:
+    _login_as(client, "admin-deferred@bill.test", "admin", "tenant-a")
+    _register_worker("worker-a", "tenant-a")
+    _install_fake_run_tenant_workflow(monkeypatch)
+
+    upload = client.post(
+        "/api/batch-runs/upload",
+        data={
+            "workflow_name": "CI Check - Single Client Lookup",
+            "target_machine_uuid": "worker-a",
+            "column_mapping": '{"client_name":"client_name"}',
+        },
+        files={
+            "spreadsheet": (
+                "ci-checks.csv",
+                "client_name\nAlice Example\n",
+                "text/csv",
+            )
+        },
+    )
+    assert upload.status_code == 200, upload.text
+    batch_id = upload.json()["batch"]["batch_id"]
+
+    start = client.post(f"/api/batch-runs/{batch_id}/start")
+    assert start.status_code == 200, start.text
+
+    before = client.get(f"/api/batch-runs/{batch_id}/rows")
+    assert before.status_code == 200, before.text
+    before_row = before.json()["rows"][0]
+    assert before_row["payment_status"] == "pending"
+    assert before_row["decision_reason"] == "awaiting_lookup"
+
+    queued_task_id = before_row["task_id"]
+    task = next((item for item in m.tasks if item.get("id") == queued_task_id), None)
+    assert task is not None
+    task["status"] = "completed"
+    task["completed_at"] = "2026-07-08T15:00:00Z"
+    task["result_json"] = {
+        "client_found": True,
+        "matched_client_name": "Alice Example",
+        "match_confidence": "high",
+        "paid_through_date": "2030-01-31",
+        "policy_status": "active",
+    }
+
+    after = client.get(f"/api/batch-runs/{batch_id}/rows")
+    assert after.status_code == 200, after.text
+    after_row = after.json()["rows"][0]
+    assert after_row["paid_through_date"] == "2030-01-31"
+    assert after_row["payment_status"] == "good"
+    assert after_row["decision_reason"] == "paid_through_on_or_after_month_end"
+
+
 def test_batch_upload_denies_cross_tenant_worker_access(client: TestClient) -> None:
     _login_as(client, "admin-b@bill.test", "admin", "tenant-b")
     _register_worker("worker-a", "tenant-a")
