@@ -18,6 +18,23 @@ __pycache__/
 # Package output (worker build artifacts)
 package-output/
 
+# Runtime/generated data and deploy artifacts
+bill-core/.data/
+bill-core/.data/batch-runs/
+bill-core/.data/tenants_store.json
+bill-core-deploy.zip
+bill-worker-*.zip
+logs/
+screenshots/
+downloads/
+updates/
+
+# Runtime tenant template copies
+bill-core/tenant_templates/default/smart_sherpa_sync.json
+tenant_templates/default/smart_sherpa_sync.json
+bill-core/tenant_templates/target-tenant/renewal-audit-copy-*.json
+tenant_templates/target-tenant/renewal-audit-copy-*.json
+
 # Archived / disabled files
 *.disabled
 

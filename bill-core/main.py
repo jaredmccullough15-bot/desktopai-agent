@@ -25,7 +25,7 @@ from uuid import uuid4
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from cryptography.fernet import Fernet, InvalidToken
 
 from error_explainer import (
@@ -141,6 +141,14 @@ from schemas import (
     TeachingSessionReviewStepSummary,
     TeachingSessionReviewSummary,
     TeachingSessionReviewResponse,
+    BatchRunRecord,
+    BatchRunRowRecord,
+    BatchRunRowsResponse,
+    BatchRunUploadResponse,
+    BatchRunStartResponse,
+    BatchRunCancelResponse,
+    BatchRunRetryResponse,
+    BatchRunListResponse,
 )
 from user_auth import (
     build_user_record,
@@ -950,6 +958,7 @@ NAVIGATION_RULES_PATH = _resolve_data_file_path("BILL_CORE_NAVIGATION_RULES", "n
 KNOWLEDGE_CENTER_PATH = _resolve_data_file_path("BILL_CORE_KNOWLEDGE_CENTER", "knowledge_center.json")
 TENANT_PROFILES_PATH = _resolve_data_file_path("BILL_CORE_TENANT_PROFILES", "tenant_profiles.json")
 GLOBAL_TEMPLATE_BUNDLES_PATH = _resolve_data_file_path("BILL_CORE_TEMPLATE_BUNDLES", "global_template_bundles.json")
+BATCH_RUNS_DIR = _resolve_data_dir_path("BILL_CORE_BATCH_RUNS_DIR", "batch-runs")
 
 _migrate_legacy_file(WORKFLOWS_CONFIG_PATH, _BILL_CORE_ROOT / "workflows_registry.json")
 _migrate_legacy_file(BRAIN_AUDIT_PATH, _BILL_CORE_ROOT / "brain_command_audit.json")
@@ -965,6 +974,8 @@ _migrate_legacy_file(NAVIGATION_RULES_PATH, _BILL_CORE_ROOT / "navigation_rules_
 _migrate_legacy_file(KNOWLEDGE_CENTER_PATH, _BILL_CORE_ROOT / "knowledge_center.json")
 _migrate_legacy_file(TENANT_PROFILES_PATH, _BILL_CORE_ROOT / "tenant_profiles.json")
 _migrate_legacy_file(GLOBAL_TEMPLATE_BUNDLES_PATH, _BILL_CORE_ROOT / "global_template_bundles.json")
+
+_batch_runner_store = BatchRunnerStore(BATCH_RUNS_DIR)
 
 DEFAULT_WORKFLOW_RECORDS: list[dict[str, Any]] = [
     {
@@ -4241,13 +4252,26 @@ def _create_task_record(normalized_payload: dict) -> TaskCreateResponse:
     task_tenant_id = _normalize_tenant_id_value(normalized_payload.get("tenant_id"))
     normalized_payload["tenant_id"] = task_tenant_id
 
+    target_machine_uuid = str(normalized_payload.get("target_machine_uuid") or "").strip()
+    selected_worker_name = str(normalized_payload.get("selected_worker_name") or "").strip()
+    if target_machine_uuid:
+        normalized_payload.setdefault("selected_worker_uuid", target_machine_uuid)
+        normalized_payload.setdefault("assignment_source", "admin_selected_worker")
+        metadata = dict(normalized_payload.get("metadata") or {})
+        metadata.setdefault("selected_worker_uuid", target_machine_uuid)
+        metadata.setdefault("target_machine_uuid", target_machine_uuid)
+        metadata.setdefault("assignment_source", "admin_selected_worker")
+        if selected_worker_name:
+            metadata.setdefault("selected_worker_name", selected_worker_name)
+        normalized_payload["metadata"] = metadata
+
     task_id = str(uuid4())
     task = {
         "id": task_id,
         "tenant_id": task_tenant_id,
         "payload": normalized_payload,
         "status": "queued",
-        "assigned_machine_uuid": None,
+        "assigned_machine_uuid": target_machine_uuid or None,
         "result_json": None,
         "error": None,
         "created_at": datetime.utcnow().isoformat(),
@@ -4257,6 +4281,11 @@ def _create_task_record(normalized_payload: dict) -> TaskCreateResponse:
     }
     tasks.append(task)
     _append_task_log(task, f"Task created with type={normalized_payload.get('task_type', 'unknown')}")
+    if target_machine_uuid:
+        _append_task_log(
+            task,
+            f"Task pre-assigned to target machine_uuid={target_machine_uuid} (assignment_source=admin_selected_worker)",
+        )
     save_task_db(task)
     logger.info("Task created: id=%s task_type=%s", task_id, normalized_payload.get("task_type", "unknown"))
     return TaskCreateResponse(id=task_id, status="queued")
@@ -4790,6 +4819,334 @@ async def create_task(payload: TaskCreateRequest, request: Request) -> TaskCreat
     return _create_task_record(normalized_payload)
 
 
+@app.post("/api/batch-runs/upload", response_model=BatchRunUploadResponse)
+async def upload_batch_run(
+    request: Request,
+    spreadsheet: UploadFile = File(...),
+    workflow_name: str = Form("ci_checks"),
+    target_machine_uuid: str = Form(...),
+    column_mapping: str | None = Form(None),
+) -> BatchRunUploadResponse:
+    user = require_user_role(request, {"admin", "super_admin", "teacher", "runner"})
+    explicit_target_uuid = str(target_machine_uuid or "").strip()
+    if not explicit_target_uuid:
+        raise HTTPException(status_code=422, detail="target_machine_uuid is required")
+
+    worker = _worker_snapshot_by_uuid(explicit_target_uuid)
+    if worker is None:
+        raise HTTPException(status_code=422, detail=f"Selected worker {explicit_target_uuid} does not exist.")
+    if not _is_super_admin_user(user):
+        if _normalize_tenant_id_value(worker.get("tenant_id")) != _resolve_effective_tenant_id(user):
+            raise HTTPException(status_code=403, detail="You do not have permission to use this worker")
+
+    # Validate worker availability without requiring pre-registered tenant workflow availability.
+    _validate_explicit_target_worker(explicit_target_uuid, None)
+
+    if not spreadsheet.filename:
+        raise HTTPException(status_code=422, detail="spreadsheet filename is required")
+
+    raw_bytes = await spreadsheet.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=422, detail="spreadsheet is empty")
+
+    try:
+        headers, parsed_rows, parser_meta = parse_spreadsheet_upload(spreadsheet.filename, raw_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    mapping_payload: dict[str, Any] = {}
+    if column_mapping and column_mapping.strip():
+        try:
+            parsed_mapping = json.loads(column_mapping)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=422, detail=f"column_mapping must be valid JSON: {exc}")
+        if not isinstance(parsed_mapping, dict):
+            raise HTTPException(status_code=422, detail="column_mapping must be a JSON object")
+        mapping_payload = parsed_mapping
+
+    required_fields = _batch_required_fields(workflow_name)
+    lower_headers = {str(h).strip().lower() for h in headers}
+    for field_name in required_fields:
+        if field_name not in mapping_payload and field_name in lower_headers:
+            mapping_payload[field_name] = field_name
+
+    mapping_validation = validate_mapping(headers, mapping_payload, required_fields)
+    normalized_mapping = dict(mapping_validation.get("normalized_mapping") or {})
+
+    tenant_id = _effective_tenant_for_batch(user, worker)
+    rows = build_batch_rows(
+        parsed_rows,
+        normalized_mapping,
+        workflow_name=str(workflow_name or "ci_checks").strip() or "ci_checks",
+        target_machine_uuid=explicit_target_uuid,
+        tenant_id=tenant_id,
+    )
+    target_worker_name = str(worker.get("machine_name") or explicit_target_uuid).strip()
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    for row in rows:
+        row.setdefault("task_id", None)
+        row.setdefault("assigned_machine_uuid", explicit_target_uuid)
+        row.setdefault("worker_name", target_worker_name)
+        row.setdefault("matched_client_name", None)
+        row.setdefault("keap_task_created", False)
+        row.setdefault("keap_task_id", None)
+        row.setdefault("notes", None)
+        row.setdefault("row_started_at", None)
+        row.setdefault("completed_at", None)
+        row["updated_at"] = now_iso
+
+    batch_id = str(uuid4())
+    batch = build_batch_run_record(
+        batch_id=batch_id,
+        created_by_user_id=str(user.get("id") or "").strip() or None,
+        created_by_name=str(user.get("name") or user.get("email") or "").strip() or None,
+        tenant_id=tenant_id,
+        workflow_name=str(workflow_name or "ci_checks").strip() or "ci_checks",
+        target_machine_uuid=explicit_target_uuid,
+        filename=spreadsheet.filename,
+        headers=headers,
+        mapping=normalized_mapping,
+        parser_meta=parser_meta,
+        rows=rows,
+    )
+    batch["target_worker_name"] = target_worker_name
+    batch["summary"] = compute_dashboard_summary(rows)
+    batch["status"] = derive_batch_status(batch)
+    _batch_runner_store.upsert_run(batch)
+
+    return BatchRunUploadResponse(
+        batch=BatchRunRecord(**batch),
+        mapping_validation=mapping_validation,
+        required_fields=required_fields,
+    )
+
+
+@app.get("/api/batch-runs/{batch_id}", response_model=BatchRunRecord)
+def get_batch_run(request: Request, batch_id: str) -> BatchRunRecord:
+    user = require_user_role(request, {"admin", "super_admin", "teacher", "runner", "viewer"})
+    batch = _batch_runner_store.get_run(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch run not found")
+
+    if not _is_super_admin_user(user) and _resolve_effective_tenant_id(user) != _normalize_tenant_id_value(batch.get("tenant_id")):
+        raise HTTPException(status_code=403, detail="You do not have permission to access this batch run")
+
+    batch = _sync_batch_rows_with_tasks(batch)
+    _batch_runner_store.upsert_run(batch)
+    return BatchRunRecord(**batch)
+
+
+@app.get("/api/batch-runs", response_model=BatchRunListResponse)
+def list_batch_runs(
+    request: Request,
+    tenant_id: str | None = None,
+    workflow_name: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+) -> BatchRunListResponse:
+    user = require_user_role(request, {"admin", "super_admin", "teacher", "runner", "viewer"})
+    safe_limit = max(1, min(limit, 200))
+    items: list[dict[str, Any]] = []
+
+    requested_tenant = _normalize_tenant_id_value(tenant_id) if tenant_id else None
+    requested_workflow = str(workflow_name or "").strip().lower() or None
+    requested_status = str(status or "").strip().lower() or None
+
+    for run in _batch_runner_store.list_runs():
+        run_tenant = _normalize_tenant_id_value(run.get("tenant_id"))
+        if not _is_super_admin_user(user) and run_tenant != _resolve_effective_tenant_id(user):
+            continue
+        if requested_tenant and run_tenant != requested_tenant:
+            continue
+        if requested_workflow and str(run.get("workflow_name") or "").strip().lower() != requested_workflow:
+            continue
+
+        run = _sync_batch_rows_with_tasks(run)
+        _batch_runner_store.upsert_run(run)
+        if requested_status and str(run.get("status") or "").strip().lower() != requested_status:
+            continue
+        items.append(run)
+
+    items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    sliced = items[:safe_limit]
+    return BatchRunListResponse(items=[BatchRunRecord(**item) for item in sliced], count=len(sliced))
+
+
+@app.get("/api/batch-runs/{batch_id}/rows", response_model=BatchRunRowsResponse)
+def list_batch_run_rows(
+    request: Request,
+    batch_id: str,
+    limit: int = 200,
+    offset: int = 0,
+    status_filter: str | None = None,
+) -> BatchRunRowsResponse:
+    user = require_user_role(request, {"admin", "super_admin", "teacher", "runner", "viewer"})
+    batch = _batch_runner_store.get_run(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch run not found")
+
+    if not _is_super_admin_user(user) and _resolve_effective_tenant_id(user) != _normalize_tenant_id_value(batch.get("tenant_id")):
+        raise HTTPException(status_code=403, detail="You do not have permission to access this batch run")
+
+    batch = _sync_batch_rows_with_tasks(batch)
+    _batch_runner_store.upsert_run(batch)
+    safe_limit = max(1, min(limit, 1000))
+    safe_offset = max(0, offset)
+    all_rows = list(batch.get("rows") or [])
+
+    filter_key = str(status_filter or "").strip().lower()
+    if filter_key and filter_key != "all":
+        filtered = [row for row in all_rows if row_filter_status(row) == filter_key]
+    else:
+        filtered = all_rows
+
+    rows = filtered[safe_offset : safe_offset + safe_limit]
+    return BatchRunRowsResponse(
+        batch_id=batch_id,
+        total_rows=len(filtered),
+        rows=[BatchRunRowRecord(**row) for row in rows],
+        summary=batch.get("summary") or {},
+    )
+
+
+@app.post("/api/batch-runs/{batch_id}/start", response_model=BatchRunStartResponse)
+def start_batch_run(request: Request, batch_id: str) -> BatchRunStartResponse:
+    user = require_user_role(request, {"admin", "super_admin", "teacher", "runner"})
+    batch = _batch_runner_store.get_run(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch run not found")
+
+    if not _is_super_admin_user(user) and _resolve_effective_tenant_id(user) != _normalize_tenant_id_value(batch.get("tenant_id")):
+        raise HTTPException(status_code=403, detail="You do not have permission to start this batch run")
+
+    if bool(batch.get("cancel_requested")):
+        raise HTTPException(status_code=409, detail="Batch run is canceled")
+
+    mapping = dict(batch.get("mapping") or {})
+    validation = validate_mapping(batch.get("headers") or [], mapping, _batch_required_fields(str(batch.get("workflow_name") or "ci_checks")))
+    if not validation.get("valid"):
+        raise HTTPException(status_code=422, detail=f"Batch mapping invalid: {validation}")
+
+    batch = _sync_batch_rows_with_tasks(batch)
+    batch, queued_rows, skipped_rows = _dispatch_batch_rows(batch, {"ready", "failed", "needs_review"})
+    batch["status"] = "running" if queued_rows > 0 else derive_batch_status(batch)
+    batch["started_at"] = batch.get("started_at") or (datetime.utcnow().isoformat() + "Z")
+    batch["summary"] = compute_dashboard_summary(
+        list(batch.get("rows") or []),
+        batch_started_at=str(batch.get("started_at") or "") or None,
+        batch_completed_at=str(batch.get("completed_at") or "") or None,
+    )
+    batch["status"] = derive_batch_status(batch)
+    _batch_runner_store.upsert_run(batch)
+
+    return BatchRunStartResponse(
+        batch_id=batch_id,
+        status=str(batch.get("status") or "uploaded"),
+        queued_rows=queued_rows,
+        skipped_rows=skipped_rows,
+        summary=batch.get("summary") or {},
+    )
+
+
+@app.post("/api/batch-runs/{batch_id}/cancel", response_model=BatchRunCancelResponse)
+def cancel_batch_run(request: Request, batch_id: str) -> BatchRunCancelResponse:
+    user = require_user_role(request, {"admin", "super_admin", "teacher", "runner"})
+    batch = _batch_runner_store.get_run(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch run not found")
+
+    if not _is_super_admin_user(user) and _resolve_effective_tenant_id(user) != _normalize_tenant_id_value(batch.get("tenant_id")):
+        raise HTTPException(status_code=403, detail="You do not have permission to cancel this batch run")
+
+    batch["cancel_requested"] = True
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    for row in list(batch.get("rows") or []):
+        status = str(row.get("status") or "").lower()
+        if status in {"queued", "assigned", "running", "in_progress", "ready", "failed", "needs_review"}:
+            task_id = str(row.get("child_task_id") or "").strip()
+            if task_id:
+                task = _task_by_id(task_id)
+                if isinstance(task, dict):
+                    _cancel_task_if_possible(task)
+            row["status"] = "canceled"
+            row["updated_at"] = now_iso
+            row["completed_at"] = row.get("completed_at") or now_iso
+
+    batch["status"] = "canceled"
+    batch["completed_at"] = batch.get("completed_at") or now_iso
+    batch["updated_at"] = now_iso
+    batch["summary"] = compute_dashboard_summary(
+        list(batch.get("rows") or []),
+        batch_started_at=str(batch.get("started_at") or "") or None,
+        batch_completed_at=str(batch.get("completed_at") or "") or None,
+    )
+    _batch_runner_store.upsert_run(batch)
+
+    return BatchRunCancelResponse(batch_id=batch_id, status="canceled", cancel_requested=True)
+
+
+@app.post("/api/batch-runs/{batch_id}/retry-failed", response_model=BatchRunRetryResponse)
+def retry_failed_batch_rows(request: Request, batch_id: str) -> BatchRunRetryResponse:
+    user = require_user_role(request, {"admin", "super_admin", "teacher", "runner"})
+    batch = _batch_runner_store.get_run(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch run not found")
+
+    if not _is_super_admin_user(user) and _resolve_effective_tenant_id(user) != _normalize_tenant_id_value(batch.get("tenant_id")):
+        raise HTTPException(status_code=403, detail="You do not have permission to retry this batch run")
+
+    if bool(batch.get("cancel_requested")):
+        raise HTTPException(status_code=409, detail="Batch run is canceled")
+
+    retried_rows = 0
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    for row in list(batch.get("rows") or []):
+        status = str(row.get("status") or "").strip().lower()
+        if status in {"failed", "needs_review"}:
+            row["status"] = "ready"
+            row["error"] = None
+            row["child_task_id"] = None
+            row["child_task_status"] = None
+            row["updated_at"] = now_iso
+            retried_rows += 1
+
+    batch, queued_rows, _ = _dispatch_batch_rows(batch, {"ready"})
+    batch["summary"] = compute_dashboard_summary(
+        list(batch.get("rows") or []),
+        batch_started_at=str(batch.get("started_at") or "") or None,
+        batch_completed_at=str(batch.get("completed_at") or "") or None,
+    )
+    batch["status"] = "running" if queued_rows > 0 else derive_batch_status(batch)
+    _batch_runner_store.upsert_run(batch)
+    return BatchRunRetryResponse(
+        batch_id=batch_id,
+        status=str(batch.get("status") or "uploaded"),
+        retried_rows=retried_rows,
+        summary=batch.get("summary") or {},
+    )
+
+
+@app.get("/api/batch-runs/{batch_id}/export")
+def export_batch_run_csv(request: Request, batch_id: str) -> StreamingResponse:
+    user = require_user_role(request, {"admin", "super_admin", "teacher", "runner", "viewer"})
+    batch = _batch_runner_store.get_run(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch run not found")
+
+    if not _is_super_admin_user(user) and _resolve_effective_tenant_id(user) != _normalize_tenant_id_value(batch.get("tenant_id")):
+        raise HTTPException(status_code=403, detail="You do not have permission to export this batch run")
+
+    batch = _sync_batch_rows_with_tasks(batch)
+    _batch_runner_store.upsert_run(batch)
+    csv_bytes = to_csv_bytes(batch)
+    filename = f"batch-run-{batch_id}.csv"
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/procedures", response_model=list[ProcedureTemplate])
 def list_procedures() -> list[ProcedureTemplate]:
     return [ProcedureTemplate(**template) for template in PROCEDURE_TEMPLATES.values()]
@@ -4879,6 +5236,336 @@ def _find_worker_by_hint(machines: list[MachineRecord], hint: str | None) -> Mac
             return machine
 
     return None
+
+
+def _find_worker_by_uuid(machines: list[MachineRecord], machine_uuid: str | None) -> MachineRecord | None:
+    needle = str(machine_uuid or "").strip().lower()
+    if not needle:
+        return None
+    for machine in machines:
+        if str(machine.machine_uuid or "").strip().lower() == needle:
+            return machine
+    return None
+
+
+def _worker_snapshot_by_uuid(machine_uuid: str | None) -> dict[str, Any] | None:
+    needle = str(machine_uuid or "").strip()
+    if not needle:
+        return None
+
+    with _workers_lock:
+        worker = dict(registered_workers.get(needle) or {})
+    if not worker:
+        return None
+
+    last_seen_raw = str(worker.get("last_seen") or "").strip()
+    online = False
+    if last_seen_raw:
+        try:
+            online = (datetime.utcnow() - datetime.fromisoformat(last_seen_raw)).total_seconds() <= 30
+        except ValueError:
+            online = False
+
+    return {
+        "machine_uuid": needle,
+        "machine_name": str(worker.get("machine_name") or needle),
+        "tenant_id": _normalize_tenant_id_value(worker.get("tenant_id")),
+        "status": str(worker.get("status") or "unknown").strip().lower(),
+        "online": online,
+    }
+
+
+def _validate_explicit_target_worker(target_machine_uuid: str, workflow_name: str | None) -> dict[str, Any]:
+    worker = _worker_snapshot_by_uuid(target_machine_uuid)
+    if worker is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Selected worker {target_machine_uuid} does not exist.",
+        )
+
+    if not bool(worker.get("online")):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Selected worker {worker.get('machine_name')} is offline. "
+                "Start that worker or select another worker."
+            ),
+        )
+
+    if str(worker.get("status") or "").strip().lower() == "error":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Selected worker {worker.get('machine_name')} is in error status. "
+                "Restart or clear that worker before running."
+            ),
+        )
+
+    tenant_id = _normalize_tenant_id_value(worker.get("tenant_id"))
+    resolve_workflow_for_tenant = globals().get("_resolve_workflow_id_for_tenant")
+    if callable(resolve_workflow_for_tenant) and workflow_name:
+        try:
+            resolve_workflow_for_tenant(tenant_id, workflow_name)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Workflow '{workflow_name}' is not available for tenant '{tenant_id}' "
+                    f"on selected worker {worker.get('machine_name')}."
+                ),
+            ) from exc
+
+    return worker
+
+
+def _effective_tenant_for_batch(user: dict[str, Any] | None, worker: dict[str, Any] | None = None) -> str:
+    if isinstance(worker, dict):
+        worker_tenant = _normalize_tenant_id_value(worker.get("tenant_id"))
+        if worker_tenant:
+            return worker_tenant
+
+    if isinstance(user, dict):
+        user_tenant = _normalize_tenant_id_value(user.get("tenant_id"))
+        if user_tenant:
+            return user_tenant
+
+    env_tenant_id = _normalize_tenant_id_value(os.getenv("BILL_DEFAULT_TENANT_ID"))
+    return env_tenant_id or "default"
+
+
+def _batch_required_fields(workflow_name: str) -> list[str]:
+    # CI Checks currently requires these canonical mapped fields.
+    _ = workflow_name
+    return ["member_name", "member_id", "paid_through_date"]
+
+
+def _sync_batch_rows_with_tasks(batch: dict[str, Any]) -> dict[str, Any]:
+    changed = False
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    rows = list(batch.get("rows") or [])
+    for row in rows:
+        row_changed = False
+        task_id = str(row.get("child_task_id") or "").strip()
+        if not task_id:
+            continue
+        task = _task_by_id(task_id)
+        if not isinstance(task, dict):
+            continue
+
+        payload = dict(task.get("payload") or {})
+        metadata = dict(payload.get("metadata") or {})
+        task_result = dict(task.get("result_json") or {})
+
+        if str(row.get("task_id") or "") != task_id:
+            row["task_id"] = task_id
+            changed = True
+            row_changed = True
+
+        assigned_machine_uuid = str(task.get("assigned_machine_uuid") or "").strip() or None
+        if assigned_machine_uuid != row.get("assigned_machine_uuid"):
+            row["assigned_machine_uuid"] = assigned_machine_uuid
+            changed = True
+            row_changed = True
+
+        worker_name = (
+            str(metadata.get("selected_worker_name") or "").strip()
+            or str(task_result.get("worker_name") or "").strip()
+            or str(row.get("worker_name") or "").strip()
+        )
+        if worker_name and worker_name != row.get("worker_name"):
+            row["worker_name"] = worker_name
+            changed = True
+            row_changed = True
+
+        matched_client_name = str(task_result.get("matched_client_name") or task_result.get("matched_client") or "").strip() or None
+        if matched_client_name != row.get("matched_client_name"):
+            row["matched_client_name"] = matched_client_name
+            changed = True
+            row_changed = True
+
+        keap_task_id = (
+            str(task_result.get("keap_task_id") or "").strip()
+            or str(task_result.get("crm_task_id") or "").strip()
+            or None
+        )
+        if keap_task_id != row.get("keap_task_id"):
+            row["keap_task_id"] = keap_task_id
+            changed = True
+            row_changed = True
+
+        keap_task_created = bool(task_result.get("keap_task_created")) or bool(keap_task_id)
+        if keap_task_created != bool(row.get("keap_task_created")):
+            row["keap_task_created"] = keap_task_created
+            changed = True
+            row_changed = True
+
+        if not row.get("row_started_at") and task.get("started_at"):
+            row["row_started_at"] = task.get("started_at")
+            changed = True
+            row_changed = True
+
+        task_status = str(task.get("status") or "").strip().lower()
+        prev_task_status = str(row.get("child_task_status") or "").strip().lower()
+        if task_status and task_status != prev_task_status:
+            row["child_task_status"] = task_status
+            changed = True
+            row_changed = True
+
+        if task_status in {"queued", "assigned", "running", "in_progress"}:
+            desired = task_status
+        elif task_status in {"completed", "failed", "canceled", "cancelled"}:
+            desired = "canceled" if task_status in {"canceled", "cancelled"} else task_status
+        else:
+            desired = str(row.get("status") or "")
+
+        if desired and str(row.get("status") or "") != desired:
+            row["status"] = desired
+            changed = True
+            row_changed = True
+
+        if desired in {"completed", "failed", "canceled"}:
+            task_completed_at = str(task.get("completed_at") or "").strip() or None
+            if task_completed_at != row.get("completed_at"):
+                row["completed_at"] = task_completed_at
+                changed = True
+                row_changed = True
+
+        if task_status == "failed":
+            task_error = str(task.get("error") or "").strip() or None
+            if task_error != row.get("error"):
+                row["error"] = task_error
+                changed = True
+                row_changed = True
+
+        if row_changed:
+            row["updated_at"] = now_iso
+
+    batch["rows"] = rows
+    batch["summary"] = compute_dashboard_summary(
+        rows,
+        batch_started_at=str(batch.get("started_at") or "") or None,
+        batch_completed_at=str(batch.get("completed_at") or "") or None,
+    )
+    completed_total = batch["summary"].get("completed_rows", 0) + batch["summary"].get("failed_rows", 0) + batch["summary"].get("canceled_rows", 0) + batch["summary"].get("skipped_rows", 0)
+    if batch["summary"].get("total", 0) > 0 and completed_total >= batch["summary"].get("total", 0):
+        batch["status"] = derive_batch_status(batch)
+        batch["completed_at"] = batch.get("completed_at") or now_iso
+    else:
+        batch["status"] = derive_batch_status(batch)
+    batch["updated_at"] = now_iso
+    return batch
+
+
+def _queue_batch_row_task(batch: dict[str, Any], row: dict[str, Any]) -> str:
+    workflow_name = str(batch.get("workflow_name") or "ci_checks")
+    target_machine_uuid = str(batch.get("target_machine_uuid") or "").strip()
+    tenant_id = str(batch.get("tenant_id") or "default").strip() or "default"
+
+    mapped = dict(row.get("mapped") or {})
+    worker_name = str(batch.get("target_worker_name") or row.get("worker_name") or "").strip()
+    source_payload = {
+        "workflow_id": workflow_name,
+        "workflow_name": workflow_name,
+        "task_type": workflow_name,
+        "tenant_id": tenant_id,
+        "target_machine_uuid": target_machine_uuid,
+        "selected_worker_uuid": target_machine_uuid,
+        "selected_worker_name": worker_name,
+        "assignment_source": "admin_selected_worker",
+        "source_record": {
+            "source_system": "spreadsheet",
+            "external_contact_id": mapped.get("member_id") or "",
+            "client_name": mapped.get("member_name") or "",
+            "policy_number": mapped.get("policy_number") or "",
+            "raw": dict(row.get("source") or {}),
+        },
+        "target_contact": {
+            "target_system": "keap",
+            "external_contact_id": mapped.get("member_id") or "",
+            "full_name": mapped.get("member_name") or "",
+            "raw": {
+                "member_name": mapped.get("member_name"),
+                "member_id": mapped.get("member_id"),
+                "paid_through_date": row.get("paid_through_date"),
+                "payment_status": row.get("payment_status"),
+            },
+        },
+        "debug_metadata": {
+            "batch_id": batch.get("batch_id"),
+            "row_id": row.get("row_id"),
+            "row_number": row.get("row_number"),
+            "from_batch_runner": True,
+            "payment_status": row.get("payment_status"),
+        },
+        "metadata": {
+            "selected_worker_uuid": target_machine_uuid,
+            "target_machine_uuid": target_machine_uuid,
+            "selected_worker_name": worker_name,
+            "assignment_source": "admin_selected_worker",
+        },
+        "requires_human_approval": False,
+        "dry_run": str(row.get("payment_status") or "") == "needs_review",
+    }
+
+    queued = run_tenant_workflow(tenant_id=tenant_id, workflow_id=workflow_name, input_data=source_payload).queued_task
+    return queued.id
+
+
+def _dispatch_batch_rows(batch: dict[str, Any], allowed_statuses: set[str]) -> tuple[dict[str, Any], int, int]:
+    queued_rows = 0
+    skipped_rows = 0
+    now_iso = datetime.utcnow().isoformat() + "Z"
+
+    for row in list(batch.get("rows") or []):
+        current_status = str(row.get("status") or "").strip().lower()
+        if current_status not in allowed_statuses:
+            skipped_rows += 1
+            continue
+
+        if row.get("required_missing"):
+            row["status"] = "invalid"
+            row["error"] = f"missing required fields: {', '.join(row['required_missing'])}"
+            row["updated_at"] = now_iso
+            skipped_rows += 1
+            continue
+
+        try:
+            row.setdefault("assigned_machine_uuid", str(batch.get("target_machine_uuid") or "").strip() or None)
+            row.setdefault("worker_name", str(batch.get("target_worker_name") or "").strip() or None)
+            child_task_id = _queue_batch_row_task(batch, row)
+            row["child_task_id"] = child_task_id
+            row["task_id"] = child_task_id
+            row["child_task_status"] = "queued"
+            row["status"] = "queued"
+            row["error"] = None
+            row["row_started_at"] = row.get("row_started_at") or now_iso
+            row["updated_at"] = now_iso
+            queued_rows += 1
+        except Exception as exc:
+            row["status"] = "failed"
+            row["error"] = f"queue_failed: {exc.__class__.__name__}: {exc}"
+            row["updated_at"] = now_iso
+            skipped_rows += 1
+
+    batch["summary"] = summarize_rows(list(batch.get("rows") or []))
+    batch["updated_at"] = now_iso
+    return batch, queued_rows, skipped_rows
+
+
+def _resolve_worker_tenant_id(machine: MachineRecord | None) -> str | None:
+    if machine is None:
+        return None
+
+    candidate = _normalize_tenant_id_value(getattr(machine, "tenant_id", None))
+    if candidate:
+        return candidate
+
+    with _workers_lock:
+        worker = registered_workers.get(machine.machine_uuid)
+    if not isinstance(worker, dict):
+        return None
+
+    return _normalize_tenant_id_value(worker.get("tenant_id"))
 
 
 def _select_best_worker(machines: list[MachineRecord], preferred_uuid: str | None = None) -> MachineRecord | None:

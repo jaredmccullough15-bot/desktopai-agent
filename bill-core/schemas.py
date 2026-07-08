@@ -228,6 +228,122 @@ class ProcedureRunRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class BatchRunRowRecord(BaseModel):
+    row_id: str
+    row_number: int
+    source: dict[str, str] = Field(default_factory=dict)
+    mapped: dict[str, str] = Field(default_factory=dict)
+    required_missing: list[str] = Field(default_factory=list)
+    status: str
+    payment_status: Literal["good", "bad", "needs_review"]
+    decision_reason: str
+    paid_through_date: str | None = None
+    current_month_end_date: str | None = None
+    child_task_id: str | None = None
+    task_id: str | None = None
+    child_task_status: str | None = None
+    assigned_machine_uuid: str | None = None
+    worker_name: str | None = None
+    matched_client_name: str | None = None
+    keap_task_created: bool = False
+    keap_task_id: str | None = None
+    notes: str | None = None
+    error: str | None = None
+    row_started_at: str | None = None
+    completed_at: str | None = None
+    created_at: str
+    updated_at: str
+    workflow_name: str
+    target_machine_uuid: str
+    tenant_id: str
+
+
+class BatchRunSummaryRecord(BaseModel):
+    total: int = 0
+    ready: int = 0
+    invalid: int = 0
+    queued: int = 0
+    assigned: int = 0
+    in_progress: int = 0
+    completed: int = 0
+    failed: int = 0
+    canceled: int = 0
+    needs_review: int = 0
+    total_rows: int = 0
+    pending_rows: int = 0
+    running_rows: int = 0
+    completed_rows: int = 0
+    failed_rows: int = 0
+    needs_review_rows: int = 0
+    skipped_rows: int = 0
+    canceled_rows: int = 0
+    good_no_action_needed_rows: int = 0
+    bad_payment_task_created_rows: int = 0
+    progress_percent: int = 0
+    estimated_remaining_seconds: int | None = None
+
+
+class BatchRunRecord(BaseModel):
+    batch_id: str
+    tenant_id: str
+    workflow_name: str
+    target_machine_uuid: str
+    target_worker_name: str | None = None
+    status: str
+    filename: str
+    headers: list[str] = Field(default_factory=list)
+    mapping: dict[str, str] = Field(default_factory=dict)
+    parser_meta: dict[str, Any] = Field(default_factory=dict)
+    rows: list[BatchRunRowRecord] = Field(default_factory=list)
+    summary: BatchRunSummaryRecord = Field(default_factory=BatchRunSummaryRecord)
+    created_at: str
+    updated_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    created_by_user_id: str | None = None
+    created_by_name: str | None = None
+    cancel_requested: bool = False
+
+
+class BatchRunUploadResponse(BaseModel):
+    batch: BatchRunRecord
+    mapping_validation: dict[str, Any] = Field(default_factory=dict)
+    required_fields: list[str] = Field(default_factory=list)
+
+
+class BatchRunRowsResponse(BaseModel):
+    batch_id: str
+    total_rows: int
+    rows: list[BatchRunRowRecord] = Field(default_factory=list)
+    summary: BatchRunSummaryRecord = Field(default_factory=BatchRunSummaryRecord)
+
+
+class BatchRunStartResponse(BaseModel):
+    batch_id: str
+    status: str
+    queued_rows: int = 0
+    skipped_rows: int = 0
+    summary: BatchRunSummaryRecord = Field(default_factory=BatchRunSummaryRecord)
+
+
+class BatchRunCancelResponse(BaseModel):
+    batch_id: str
+    status: str
+    cancel_requested: bool = True
+
+
+class BatchRunRetryResponse(BaseModel):
+    batch_id: str
+    status: str
+    retried_rows: int = 0
+    summary: BatchRunSummaryRecord = Field(default_factory=BatchRunSummaryRecord)
+
+
+class BatchRunListResponse(BaseModel):
+    items: list[BatchRunRecord] = Field(default_factory=list)
+    count: int = 0
+
+
 class WorkflowTimeoutPolicy(BaseModel):
     """Per-workflow timeout recovery policy. All fields are optional — defaults apply."""
     max_step_retries: int = 2
