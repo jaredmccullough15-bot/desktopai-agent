@@ -133,6 +133,7 @@ type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 type TeachingStartupState = {
   session_id: string;
   task_id?: string | null;
+  draft_id?: string | null;
   workflow_name: string;
   target_machine_uuid?: string | null;
   target_machine_name?: string | null;
@@ -970,6 +971,11 @@ const shortTaskId = (id?: string): string => {
   return id.length > 10 ? `${id.slice(0, 8)}...` : id;
 };
 
+const shortEntityId = (id?: string | null): string => {
+  if (!id) return "pending";
+  return id.length > 10 ? `${id.slice(0, 8)}...` : id;
+};
+
 const toDisplayTime = (value?: string): string => {
   if (!value) return "-";
   const parsed = new Date(value);
@@ -1356,8 +1362,10 @@ export default function Home() {
         setTeachingStartupState((current) => ({
           session_id: sessionId,
           task_id: current?.task_id ?? null,
+          draft_id: current?.draft_id ?? null,
           workflow_name: current?.workflow_name ?? "Workflow",
           target_machine_uuid: current?.target_machine_uuid ?? null,
+          target_machine_name: current?.target_machine_name ?? null,
           status: "failed",
           message,
           overlay_enabled: true,
@@ -1399,10 +1407,17 @@ export default function Home() {
             message: data.message ?? "",
           });
           if (data.status === "active") {
+            if (teachingStartupTimeoutRef.current !== null) {
+              clearTimeout(teachingStartupTimeoutRef.current);
+              teachingStartupTimeoutRef.current = null;
+            }
             console.log("[teaching-browser] active callback received", {
               session_id: sessionId,
               workflow_name: data.workflow_name,
             });
+            if (data.draft_id) {
+              setTeachingSessionDraftId(data.draft_id);
+            }
           }
           setTeachingStartupState(data);
           if (data.teaching_session) {
@@ -6761,6 +6776,12 @@ export default function Home() {
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Mode Active</p>
                   <h2 className="mt-1 text-lg font-semibold text-white">{guidedTeachingSession.workflowName}</h2>
                   <p className="mt-1 text-xs text-slate-400">Train Bill like a new hire while you work.</p>
+                  <p className="mt-2 text-[11px] text-slate-300">
+                    Worker {teachingStartupState?.target_machine_name || "selected worker"} • Session {shortEntityId(guidedTeachingSession.sessionId)} • Draft {shortEntityId(teachingSessionDraftId || teachingStartupState?.draft_id)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Actions captured: {guidedTeachingSession.steps.reduce((count, step) => count + (step.observedActions?.length ?? 0), 0)} • Last update {toDisplayTime(teachingStartupState?.teaching_session?.last_extension_event?.captured_at as string | undefined)}
+                  </p>
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   <button
@@ -7055,7 +7076,7 @@ export default function Home() {
                     <summary className="cursor-pointer text-xs uppercase tracking-[0.16em] text-slate-400">Advanced details</summary>
                     <div className="mt-2 space-y-2 text-xs text-slate-300">
                       <p>Session ID: {guidedTeachingSession.sessionId || "n/a"}</p>
-                      <p>Draft ID: {teachingSessionDraftId || "n/a"}</p>
+                      <p>Draft ID: {teachingSessionDraftId || teachingStartupState?.draft_id || "Draft ID pending"}</p>
                       <p>Task ID: {teachingOverlayTaskId || teachingStartupState?.task_id || "n/a"}</p>
                       <p>Startup status: {teachingStartupState?.status || "n/a"}</p>
                       <p>Worker UUID: {teachingStartupState?.target_machine_uuid || "n/a"}</p>
