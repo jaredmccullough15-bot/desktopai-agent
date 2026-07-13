@@ -1967,17 +1967,6 @@ export default function Home() {
     return Array.from(new Set([...(visible.length ? visible : fallback)])).slice(0, 8);
   }, [guidedTeachingSession?.pageContextSnapshot]);
 
-  const extensionConnectionStatus = guidedTeachingSession?.extensionConnectionStatus
-    ?? guidedTeachingSession?.pageContextSnapshot?.extension_connection_status
-    ?? "not paired";
-  const extensionEventCount = guidedTeachingSession?.extensionEventCount
-    ?? guidedTeachingSession?.pageContextSnapshot?.extension_event_count
-    ?? 0;
-  const latestExtensionEvent = (guidedTeachingSession?.lastExtensionEvent
-    ?? guidedTeachingSession?.pageContextSnapshot?.last_extension_event
-    ?? null) as Record<string, unknown> | null;
-  const latestExtensionEventSummary = summarizeExtensionEvent(latestExtensionEvent);
-
   const stepStatusSummary = useMemo(() => {
     const steps = guidedTeachingSession?.steps ?? [];
     let runnable = 0;
@@ -1991,6 +1980,40 @@ export default function Home() {
     }
     return { runnable, manualOnly, needsClarification, total: steps.length };
   }, [explainStepStatus, guidedTeachingSession?.steps]);
+
+  const teachingObservedActionCount = useMemo(() => {
+    return (guidedTeachingSession?.steps ?? []).reduce(
+      (count, step) => count + (step.observedActions?.length ?? 0),
+      0,
+    );
+  }, [guidedTeachingSession?.steps]);
+
+  const teachingExecutableActionCount = useMemo(() => {
+    const executableTypes = new Set(["click", "type", "select", "submit", "navigate"]);
+    return (guidedTeachingSession?.steps ?? []).reduce((count, step) => {
+      const stepCount = (step.observedActions ?? []).filter((action) => {
+        const source = String(action.source || "browser").toLowerCase();
+        if (source !== "browser") return false;
+        return executableTypes.has(String(action.type || "").toLowerCase());
+      }).length;
+      return count + stepCount;
+    }, 0);
+  }, [guidedTeachingSession?.steps]);
+
+  const teachingCaptureReady = teachingExecutableActionCount > 0;
+
+  const lastCapturedActionSummary = useMemo(() => {
+    const allActions = (guidedTeachingSession?.steps ?? [])
+      .flatMap((step) => step.observedActions ?? [])
+      .filter((action) => Boolean(action.timestamp));
+    if (!allActions.length) return "No actions captured yet";
+    const latest = [...allActions].sort((a, b) => {
+      const left = Date.parse(a.timestamp || "") || 0;
+      const right = Date.parse(b.timestamp || "") || 0;
+      return right - left;
+    })[0];
+    return formatObservedAction(latest);
+  }, [formatObservedAction, guidedTeachingSession?.steps]);
 
   const extensionLearningSession = useMemo(() => {
     if (!extensionLearningState?.teaching_session) return null;
@@ -2035,6 +2058,7 @@ export default function Home() {
     } satisfies ExtensionLearningReadiness;
   }, [extensionLearningSession, extensionLearningStepStatusSummary]);
 
+  const isAdminUser = currentUser?.role === "admin" || currentUser?.role === "super_admin";
   const extensionLearningVisible = Boolean(extensionLearningSessionId.trim() || extensionLearningSession || extensionLearningState);
   const extensionLearningWorkerStatus = onlineWorkers.length > 0 ? "online" : "offline or unavailable";
   const extensionLearningConnectionStatus = extensionLearningSession?.extensionConnectionStatus
@@ -2048,7 +2072,7 @@ export default function Home() {
     const reasons: string[] = [];
     const hasStart = Boolean(readiness?.has_start_url || canonicalStartUrl);
     const hasRunnableStep = stepStatusSummary.runnable > 0;
-    const hasExtensionContext = Boolean(extensionEventCount > 0 || guidedTeachingSession?.extensionConnectionStatus === "paired");
+    const hasBrowserContext = teachingObservedActionCount > 0;
 
     if (readiness?.runnable) {
       reasons.push("Bill has a starting page and at least one runnable step.");
@@ -2066,7 +2090,7 @@ export default function Home() {
       reasons.push("Bill still needs a starting page.");
     }
     if (!hasRunnableStep) {
-      if (hasStart && hasExtensionContext) {
+      if (hasStart && hasBrowserContext) {
         reasons.push("Bill sees the page. Click a button or field to create the first step.");
       }
       reasons.push("Bill needs at least one runnable step before testing.");
@@ -2088,14 +2112,14 @@ export default function Home() {
       reasons,
       toneClass: "border-rose-400/40 bg-rose-500/10 text-rose-100",
     };
-  }, [canonicalStartUrl, extensionEventCount, guidedTeachingEffectiveReadiness, guidedTeachingSession?.extensionConnectionStatus, stepStatusSummary.manualOnly, stepStatusSummary.runnable]);
+  }, [canonicalStartUrl, guidedTeachingEffectiveReadiness, stepStatusSummary.manualOnly, stepStatusSummary.runnable, teachingObservedActionCount]);
 
   const teachingCoach = useMemo(() => {
     const session = guidedTeachingSession;
     const hasPurpose = Boolean(session?.workflowSummary?.trim());
     const hasStart = Boolean(canonicalStartUrl);
     const hasSnapshot = Boolean(session?.pageContextSnapshot?.url || session?.pageContextSnapshot?.domain);
-    const hasExtensionContext = Boolean((session?.extensionEventCount ?? 0) > 0 || session?.extensionConnectionStatus === "paired");
+    const hasBrowserContext = teachingObservedActionCount > 0;
     const latestStep =
       !session || session.steps.length === 0
         ? null
@@ -2132,7 +2156,7 @@ export default function Home() {
     if ((session?.steps.length ?? 0) === 0) {
       return {
         phase: "Teach first action",
-        guidance: hasExtensionContext
+        guidance: hasBrowserContext
           ? "Bill sees the page. Click a button or field to create the first step."
           : "Bill sees the page. Tell Bill what to click or type next.",
         nextAction: "Capture the first click or field entry.",
@@ -2164,7 +2188,7 @@ export default function Home() {
       nextAction: "Run the workflow and verify the result.",
       examplePhrase: "Run a test on this taught workflow.",
     };
-  }, [canonicalStartUrl, explainStepStatus, guidedTeachingEffectiveReadiness?.runnable, guidedTeachingSession]);
+  }, [canonicalStartUrl, explainStepStatus, guidedTeachingEffectiveReadiness?.runnable, guidedTeachingSession, teachingObservedActionCount]);
 
   const getLatestRelevantStep = useCallback((): WorkflowStep | null => {
     if (!guidedTeachingSession || guidedTeachingSession.steps.length === 0) {
@@ -4051,6 +4075,50 @@ export default function Home() {
   }
 
   const startTeachingFromCommandCenter = useCallback(() => {
+    if (!targetMachineUuid) {
+      setChatHistory((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: "Select an online idle worker before starting Teaching Mode.",
+        },
+      ]);
+      return;
+    }
+
+    if (!selectedMachine) {
+      setChatHistory((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: "The selected worker is unavailable. Pick a worker again before starting Teaching Mode.",
+        },
+      ]);
+      return;
+    }
+
+    const selectedStatus = String(selectedMachine.status || "unknown").toLowerCase();
+    if (!selectedMachine.online) {
+      setChatHistory((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `${selectedMachine.machine_name} is offline. Start that worker, then retry.`,
+        },
+      ]);
+      return;
+    }
+    if (!(selectedStatus === "idle" || selectedStatus === "ready")) {
+      setChatHistory((current) => [
+        ...current,
+        {
+          role: "assistant",
+          message: `${selectedMachine.machine_name} is not idle (status=${selectedMachine.status}). Choose an idle worker and retry.`,
+        },
+      ]);
+      return;
+    }
+
     const suggested = [learningWorkflowName, helperWorkflow, guidedTeachingSession?.workflowName]
       .map((value) => String(value || "").trim())
       .find(Boolean) || "";
@@ -4063,7 +4131,7 @@ export default function Home() {
     setChatInput(command);
     setGuidedTeachingRunNowMessage(null);
     void submitBrainCommand(command);
-  }, [guidedTeachingSession?.workflowName, helperWorkflow, learningWorkflowName]);
+  }, [guidedTeachingSession?.workflowName, helperWorkflow, learningWorkflowName, selectedMachine, targetMachineUuid]);
 
   const cancelTask = async (taskId?: string) => {
     if (!taskId) {
@@ -6420,7 +6488,7 @@ export default function Home() {
                 onStartTeaching={startTeachingFromCommandCenter}
               />
 
-              {extensionLearningVisible && (
+              {isAdminUser && extensionLearningVisible && (
                 <section className="rounded-2xl border border-cyan-500/25 bg-slate-900/80 p-5 shadow-lg shadow-cyan-950/20">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -6746,13 +6814,16 @@ export default function Home() {
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Mode</p>
                   <h3 className="text-sm font-semibold text-white">
                     {teachingStartupState.status === "browser_opening"
-                      ? `Opening teaching browser on ${teachingStartupState.target_machine_name || "selected worker"}`
+                      ? `Launching Bill Teaching Browser on ${teachingStartupState.target_machine_name || "selected worker"}`
                       : `Teaching browser failed for ${teachingStartupState.workflow_name}`}
                   </h3>
                   <p className="mt-0.5 text-xs text-slate-400">
                     {teachingStartupState.status === "browser_opening"
-                      ? "Waiting for worker confirmation..."
+                      ? "Waiting for browser connection and capture readiness confirmation..."
                       : "Bill could not open the teaching browser. Restart the worker and try again."}
+                  </p>
+                  <p className="mt-1 text-[11px] text-cyan-100/90">
+                    Use only the Bill Teaching Browser for runnable workflow capture.
                   </p>
                 </div>
                 <button
@@ -6775,13 +6846,21 @@ export default function Home() {
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Teaching Mode Active</p>
                   <h2 className="mt-1 text-lg font-semibold text-white">{guidedTeachingSession.workflowName}</h2>
-                  <p className="mt-1 text-xs text-slate-400">Train Bill like a new hire while you work.</p>
+                  <p className="mt-1 text-xs text-slate-300">Teach only inside the Bill Teaching Browser. Do not use normal Chrome for runnable workflows.</p>
                   <p className="mt-2 text-[11px] text-slate-300">
                     Worker {teachingStartupState?.target_machine_name || "selected worker"} • Session {shortEntityId(guidedTeachingSession.sessionId)} • Draft {shortEntityId(teachingSessionDraftId || teachingStartupState?.draft_id)}
                   </p>
                   <p className="mt-1 text-[11px] text-slate-400">
-                    Actions captured: {guidedTeachingSession.steps.reduce((count, step) => count + (step.observedActions?.length ?? 0), 0)} • Last update {toDisplayTime(teachingStartupState?.teaching_session?.last_extension_event?.captured_at as string | undefined)}
+                    Browser: Connected • Capture: {teachingCaptureReady ? "Ready" : "Not Ready"} • Last captured: {lastCapturedActionSummary}
                   </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Actions: {teachingObservedActionCount} observed • Executable: {teachingExecutableActionCount} • Last callback {toDisplayTime(teachingStartupState?.teaching_session?.last_extension_event?.captured_at as string | undefined)}
+                  </p>
+                  {!teachingCaptureReady && (
+                    <p className="mt-2 rounded-md border border-amber-400/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-100">
+                      Capture is not ready yet. If the action counter does not move after you click or type in Bill Teaching Browser, stop teaching and contact admin.
+                    </p>
+                  )}
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   <button
@@ -6850,7 +6929,7 @@ export default function Home() {
                   <section className="min-h-0 rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Conversation</p>
-                      <span className="text-xs text-slate-400">Backtick (`) still works</span>
+                      <span className="text-xs text-slate-400">Use only Bill Teaching Browser tabs</span>
                     </div>
                     <div className="mt-2 flex min-h-0 flex-col gap-3">
                       {teachingVoiceError && (
@@ -7097,9 +7176,10 @@ export default function Home() {
                       <p><span className="text-emerald-200/80">Current page:</span> {observedCurrentPage || "Waiting for page"}</p>
                       <p><span className="text-emerald-200/80">Starting page:</span> {canonicalStartUrl || "Not confirmed yet"}</p>
                       <p><span className="text-emerald-200/80">Suggested starting page:</span> {suggestedStartUrl || "None"}</p>
-                      <p><span className="text-emerald-200/80">Extension status:</span> {extensionConnectionStatus}</p>
-                      <p><span className="text-emerald-200/80">Extension events:</span> {extensionEventCount}</p>
-                      <p><span className="text-emerald-200/80">Last extension event:</span> {latestExtensionEventSummary}</p>
+                      <p><span className="text-emerald-200/80">Capture readiness:</span> {teachingCaptureReady ? "Ready" : "Not Ready"}</p>
+                      <p><span className="text-emerald-200/80">Observed actions:</span> {teachingObservedActionCount}</p>
+                      <p><span className="text-emerald-200/80">Executable actions:</span> {teachingExecutableActionCount}</p>
+                      <p><span className="text-emerald-200/80">Observation Mode (normal Chrome):</span> Not used for runnable workflows</p>
                       <p><span className="text-emerald-200/80">Detected controls:</span> {capturedButtons.length + capturedFields.length + capturedLinks.length} total</p>
                       <p><span className="text-emerald-200/80">Top controls:</span> {capturedButtons.slice(0, 2).join(", ") || "None yet"}</p>
                       <p><span className="text-emerald-200/80">Steps captured:</span> {stepStatusSummary.runnable} runnable, {stepStatusSummary.manualOnly} manual-only, {stepStatusSummary.needsClarification} need clarification</p>
